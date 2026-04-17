@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "essaywriter-pdf-pipeline"
+version = "0.1.0"
+description = "Baseline PDF text extraction pipeline."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "pypdf>=4.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+ocr-small = [
+  "pypdfium2>=4.30.0",
+  "pytesseract>=0.3.10",
+]
+ocr-medium = [
+  "pypdfium2>=4.30.0",
+  "easyocr>=1.7.0",
+  "numpy>=1.24.0",
+]
+ocr-high = [
+  "pypdfium2>=4.30.0",
+  "paddleocr>=2.8.0",
+  "paddlepaddle>=2.6.0",
+  "numpy>=1.24.0",
+]
+
+[project.scripts]
+pdf-extract = "pdf_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pdf_pipeline*"]
+exclude = ["tests*", "testpdfs*", "docs*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
