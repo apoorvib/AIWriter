@@ -106,3 +106,59 @@ def find_anchor_page(
             return MatchResult(pdf_page=pdf_page, pass_="B")
 
     return None
+
+
+@dataclass(frozen=True)
+class OffsetResult:
+    offset: int
+    anchor: RawEntry
+    match: MatchResult
+    validated_count: int
+
+
+def derive_offset(
+    entries: list[RawEntry],
+    pages_text: dict[int, str],
+    max_offset: int = 100,
+    min_validators: int = 2,
+) -> OffsetResult | None:
+    """Discover the printed→pdf_page offset by anchor scan + cross-validation.
+
+    For each top-K candidate, try find_anchor_page; compute an offset;
+    validate by checking whether 2+ other entries appear at their predicted
+    pdf_page. Returns the first offset that passes validation, or None.
+    """
+    candidates = pick_anchor_candidates(entries, k=3)
+
+    for anchor in candidates:
+        match = find_anchor_page(anchor, pages_text, max_offset=max_offset)
+        if match is None:
+            continue
+        try:
+            anchor_printed = int(anchor.printed_page)
+        except (ValueError, TypeError):
+            continue
+        offset = match.pdf_page - anchor_printed
+
+        validators = [e for e in entries if e is not anchor]
+        confirmed = 0
+        for v in validators:
+            try:
+                predicted = int(v.printed_page) + offset
+            except (ValueError, TypeError):
+                continue
+            text = pages_text.get(predicted, "")
+            if fuzz.partial_ratio(v.title.lower(), text.lower()) >= _FUZZY_THRESHOLD_DEFAULT:
+                confirmed += 1
+                if confirmed >= min_validators:
+                    break
+
+        if confirmed >= min_validators:
+            return OffsetResult(
+                offset=offset,
+                anchor=anchor,
+                match=match,
+                validated_count=confirmed,
+            )
+
+    return None
