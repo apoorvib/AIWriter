@@ -1,0 +1,1 @@
+"""Document outline extraction pipeline."""
