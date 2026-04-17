@@ -162,3 +162,93 @@ def derive_offset(
             )
 
     return None
+
+
+from pdf_pipeline.outline.schema import OutlineEntry
+
+
+_CONFIDENCE_EXACT_A = 0.95
+_CONFIDENCE_FUZZY_A = 0.85
+_CONFIDENCE_B = 0.70
+_CONFIDENCE_GLOBAL_ONLY = 0.50
+
+
+def resolve_entries(
+    entries: list[RawEntry],
+    pages_text: dict[int, str],
+    max_offset: int = 100,
+) -> list[OutlineEntry]:
+    """Turn raw TOC entries into OutlineEntry records with resolved pdf_pages.
+
+    Discovers the offset once via anchor scan; applies it to all entries;
+    cross-checks each entry individually and drops confidence if its own
+    title doesn't appear at the predicted page.
+
+    Entries whose pdf_page cannot be resolved at all are emitted with
+    start_pdf_page = end_pdf_page = None, confidence = 0.0, source =
+    "unresolved".
+    """
+    offset_result = derive_offset(entries, pages_text, max_offset=max_offset, min_validators=1)
+    resolved: list[OutlineEntry] = []
+
+    if offset_result is None:
+        for i, raw in enumerate(entries):
+            resolved.append(
+                _to_unresolved(raw, idx=i)
+            )
+        return resolved
+
+    offset = offset_result.offset
+
+    for i, raw in enumerate(entries):
+        try:
+            printed_int = int(raw.printed_page)
+        except (ValueError, TypeError):
+            resolved.append(_to_unresolved(raw, idx=i))
+            continue
+        pdf_page = printed_int + offset
+        text = pages_text.get(pdf_page, "")
+
+        if raw is offset_result.anchor:
+            if offset_result.match.pass_ == "A":
+                confidence = _CONFIDENCE_EXACT_A
+            else:
+                confidence = _CONFIDENCE_B
+        else:
+            score = fuzz.partial_ratio(raw.title.lower(), text.lower())
+            if score >= 95:
+                confidence = _CONFIDENCE_EXACT_A
+            elif score >= _FUZZY_THRESHOLD_DEFAULT:
+                confidence = _CONFIDENCE_FUZZY_A
+            else:
+                confidence = _CONFIDENCE_GLOBAL_ONLY
+
+        resolved.append(
+            OutlineEntry(
+                id=f"a{i}",
+                title=raw.title,
+                level=raw.level,
+                parent_id=None,  # wired up later in orchestrator
+                start_pdf_page=pdf_page,
+                end_pdf_page=None,
+                printed_page=raw.printed_page,
+                confidence=confidence,
+                source="anchor_scan",
+            )
+        )
+
+    return resolved
+
+
+def _to_unresolved(raw: RawEntry, idx: int) -> OutlineEntry:
+    return OutlineEntry(
+        id=f"u{idx}",
+        title=raw.title,
+        level=raw.level,
+        parent_id=None,
+        start_pdf_page=None,
+        end_pdf_page=None,
+        printed_page=raw.printed_page,
+        confidence=0.0,
+        source="unresolved",
+    )
