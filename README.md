@@ -30,19 +30,32 @@ Install optional OCR extras as needed:
 pip install -e ".[ocr-small]"   # Tesseract tier
 pip install -e ".[ocr-medium]"  # EasyOCR tier
 pip install -e ".[ocr-high]"    # PaddleOCR tier
+pip install -e ".[ocr-small,ocr-scheduler]"  # Tesseract + parallel scheduler
 ```
 
 ## CLI Usage
 
 ```bash
-pdf-extract path/to/file.pdf --mode text_only
-pdf-extract path/to/file.pdf --mode ocr_only --ocr-tier small
-pdf-extract path/to/file.pdf --mode ocr_only --ocr-tier medium --ocr-lang en --ocr-lang fr
-pdf-extract path/to/file.pdf --mode ocr_only --ocr-tier high --ocr-gpu
+pdf-extract extract path/to/file.pdf --mode text_only
+pdf-extract extract path/to/file.pdf --mode ocr_only --ocr-tier small
+pdf-extract extract path/to/file.pdf --mode ocr_only --ocr-tier medium --ocr-lang en --ocr-lang fr
+pdf-extract extract path/to/file.pdf --mode ocr_only --ocr-tier high --ocr-gpu
 ```
 
 For Tesseract-backed small OCR, the pipeline maps `--ocr-lang en` to
 Tesseract's `eng` language code automatically.
+
+For page-level parallel OCR with the Tesseract-backed small tier:
+
+```bash
+pdf-extract ocr-parallel path/to/file.pdf --ocr-tier small --workers auto --max-pages 10
+pdf-extract -v ocr-parallel path/to/file.pdf --ocr-tier small --workers 4 --store ./ocr_store
+```
+
+The parallel command writes page artifacts and a merged result under `ocr_store`
+by default. Medium and high OCR tiers remain sequential for now; they are kept
+compatible but are not yet parallelized because EasyOCR/PaddleOCR need
+backend-specific worker handling, especially for GPU mode.
 
 The CLI prints JSON with:
 - source path

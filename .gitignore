@@ -2,6 +2,10 @@
 .env
 .venv/
 *.egg-info/
+ocr_store*/
+*_ocr.json
+*_ocr_sample.json
+*_text.json
 __pycache__/
 *.pyc
 .pytest_cache/

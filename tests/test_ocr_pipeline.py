@@ -57,7 +57,7 @@ def test_easyocr_backend_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
             assert paragraph is True
             return ["hello", "world"]
 
-    monkeypatch.setattr(module, "rasterize_pdf_pages", lambda _path, dpi: [object()])
+    monkeypatch.setattr(module, "iter_rasterized_pdf_pages", lambda _path, dpi, start_page, max_pages: [(1, object())])
     monkeypatch.setitem(__import__("sys").modules, "easyocr", SimpleNamespace(Reader=DummyReader))
     monkeypatch.setitem(__import__("sys").modules, "numpy", SimpleNamespace(array=lambda x: x))
 
@@ -96,7 +96,7 @@ def test_paddle_backend_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
             assert cls is True
             return [[[None, ("paddle text", 0.98)]]]
 
-    monkeypatch.setattr(module, "rasterize_pdf_pages", lambda _path, dpi: [object()])
+    monkeypatch.setattr(module, "iter_rasterized_pdf_pages", lambda _path, dpi, start_page, max_pages: [(1, object())])
     monkeypatch.setitem(__import__("sys").modules, "paddleocr", SimpleNamespace(PaddleOCR=DummyPaddleOCR))
     monkeypatch.setitem(__import__("sys").modules, "numpy", SimpleNamespace(array=lambda x: x))
 
