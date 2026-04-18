@@ -8,6 +8,7 @@ from typing import Literal
 from rapidfuzz import fuzz
 
 from pdf_pipeline.outline.entry_extraction import RawEntry
+from pdf_pipeline.outline.schema import OutlineEntry
 
 _CHAPTER_TOKEN = re.compile(r"\b(chapter|part|section|book)\s*\d+", re.IGNORECASE)
 
@@ -164,9 +165,6 @@ def derive_offset(
     return None
 
 
-from pdf_pipeline.outline.schema import OutlineEntry
-
-
 _CONFIDENCE_EXACT_A = 0.95
 _CONFIDENCE_FUZZY_A = 0.85
 _CONFIDENCE_B = 0.70
@@ -188,7 +186,7 @@ def resolve_entries(
     start_pdf_page = end_pdf_page = None, confidence = 0.0, source =
     "unresolved".
     """
-    offset_result = derive_offset(entries, pages_text, max_offset=max_offset, min_validators=1)
+    offset_result = derive_offset(entries, pages_text, max_offset=max_offset)
     resolved: list[OutlineEntry] = []
 
     if offset_result is None:

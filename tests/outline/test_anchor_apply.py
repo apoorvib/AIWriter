@@ -10,19 +10,23 @@ def test_resolved_entries_get_pdf_pages_and_confidence():
     entries = [
         _e("Chapter 1: Origins of the Problem", "1"),
         _e("Chapter 2: Methods Explained Fully", "25"),
+        _e("Chapter 3: Results and Discussion", "50"),
     ]
     pages = {
         17: "\n\nChapter 1: Origins of the Problem\n\nbody",
         41: "\n\nChapter 2: Methods Explained Fully\n\nbody",
+        66: "\n\nChapter 3: Results and Discussion\n\nbody",
     }
     resolved = resolve_entries(entries, pages, max_offset=100)
 
-    assert len(resolved) == 2
-    ch1, ch2 = resolved
+    assert len(resolved) == 3
+    ch1, ch2, ch3 = resolved
     assert ch1.start_pdf_page == 17
     assert ch2.start_pdf_page == 41
+    assert ch3.start_pdf_page == 66
     assert ch1.source == "anchor_scan"
     assert ch2.source == "anchor_scan"
+    assert ch3.source == "anchor_scan"
     assert ch1.confidence > 0.5
 
 
@@ -42,11 +46,13 @@ def test_low_confidence_for_entry_that_doesnt_cross_validate():
         _e("Chapter 1: Origins of the Problem", "1"),
         _e("Chapter 2: Also Here", "25"),
         _e("Chapter 3: Broken Reference", "50"),  # Doesn't exist at predicted page
+        _e("Chapter 4: Yet Another Section", "75"),
     ]
     pages = {
         17: "Chapter 1: Origins of the Problem\n\nbody",
         41: "Chapter 2: Also Here\n\nbody",
         66: "Totally different content here nothing to match",
+        91: "Chapter 4: Yet Another Section\n\nbody",
     }
     resolved = resolve_entries(entries, pages, max_offset=100)
     # Chapter 3 should still get a pdf_page from the global offset (66) but
