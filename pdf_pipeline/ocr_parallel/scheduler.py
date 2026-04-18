@@ -12,6 +12,7 @@ from uuid import uuid4
 from pdf_pipeline.extractors.ocr_common import get_pdf_page_count
 from pdf_pipeline.models import DocumentExtractionResult
 from pdf_pipeline.ocr import OcrTier
+from pdf_pipeline.ocr_parallel.calibration import calibrate_tesseract_workers
 from pdf_pipeline.ocr_parallel.merge import merge_page_results
 from pdf_pipeline.ocr_parallel.page_worker import run_page_ocr_task
 from pdf_pipeline.ocr_parallel.planner import plan_workers
@@ -20,6 +21,7 @@ from pdf_pipeline.ocr_parallel.schema import (
     OcrPageTask,
     OcrRunSummary,
     ParallelOcrConfig,
+    WorkerPlan,
     utc_now_iso,
 )
 from pdf_pipeline.ocr_parallel.store import OcrArtifactStore
@@ -43,18 +45,43 @@ def run_parallel_ocr(pdf_path: str | Path, config: ParallelOcrConfig | None = No
     document_id = config.document_id or _document_id_for_path(path)
     resources = detect_system_resources()
     worker_plan = plan_workers(config, resources)
-    selected_workers = min(worker_plan.selected_workers, max(1, len(requested_pages)))
-    if config.calibrate:
-        logger.warning("OCR calibration is not implemented yet; using %s worker plan", worker_plan.source)
-
-    os.environ["OMP_THREAD_LIMIT"] = str(worker_plan.omp_thread_limit)
-
     store = OcrArtifactStore(config.store_path)
+    calibration_profile = None
+
+    if config.calibrate and worker_plan.source != "manual_override" and requested_pages:
+        calibration_profile = calibrate_tesseract_workers(
+            document_id=document_id,
+            source_path=str(path),
+            requested_pages=requested_pages,
+            config=config,
+            resources=resources,
+        )
+        worker_plan = WorkerPlan(
+            ocr_tier=worker_plan.ocr_tier,
+            physical_cores=worker_plan.physical_cores,
+            logical_cores=worker_plan.logical_cores,
+            total_ram_gb=worker_plan.total_ram_gb,
+            available_ram_gb=worker_plan.available_ram_gb,
+            selected_workers=calibration_profile.selected_workers,
+            max_workers=worker_plan.max_workers,
+            omp_thread_limit=worker_plan.omp_thread_limit,
+            source="runtime_calibration",
+            reason="selected by runtime OCR calibration",
+        )
+    elif config.calibrate and worker_plan.source == "manual_override":
+        logger.info("Skipping OCR calibration because worker count was manually provided")
+
     store.init_document(
         document_id,
         config={**asdict(config), "source_path": str(path), "page_count": page_count},
         worker_plan=worker_plan,
     )
+    if calibration_profile is not None:
+        store.save_calibration_profile(calibration_profile)
+
+    selected_workers = min(worker_plan.selected_workers, max(1, len(requested_pages)))
+
+    os.environ["OMP_THREAD_LIMIT"] = str(worker_plan.omp_thread_limit)
 
     started_at = utc_now_iso()
     start = perf_counter()
@@ -71,9 +98,24 @@ def run_parallel_ocr(pdf_path: str | Path, config: ParallelOcrConfig | None = No
     final_results: dict[int, OcrPageResult] = {}
     failures: dict[int, str] = {}
     completed = 0
+    pages_to_run = requested_pages
+    if config.resume:
+        pages_to_run = []
+        for page_number in requested_pages:
+            existing = store.try_load_successful_page_result(document_id, page_number)
+            if existing is None:
+                pages_to_run.append(page_number)
+            else:
+                final_results[page_number] = existing
+        if final_results:
+            logger.info(
+                "Resuming OCR: reused %d existing successful page artifacts",
+                len(final_results),
+            )
+    selected_workers = min(selected_workers, max(1, len(pages_to_run)))
 
     if selected_workers == 1:
-        for page_number in requested_pages:
+        for page_number in pages_to_run:
             task = _make_task(document_id, path, page_number, config, attempt=1)
             result = run_page_ocr_task(task)
             while not result.succeeded and task.attempt < config.max_attempts:
@@ -86,12 +128,12 @@ def run_parallel_ocr(pdf_path: str | Path, config: ParallelOcrConfig | None = No
                 task = _make_task(document_id, path, task.page_number, config, attempt=task.attempt + 1)
                 result = run_page_ocr_task(task)
             completed = _record_completed_result(
-                result, store, final_results, failures, completed, len(requested_pages), start
+                result, store, final_results, failures, completed, len(pages_to_run), start
             )
     else:
         with ProcessPoolExecutor(max_workers=selected_workers) as pool:
             futures: dict[Future[OcrPageResult], OcrPageTask] = {}
-            for page_number in requested_pages:
+            for page_number in pages_to_run:
                 task = _make_task(document_id, path, page_number, config, attempt=1)
                 futures[pool.submit(run_page_ocr_task, task)] = task
 
@@ -111,7 +153,7 @@ def run_parallel_ocr(pdf_path: str | Path, config: ParallelOcrConfig | None = No
                         continue
 
                     completed = _record_completed_result(
-                        result, store, final_results, failures, completed, len(requested_pages), start
+                        result, store, final_results, failures, completed, len(pages_to_run), start
                     )
 
     elapsed_seconds = perf_counter() - start

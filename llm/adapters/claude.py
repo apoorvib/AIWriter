@@ -18,7 +18,7 @@ class ClaudeClient:
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-sonnet-4-6",
+        model: str = "claude-haiku-4-5-20251001",
         sdk: Any = None,
     ) -> None:
         if sdk is not None:

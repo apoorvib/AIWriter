@@ -91,6 +91,7 @@ def _cmd_ocr_parallel(args: argparse.Namespace) -> int:
         document_id=args.document_id,
         shared_machine=args.shared_machine,
         omp_thread_limit=args.omp_thread_limit,
+        resume=args.resume,
     )
     summary, result = run_parallel_ocr(args.pdf_path, config=config)
     if args.json_summary:
@@ -215,7 +216,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parallel_parser.add_argument(
         "--calibrate",
         action="store_true",
-        help="Reserved for future worker calibration; currently uses static planning.",
+        help="Benchmark sample pages and select a measured worker count when --workers is auto.",
     )
     parallel_parser.add_argument(
         "--store",
@@ -243,6 +244,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json-summary",
         action="store_true",
         help="Print only run summary JSON instead of merged page text.",
+    )
+    parallel_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reuse existing successful page artifacts for this document id.",
     )
     parallel_parser.add_argument(
         "--shared-machine",

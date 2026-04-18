@@ -8,7 +8,13 @@ from typing import Literal
 from pdf_pipeline.ocr import OcrTier
 
 
-WorkerPlanSource = Literal["manual_override", "cached_calibration", "static_heuristic", "default"]
+WorkerPlanSource = Literal[
+    "manual_override",
+    "runtime_calibration",
+    "cached_calibration",
+    "static_heuristic",
+    "default",
+]
 
 
 def utc_now_iso() -> str:
@@ -54,6 +60,7 @@ class ParallelOcrConfig:
     document_id: str | None = None
     shared_machine: bool | None = None
     omp_thread_limit: int | None = None
+    resume: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,3 +117,26 @@ class OcrRunSummary:
     pages_per_minute: float
     failures: dict[int, str]
     store_path: str
+
+
+@dataclass(frozen=True)
+class CalibrationCandidateResult:
+    workers: int
+    sample_pages: list[int]
+    elapsed_seconds: float
+    successful_pages: int
+    failed_pages: int
+    pages_per_minute: float
+    selected: bool = False
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class CalibrationProfile:
+    document_id: str
+    ocr_tier: OcrTier
+    dpi: int
+    languages: tuple[str, ...]
+    selected_workers: int
+    candidates: list[CalibrationCandidateResult]
+    created_at: str = field(default_factory=utc_now_iso)

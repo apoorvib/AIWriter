@@ -50,10 +50,15 @@ For page-level parallel OCR with the Tesseract-backed small tier:
 ```bash
 pdf-extract ocr-parallel path/to/file.pdf --ocr-tier small --workers auto --max-pages 10
 pdf-extract -v ocr-parallel path/to/file.pdf --ocr-tier small --workers 4 --store ./ocr_store
+pdf-extract -v ocr-parallel path/to/file.pdf --ocr-tier small --workers auto --calibrate --max-pages 20
+pdf-extract -v ocr-parallel path/to/file.pdf --ocr-tier small --document-id my-book --resume
 ```
 
 The parallel command writes page artifacts and a merged result under `ocr_store`
-by default. Medium and high OCR tiers remain sequential for now; they are kept
+by default. Use `--calibrate` with `--workers auto` to benchmark a few sample
+pages and select a measured worker count. Use `--resume` with a stable
+`--document-id` to reuse already-completed page artifacts after an interrupted
+run. Medium and high OCR tiers remain sequential for now; they are kept
 compatible but are not yet parallelized because EasyOCR/PaddleOCR need
 backend-specific worker handling, especially for GPU mode.
 

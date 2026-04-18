@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from pdf_pipeline.models import DocumentExtractionResult
-from pdf_pipeline.ocr_parallel.schema import OcrPageResult, OcrRunSummary, WorkerPlan
+from pdf_pipeline.ocr_parallel.schema import (
+    CalibrationProfile,
+    OcrPageResult,
+    OcrRunSummary,
+    WorkerPlan,
+)
 
 
 class OcrArtifactStore:
@@ -36,9 +41,28 @@ class OcrArtifactStore:
         payload = json.loads(self._page_path(document_id, page_number).read_text(encoding="utf-8"))
         return OcrPageResult(**payload)
 
+    def try_load_successful_page_result(
+        self, document_id: str, page_number: int
+    ) -> OcrPageResult | None:
+        path = self._page_path(document_id, page_number)
+        if not path.exists():
+            return None
+        try:
+            result = self.load_page_result(document_id, page_number)
+        except (OSError, json.JSONDecodeError, TypeError):
+            return None
+        if not result.succeeded:
+            return None
+        return result
+
     def save_run_summary(self, summary: OcrRunSummary) -> Path:
         path = self._doc_dir(summary.document_id) / "runs" / f"{summary.run_id}.json"
         self._write_json(path, _json_ready(asdict(summary)))
+        return path
+
+    def save_calibration_profile(self, profile: CalibrationProfile) -> Path:
+        path = self._doc_dir(profile.document_id) / "calibration" / "latest.json"
+        self._write_json(path, _json_ready(asdict(profile)))
         return path
 
     def save_merged_result(
