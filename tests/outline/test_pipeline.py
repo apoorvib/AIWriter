@@ -93,6 +93,52 @@ def test_falls_back_to_llm_when_no_outline(tmp_path: Path, monkeypatch):
     assert [e.start_pdf_page for e in outline.entries] == [5, 14, 19]
 
 
+def test_uses_page_labels_when_present(tmp_path: Path, monkeypatch):
+    # Plain PDF with no bookmarks; stub /PageLabels via monkeypatch.
+    writer = PdfWriter()
+    for _ in range(20):
+        writer.add_blank_page(width=612, height=792)
+    pdf_path = tmp_path / "labeled.pdf"
+    with pdf_path.open("wb") as fh:
+        writer.write(fh)
+
+    fake_pages = {
+        1: "front",
+        2: "dedication",
+        3: "Contents\n\nChapter 1 ........ 1\nChapter 2 ........ 10\n",
+    }
+    from pdf_pipeline.outline import pipeline as pipeline_mod
+    monkeypatch.setattr(
+        pipeline_mod, "_load_pages_text", lambda p_, total_pages, max_pages: fake_pages
+    )
+    # Printed "1" -> pdf_page 5; printed "10" -> pdf_page 14.
+    labels = {i: str(i - 4) for i in range(5, 21)}
+    monkeypatch.setattr(pipeline_mod, "read_page_labels", lambda _p: labels)
+
+    client = MockLLMClient(
+        responses=[
+            {
+                "pages": [{"pdf_page": p, "is_toc": (p == 3)} for p in range(1, 6)],
+                "entries": [
+                    {"title": "Chapter 1", "level": 1, "printed_page": "1"},
+                    {"title": "Chapter 2", "level": 1, "printed_page": "10"},
+                ],
+            },
+            {
+                "pages": [{"pdf_page": p, "is_toc": False} for p in range(6, 11)],
+                "entries": [],
+            },
+        ]
+    )
+
+    outline = extract_outline(
+        str(pdf_path), llm_client=client, source_id="s4", max_toc_pages=10, chunk_size=5
+    )
+    assert len(outline.entries) == 2
+    assert all(e.source == "page_labels" for e in outline.entries)
+    assert [e.start_pdf_page for e in outline.entries] == [5, 14]
+
+
 def test_returns_empty_outline_when_no_toc_and_no_metadata(tmp_path: Path, monkeypatch):
     writer = PdfWriter()
     for _ in range(5):

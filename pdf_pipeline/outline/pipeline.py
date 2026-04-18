@@ -8,6 +8,7 @@ from pypdf import PdfReader
 from llm.client import LLMClient
 from pdf_pipeline.outline.anchor_scan import resolve_entries
 from pdf_pipeline.outline.entry_extraction import extract_toc_entries
+from pdf_pipeline.outline.label_resolve import resolve_entries_via_labels
 from pdf_pipeline.outline.metadata import read_page_labels, read_pdf_outlines
 from pdf_pipeline.outline.page_text import PageTextSource, PyPdfPageExtractor
 from pdf_pipeline.outline.prefilter import looks_like_toc
@@ -27,9 +28,11 @@ def extract_outline(
     """Extract a DocumentOutline from `pdf_path`.
 
     Layer 1 (structural metadata) is tried first. If it yields entries, they
-    are used directly. Otherwise Layer 2 extracts TOC entries via the LLM,
-    and Layer 3 resolves pdf_pages via anchor scan. Layer 4 assigns end
-    pages.
+    are used directly. Otherwise Layer 2 extracts TOC entries via the LLM;
+    if /PageLabels is present (Layer 1.5) the printed_page of each entry is
+    resolved directly against the label map, skipping the anchor scan.
+    Otherwise Layer 3 resolves pdf_pages via anchor scan. Layer 4 assigns
+    end pages.
     """
     reader = PdfReader(str(pdf_path))
     total_pages = len(reader.pages)
@@ -57,14 +60,16 @@ def extract_outline(
     if not raw:
         return DocumentOutline(source_id=source_id, version=version, entries=[])
 
-    # Layer 3 - need body text over a wider range to locate anchors.
-    body_pages = _load_pages_text(str(pdf_path), total_pages, total_pages)
-    resolved = resolve_entries(
-        raw, body_pages, max_offset=max_offset, total_pages=total_pages
-    )
-
-    # Optional: use /PageLabels to backfill printed_page sanity (future work).
-    _ = read_page_labels(pdf_path)
+    # Layer 1.5 - if /PageLabels is present, resolve directly against it.
+    labels = read_page_labels(pdf_path)
+    if labels is not None:
+        resolved = resolve_entries_via_labels(raw, labels)
+    else:
+        # Layer 3 - need body text over a wider range to locate anchors.
+        body_pages = _load_pages_text(str(pdf_path), total_pages, total_pages)
+        resolved = resolve_entries(
+            raw, body_pages, max_offset=max_offset, total_pages=total_pages
+        )
 
     finalized = assign_end_pages(resolved, total_pages=total_pages)
     return DocumentOutline(source_id=source_id, version=version, entries=finalized)
