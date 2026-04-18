@@ -77,6 +77,7 @@ def find_anchor_page(
     pages_text: dict[int, str],
     max_offset: int = 100,
     fuzzy_threshold: int = _FUZZY_THRESHOLD_DEFAULT,
+    total_pages: int | None = None,
 ) -> MatchResult | None:
     """Scan forward from `anchor.printed_page` to find the anchor's pdf_page.
 
@@ -84,6 +85,8 @@ def find_anchor_page(
     - Pass A: prefer pages where the title appears as a heading-like line.
     - Pass B: fall back to the first fuzzy match anywhere on any page.
 
+    If `total_pages` is given, the scan extends to that bound even when
+    `pages_text` has sparse coverage (missing keys are treated as empty).
     Returns None if no match is found within max_offset pages.
     """
     try:
@@ -92,7 +95,8 @@ def find_anchor_page(
         return None
 
     start = printed_int
-    end_exclusive = min(start + max_offset + 1, max(pages_text.keys(), default=0) + 1)
+    upper = total_pages if total_pages is not None else max(pages_text.keys(), default=0)
+    end_exclusive = min(start + max_offset + 1, upper + 1)
 
     # Pass A
     for pdf_page in range(start, end_exclusive):
@@ -122,6 +126,7 @@ def derive_offset(
     pages_text: dict[int, str],
     max_offset: int = 100,
     min_validators: int = 2,
+    total_pages: int | None = None,
 ) -> OffsetResult | None:
     """Discover the printed→pdf_page offset by anchor scan + cross-validation.
 
@@ -132,7 +137,9 @@ def derive_offset(
     candidates = pick_anchor_candidates(entries, k=3)
 
     for anchor in candidates:
-        match = find_anchor_page(anchor, pages_text, max_offset=max_offset)
+        match = find_anchor_page(
+            anchor, pages_text, max_offset=max_offset, total_pages=total_pages
+        )
         if match is None:
             continue
         try:
@@ -175,6 +182,7 @@ def resolve_entries(
     entries: list[RawEntry],
     pages_text: dict[int, str],
     max_offset: int = 100,
+    total_pages: int | None = None,
 ) -> list[OutlineEntry]:
     """Turn raw TOC entries into OutlineEntry records with resolved pdf_pages.
 
@@ -186,7 +194,9 @@ def resolve_entries(
     start_pdf_page = end_pdf_page = None, confidence = 0.0, source =
     "unresolved".
     """
-    offset_result = derive_offset(entries, pages_text, max_offset=max_offset)
+    offset_result = derive_offset(
+        entries, pages_text, max_offset=max_offset, total_pages=total_pages
+    )
     resolved: list[OutlineEntry] = []
 
     if offset_result is None:

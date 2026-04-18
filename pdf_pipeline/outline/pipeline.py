@@ -59,7 +59,9 @@ def extract_outline(
 
     # Layer 3 - need body text over a wider range to locate anchors.
     body_pages = _load_pages_text(str(pdf_path), total_pages, total_pages)
-    resolved = resolve_entries(raw, body_pages, max_offset=max_offset)
+    resolved = resolve_entries(
+        raw, body_pages, max_offset=max_offset, total_pages=total_pages
+    )
 
     # Optional: use /PageLabels to backfill printed_page sanity (future work).
     _ = read_page_labels(pdf_path)

@@ -50,3 +50,19 @@ def test_is_heading_like_detects_isolated_top_line():
 def test_is_heading_like_rejects_inline_occurrence():
     page = "This chapter, the famous 'Chapter 1: Origins', introduces the topic in detail and ..."
     assert is_heading_like(page, "Chapter 1: Origins") is False
+
+
+def test_is_heading_like_handles_empty_inputs():
+    assert is_heading_like("", "Chapter 1") is False
+    assert is_heading_like("some page text", "") is False
+
+
+def test_total_pages_extends_scan_past_sparse_text():
+    # pages_text only has page 40 (OCR gap on intermediate pages), but
+    # total_pages says the doc has 200. Without the override the scan would
+    # stop at 40's neighborhood; with it the anchor at 40 is still found.
+    pages = {40: "\n\nChapter 3: Far Away\n\nbody"}
+    anchor = RawEntry(title="Chapter 3: Far Away", level=1, printed_page="20")
+    result = find_anchor_page(anchor, pages, max_offset=100, total_pages=200)
+    assert result is not None
+    assert result.pdf_page == 40
