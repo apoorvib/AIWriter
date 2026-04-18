@@ -50,3 +50,21 @@ def test_load_latest_raises_when_missing(tmp_path: Path):
     store = OutlineStore(root=tmp_path)
     with pytest.raises(KeyError):
         store.load_latest("nope")
+
+
+def test_save_leaves_no_tempfiles_after_success(tmp_path: Path):
+    store = OutlineStore(root=tmp_path)
+    store.save(_outline(1))
+    leftover = list((tmp_path / "s1").glob(".v*.tmp"))
+    assert leftover == []
+
+
+def test_save_leaves_no_tempfiles_after_collision(tmp_path: Path):
+    import pytest
+
+    store = OutlineStore(root=tmp_path)
+    store.save(_outline(1))
+    with pytest.raises(FileExistsError):
+        store.save(_outline(1, title="Different"))
+    leftover = list((tmp_path / "s1").glob(".v*.tmp"))
+    assert leftover == []
