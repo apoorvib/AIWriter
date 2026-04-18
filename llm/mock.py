@@ -17,6 +17,7 @@ class MockLLMClient:
         user: str,
         json_schema: dict[str, Any],
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append(
             {
@@ -24,6 +25,7 @@ class MockLLMClient:
                 "user": user,
                 "json_schema": json_schema,
                 "max_tokens": max_tokens,
+                "model": model,
             }
         )
         if not self._responses:

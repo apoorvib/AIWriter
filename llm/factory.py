@@ -14,21 +14,34 @@ def make_client(provider: str | None = None) -> LLMClient:
     2. `LLM_PROVIDER` environment variable.
     3. Defaults to "claude".
 
+    Optional `LLM_MODEL` sets the default model id for the chosen provider
+    (same ids accepted by each adapter's constructor).
+
     Raises:
         ValueError: if the provider name is not recognized.
         KeyError: if the required API key env var is not set.
     """
     name = (provider or os.environ.get("LLM_PROVIDER", "claude")).lower()
+    model = os.environ.get("LLM_MODEL")
 
     if name == "claude":
         from llm.adapters.claude import ClaudeClient
-        return ClaudeClient(api_key=_require_env("ANTHROPIC_API_KEY", name))
+        return ClaudeClient(
+            api_key=_require_env("ANTHROPIC_API_KEY", name),
+            **({"model": model} if model else {}),
+        )
     if name == "openai":
         from llm.adapters.openai_ import OpenAIClient
-        return OpenAIClient(api_key=_require_env("OPENAI_API_KEY", name))
+        return OpenAIClient(
+            api_key=_require_env("OPENAI_API_KEY", name),
+            **({"model": model} if model else {}),
+        )
     if name == "gemini":
         from llm.adapters.gemini import GeminiClient
-        return GeminiClient(api_key=_require_env("GEMINI_API_KEY", name))
+        return GeminiClient(
+            api_key=_require_env("GEMINI_API_KEY", name),
+            **({"model_name": model} if model else {}),
+        )
     raise ValueError(f"unknown provider: {name}")
 
 

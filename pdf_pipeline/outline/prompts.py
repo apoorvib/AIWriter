@@ -18,6 +18,12 @@ Your job, for each input page:
 Rules:
   - pdf_page values in your response MUST come from the JSON input. Never
     infer them from numbers that appear inside page text.
+  - title: copy it verbatim from the TOC, including any leading numbering
+    or label the TOC itself uses (e.g. "Chapter 1: Introduction",
+    "Part II. Methods", "1.1 Background", "A. Appendix"). Do NOT invent,
+    drop, renumber, or reformat the prefix - if the TOC has "CHAPTER 7:
+    FOO" output "CHAPTER 7: FOO"; if it has only "Introduction" output
+    "Introduction".
   - printed_page is the page-number label as printed in the TOC (e.g.
     "1", "iv", "A-3"). Preserve it verbatim as a string.
   - level is 1 for top-level chapters/parts, incrementing by 1 for each

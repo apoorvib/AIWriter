@@ -30,4 +30,5 @@ class LLMClient(Protocol):
         user: str,
         json_schema: dict[str, Any],
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> dict[str, Any]: ...

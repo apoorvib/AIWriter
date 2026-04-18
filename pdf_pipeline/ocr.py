@@ -15,3 +15,5 @@ class OcrConfig:
     languages: tuple[str, ...] = ("en",)
     dpi: int = 300
     use_gpu: bool = False
+    start_page: int = 1
+    max_pages: int | None = None

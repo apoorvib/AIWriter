@@ -21,7 +21,7 @@ def test_claude_client_returns_tool_input_as_dict():
     sdk.messages.create.return_value = _fake_response(
         "return_result", {"answer": 42}
     )
-    client = ClaudeClient(sdk=sdk, model="claude-opus-4-7")
+    client = ClaudeClient(sdk=sdk, model="claude-sonnet-4-6")
 
     result = client.chat_json(
         system="be helpful",
@@ -31,10 +31,20 @@ def test_claude_client_returns_tool_input_as_dict():
 
     assert result == {"answer": 42}
     call = sdk.messages.create.call_args
-    assert call.kwargs["model"] == "claude-opus-4-7"
+    assert call.kwargs["model"] == "claude-sonnet-4-6"
     assert call.kwargs["system"] == "be helpful"
     assert call.kwargs["tool_choice"] == {"type": "tool", "name": "return_result"}
     assert call.kwargs["tools"][0]["name"] == "return_result"
+
+
+def test_claude_client_per_call_model_overrides_default():
+    sdk = MagicMock()
+    sdk.messages.create.return_value = _fake_response(
+        "return_result", {"answer": 1}
+    )
+    client = ClaudeClient(sdk=sdk, model="claude-sonnet-4-6")
+    client.chat_json("s", "u", {"type": "object"}, model="claude-opus-4-7")
+    assert sdk.messages.create.call_args.kwargs["model"] == "claude-opus-4-7"
 
 
 def test_claude_client_raises_when_no_tool_use_block():
@@ -44,7 +54,7 @@ def test_claude_client_raises_when_no_tool_use_block():
     response = MagicMock()
     response.content = [text_block]
     sdk.messages.create.return_value = response
-    client = ClaudeClient(sdk=sdk, model="claude-opus-4-7")
+    client = ClaudeClient(sdk=sdk, model="claude-sonnet-4-6")
 
     with pytest.raises(LLMError, match="no tool_use block"):
         client.chat_json("s", "u", {"type": "object"})

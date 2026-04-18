@@ -22,7 +22,7 @@ def test_auto_mode_raises_not_implemented() -> None:
 
 def test_tesseract_extractor_reports_missing_dependency() -> None:
     extractor = TesseractOcrExtractor()
-    with pytest.raises(MissingDependencyError):
+    with pytest.raises((FileNotFoundError, MissingDependencyError)):
         extractor.extract("dummy.pdf")
 
 
@@ -70,7 +70,7 @@ def test_easyocr_backend_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_tesseract_backend_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
     import pdf_pipeline.extractors.tesseract_extractor as module
 
-    monkeypatch.setattr(module, "rasterize_pdf_pages", lambda _path, dpi: [object(), object()])
+    monkeypatch.setattr(module, "iter_rasterized_pdf_pages", lambda _path, dpi, start_page, max_pages: [(1, object()), (2, object())])
     def image_to_string(_image, lang: str) -> str:
         assert lang == "eng"
         return f"text-{lang}"

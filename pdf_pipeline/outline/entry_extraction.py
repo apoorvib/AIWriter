@@ -25,6 +25,7 @@ def extract_toc_entries(
     client: LLMClient,
     chunk_size: int = 5,
     max_tokens: int = 4096,
+    model: str | None = None,
 ) -> list[RawEntry]:
     """Run chunked TOC extraction over the given pages.
 
@@ -47,6 +48,7 @@ def extract_toc_entries(
             user=build_user_message(chunk),
             json_schema=TOC_EXTRACTION_SCHEMA,
             max_tokens=max_tokens,
+            model=model,
         )
         chunk_has_toc = any(p.get("is_toc") for p in response.get("pages", []))
         for raw in response.get("entries", []):

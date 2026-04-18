@@ -18,7 +18,7 @@ class ClaudeClient:
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-opus-4-7",
+        model: str = "claude-sonnet-4-6",
         sdk: Any = None,
     ) -> None:
         if sdk is not None:
@@ -34,9 +34,10 @@ class ClaudeClient:
         user: str,
         json_schema: dict[str, Any],
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> dict[str, Any]:
         response = self._sdk.messages.create(
-            model=self._model,
+            model=model or self._model,
             max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],

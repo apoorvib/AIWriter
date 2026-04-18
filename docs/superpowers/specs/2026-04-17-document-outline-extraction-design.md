@@ -1,8 +1,9 @@
 # Document Outline Extraction — Design Spec
 
 **Date:** 2026-04-17
-**Status:** Draft. Core algorithm is settled; parameter-tuning sub-questions and eval methodology remain open (see §8).
+**Status:** Implemented 2026-04-18 (Layers 1, 1.5, 2, 3, 4 + storage + CLI + golden tests). Deferred sub-items are listed in §12. Parameter-tuning sub-questions and eval methodology remain open (see §8).
 **Position in plan.md:** Document Pipeline (Stage 2) enhancement. Not an MVP prerequisite; Phase 2 of the build order. Designed now, shipped after MVP grounding loop is stable.
+**Live validation:** On `testpdfs/IntelTechniques-OSINT.pdf` (590pp, no `/Outlines`, no `/PageLabels`), Layers 2+3 recovered 47/47 chapters with 100% page accuracy (38 entries at conf=0.95, 5 at 0.85, 4 at 0.50).
 
 ---
 
@@ -85,6 +86,7 @@ Triggered only when structural metadata is absent or insufficient and the heuris
 - Restrict scan to the first **N** pages (config; default 40).
 - Per-page: use text extraction first. OCR only for pages where extraction yields empty / garbage text.
 - Chunk into size-**M** groups (config; default 5 pages), using `ceil(N/M)` chunks — last chunk may be short.
+- The LLM is instructed to **preserve the entry `title` verbatim** from the TOC, including any leading numbering or label the TOC itself uses (e.g. `"CHAPTER 7: FOO"`, `"Part II. Methods"`, `"1.1 Background"`, `"A. Appendix"`). It must not invent, drop, or reformat prefixes. This matters because downstream anchor-scan matching and eventual citation rendering expect the title to match what appears in the book.
 - Per chunk, send the LLM a JSON payload:
   ```json
   {"pages": [{"pdf_page": 8, "text": "..."}, ...]}
@@ -195,3 +197,25 @@ Live LLM calls are not used in test suites; an eval harness (plan.md §Evaluatio
 - **Partial outlines are valid output.** If the anchor scan fails to validate an offset, entries are returned with null pdf_page ranges rather than silently guessed.
 - **Multi-provider LLM support via a minimal shim.** A small `LLMClient` protocol with Claude, OpenAI, and Gemini adapters ships as step 1 of implementation. Full Model Gateway (caching, cost tracking, prompt versioning) is deferred and will layer on top of the same interface.
 - **Feature is Phase 2** relative to plan.md MVP. Not blocking the first end-to-end essay pipeline.
+
+## 12. Implementation Status (2026-04-18)
+
+**Shipped:**
+- Layer 1 (`/Outlines` reader, `source = "pdf_outline"`, `confidence = 1.0`).
+- Layer 1.5 (`/PageLabels` inversion → `resolve_entries_via_labels`, `source = "page_labels"`, `confidence = 0.95`). Inserted between Layer 2 and Layer 3: when `/PageLabels` is present it is used directly and Layer 3 is skipped.
+- Layer 2 (chunked LLM TOC extraction with prefilter, stopping rule, verbatim title preservation).
+- Layer 3 (anchor candidate selection, Pass A / Pass B forward scan, offset derivation, cross-validation, confidence bands 0.95 / 0.85 / 0.70 / 0.50).
+- Layer 4 (range assignment with parent-bounded deep levels).
+- Partial-outline fallback (`source = "unresolved"`, null pdf_pages, `confidence = 0`).
+- Versioned `OutlineStore` with atomic write-then-rename and `v{N}` filenames.
+- CLI subcommand `pdf-extract outline` with `-v / -vv` logging and `.env` loading.
+- `list_outline` / `get_section` tool surface.
+- Unit, mocked-LLM integration, and golden-file tests (96 passing as of 2026-04-18).
+
+**Deferred (described in this spec but not yet implemented):**
+- **§6 Layer 2 "Boundary handling: merge contiguous TOC ranges across chunk boundaries."** Current implementation treats chunks independently.
+- **§6 Layer 3 step 5 — multi-segment detection.** A single global offset is derived and applied uniformly; there is no segmentation for multi-volume or multi-numbering-scheme books.
+- **§8 OCR quality tier escalation.** Layer 2 runs once on the text-first / OCR-fallback extraction; no automatic retry at a higher OCR tier when output looks malformed.
+- `_render_label` currently omits the `/P` prefix when `/S` is absent but `/P` is set — small correctness gap in the label renderer.
+
+None of the deferred items were blockers for the 2026-04-18 live validation run (PDF had none of the edge cases they address). They are tracked as follow-ups rather than bugs.

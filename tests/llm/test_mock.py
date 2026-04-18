@@ -17,6 +17,7 @@ def test_mock_records_calls():
     assert client.calls[0]["system"] == "sys-text"
     assert client.calls[0]["user"] == "user-text"
     assert client.calls[0]["max_tokens"] == 100
+    assert client.calls[0]["model"] is None
 
 
 def test_mock_raises_when_exhausted():

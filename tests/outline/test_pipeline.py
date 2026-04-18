@@ -65,7 +65,7 @@ def test_falls_back_to_llm_when_no_outline(tmp_path: Path, monkeypatch):
     }
     from pdf_pipeline.outline import pipeline as pipeline_mod
     monkeypatch.setattr(
-        pipeline_mod, "_load_pages_text", lambda pdf_path_, total_pages, max_pages: fake_pages
+        pipeline_mod, "_load_pages_text", lambda pdf_path_, total_pages, max_pages, **_: fake_pages
     )
 
     client = MockLLMClient(
@@ -109,7 +109,7 @@ def test_uses_page_labels_when_present(tmp_path: Path, monkeypatch):
     }
     from pdf_pipeline.outline import pipeline as pipeline_mod
     monkeypatch.setattr(
-        pipeline_mod, "_load_pages_text", lambda p_, total_pages, max_pages: fake_pages
+        pipeline_mod, "_load_pages_text", lambda p_, total_pages, max_pages, **_: fake_pages
     )
     # Printed "1" -> pdf_page 5; printed "10" -> pdf_page 14.
     labels = {i: str(i - 4) for i in range(5, 21)}
@@ -150,7 +150,7 @@ def test_returns_empty_outline_when_no_toc_and_no_metadata(tmp_path: Path, monke
     from pdf_pipeline.outline import pipeline as pipeline_mod
     monkeypatch.setattr(
         pipeline_mod, "_load_pages_text",
-        lambda pdf_path_, total_pages, max_pages: {i: "narrative body" for i in range(1, 6)},
+        lambda pdf_path_, total_pages, max_pages, **_: {i: "narrative body" for i in range(1, 6)},
     )
 
     client = MockLLMClient(responses=[])  # prefilter should short-circuit; client never called

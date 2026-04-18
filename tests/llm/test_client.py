@@ -9,7 +9,7 @@ def test_chat_message_fields():
 
 def test_llm_client_is_protocol_runtime_checkable():
     class StubClient:
-        def chat_json(self, system, user, json_schema, max_tokens=4096):
+        def chat_json(self, system, user, json_schema, max_tokens=4096, model=None):
             return {}
 
     assert isinstance(StubClient(), LLMClient)

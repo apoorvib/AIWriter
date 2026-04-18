@@ -3,15 +3,23 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Mapping
 
 from pypdf import PdfReader
 
 from llm.client import LLMClient
+from pdf_pipeline.ocr import OcrConfig, OcrTier
 from pdf_pipeline.outline.anchor_scan import resolve_entries
 from pdf_pipeline.outline.entry_extraction import extract_toc_entries
 from pdf_pipeline.outline.label_resolve import resolve_entries_via_labels
 from pdf_pipeline.outline.metadata import read_page_labels, read_pdf_outlines
-from pdf_pipeline.outline.page_text import PageTextSource, PyPdfPageExtractor
+from pdf_pipeline.outline.page_text import (
+    DocumentOcrPageExtractor,
+    LazyPageTextMap,
+    LazyTesseractPageExtractor,
+    PageTextSource,
+    PyPdfPageExtractor,
+)
 from pdf_pipeline.outline.prefilter import looks_like_toc
 from pdf_pipeline.outline.range_assignment import assign_end_pages
 from pdf_pipeline.outline.schema import DocumentOutline
@@ -27,6 +35,9 @@ def extract_outline(
     max_toc_pages: int = 40,
     chunk_size: int = 5,
     max_offset: int = 100,
+    ocr_tier: OcrTier | None = None,
+    ocr_config: OcrConfig | None = None,
+    llm_model: str | None = None,
 ) -> DocumentOutline:
     """Extract a DocumentOutline from `pdf_path`.
 
@@ -49,10 +60,22 @@ def extract_outline(
         return DocumentOutline(source_id=source_id, version=version, entries=finalized)
     logger.info("Layer 1 miss: no /Outlines; falling through to TOC extraction")
 
+    # Shared text source: the same instance is used for the eager TOC scan and
+    # (below) the lazy body-pages map, so per-page OCR results are cached once
+    # and reused across both phases.
+    source = _build_page_text_source(ocr_tier=ocr_tier, ocr_config=ocr_config)
+
     # Load text for the first max_toc_pages (capped at total_pages).
     scan_pages = min(max_toc_pages, total_pages)
     logger.info("Loading page text for pages 1..%d (TOC scan window)", scan_pages)
-    pages_text = _load_pages_text(str(pdf_path), total_pages, scan_pages)
+    pages_text = _load_pages_text(
+        str(pdf_path),
+        total_pages,
+        scan_pages,
+        source=source,
+        ocr_tier=ocr_tier,
+        ocr_config=ocr_config,
+    )
 
     # Prefilter: is there a TOC to extract at all?
     combined = "\n".join(pages_text.get(p, "") for p in range(1, scan_pages + 1))
@@ -65,7 +88,12 @@ def extract_outline(
     pages_payload = [
         {"pdf_page": p, "text": pages_text.get(p, "")} for p in range(1, scan_pages + 1)
     ]
-    raw = extract_toc_entries(pages_payload, llm_client, chunk_size=chunk_size)
+    raw = extract_toc_entries(
+        pages_payload,
+        llm_client,
+        chunk_size=chunk_size,
+        model=llm_model,
+    )
     logger.info("Layer 2: LLM returned %d raw TOC entries", len(raw))
     if not raw:
         return DocumentOutline(source_id=source_id, version=version, entries=[])
@@ -82,25 +110,63 @@ def extract_outline(
             "Layer 1.5: %d/%d entries matched via page labels", matched, len(resolved)
         )
     else:
-        logger.info("Layer 3: no /PageLabels; running anchor scan")
+        logger.info("Layer 3: no /PageLabels; running anchor scan (lazy body-pages)")
         # Layer 3 - need body text over a wider range to locate anchors.
-        body_pages = _load_pages_text(str(pdf_path), total_pages, total_pages)
+        # LazyPageTextMap only fetches pages the anchor scan actually probes,
+        # so scanned PDFs don't pay OCR cost for the whole document.
+        body_pages = _load_pages_text(
+            str(pdf_path),
+            total_pages,
+            total_pages,
+            source=source,
+            lazy=True,
+            ocr_tier=ocr_tier,
+            ocr_config=ocr_config,
+        )
         resolved = resolve_entries(
             raw, body_pages, max_offset=max_offset, total_pages=total_pages
         )
         matched = sum(1 for e in resolved if e.source == "anchor_scan")
-        logger.info(
-            "Layer 3: %d/%d entries resolved via anchor scan", matched, len(resolved)
-        )
+        cached = getattr(body_pages, "cached_count", None)
+        if cached is not None:
+            logger.info(
+                "Layer 3: %d/%d entries resolved via anchor scan "
+                "(body pages fetched: %d/%d)",
+                matched, len(resolved), cached, total_pages,
+            )
+        else:
+            logger.info(
+                "Layer 3: %d/%d entries resolved via anchor scan", matched, len(resolved)
+            )
 
     finalized = assign_end_pages(resolved, total_pages=total_pages)
     logger.info("Layer 4: assigned end_pdf_page for %d entries", len(finalized))
     return DocumentOutline(source_id=source_id, version=version, entries=finalized)
 
 
-def _load_pages_text(pdf_path: str, total_pages: int, max_pages: int) -> dict[int, str]:
-    """Extract text for pages 1..max_pages. Overridable in tests."""
-    source = PageTextSource(text_extractor=PyPdfPageExtractor(), ocr_extractor=None)
+def _load_pages_text(
+    pdf_path: str,
+    total_pages: int,
+    max_pages: int,
+    *,
+    source: PageTextSource | None = None,
+    lazy: bool = False,
+    ocr_tier: OcrTier | None = None,
+    ocr_config: OcrConfig | None = None,
+) -> Mapping[int, str]:
+    """Extract text for pages 1..max_pages. Overridable in tests.
+
+    If `source` is not provided, builds one from `ocr_tier`/`ocr_config`.
+    Reusing the same `source` across calls keeps the per-page OCR cache warm.
+
+    If `lazy=True`, returns a LazyPageTextMap that fetches pages on demand
+    (used for the anchor-scan body-pages phase, where only a small fraction
+    of pages are typically probed). Otherwise returns an eager dict.
+    """
+    if source is None:
+        source = _build_page_text_source(ocr_tier=ocr_tier, ocr_config=ocr_config)
+    if lazy:
+        return LazyPageTextMap(source, pdf_path, total_pages)
     upper = min(total_pages, max_pages)
     pages: dict[int, str] = {}
     for p in range(1, upper + 1):
@@ -108,3 +174,37 @@ def _load_pages_text(pdf_path: str, total_pages: int, max_pages: int) -> dict[in
             logger.info("  extracting text for page %d/%d", p, upper)
         pages[p] = source.get(pdf_path, p).text
     return pages
+
+
+def _build_page_text_source(
+    ocr_tier: OcrTier | None = None,
+    ocr_config: OcrConfig | None = None,
+) -> PageTextSource:
+    ocr_extractor = _build_ocr_page_extractor(ocr_tier, ocr_config) if ocr_tier else None
+    if ocr_extractor is not None:
+        logger.info("  OCR fallback enabled (tier=%s)", ocr_tier.value)
+    return PageTextSource(
+        text_extractor=PyPdfPageExtractor(), ocr_extractor=ocr_extractor
+    )
+
+
+def _build_ocr_page_extractor(ocr_tier: OcrTier, ocr_config: OcrConfig | None):
+    """Build a per-page OCR extractor appropriate for the tier.
+
+    SMALL uses LazyTesseractPageExtractor: pages are rasterized + OCR'd one at
+    a time and cached by (path, page). MEDIUM/HIGH still OCR the whole
+    document up front via DocumentOcrPageExtractor (the underlying backends
+    don't currently expose a per-page API).
+    """
+    config = ocr_config or OcrConfig()
+    if ocr_tier == OcrTier.SMALL:
+        return LazyTesseractPageExtractor(config=config)
+    if ocr_tier == OcrTier.MEDIUM:
+        from pdf_pipeline.extractors.easyocr_extractor import EasyOcrExtractor
+        logger.info("  Medium OCR tier: whole-document OCR up front (not lazy)")
+        return DocumentOcrPageExtractor(EasyOcrExtractor(config=config))
+    if ocr_tier == OcrTier.HIGH:
+        from pdf_pipeline.extractors.paddle_extractor import PaddleOcrExtractor
+        logger.info("  High OCR tier: whole-document OCR up front (not lazy)")
+        return DocumentOcrPageExtractor(PaddleOcrExtractor(config=config))
+    raise ValueError(f"Unsupported OCR tier: {ocr_tier!r}")

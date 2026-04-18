@@ -30,9 +30,14 @@ class GeminiClient:
         user: str,
         json_schema: dict[str, Any],
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> dict[str, Any]:
         combined = f"{system}\n\n{user}"
-        response = self._model.generate_content(
+        gen_model = self._model
+        if model is not None and model != self._model_name:
+            import google.generativeai as genai
+            gen_model = genai.GenerativeModel(model)
+        response = gen_model.generate_content(
             [combined],
             generation_config={
                 "response_mime_type": "application/json",

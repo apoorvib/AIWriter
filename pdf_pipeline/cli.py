@@ -22,6 +22,8 @@ def _cmd_extract(args: argparse.Namespace) -> int:
             languages=tuple(args.ocr_lang),
             dpi=args.ocr_dpi,
             use_gpu=args.ocr_gpu,
+            start_page=args.start_page,
+            max_pages=args.max_pages,
         ),
     )
     result = pipeline.extract(args.pdf_path)
@@ -45,7 +47,20 @@ def _cmd_outline(args: argparse.Namespace) -> int:
 
     client = make_client(args.provider)
     store = OutlineStore(root=args.store)
-    outline = extract_outline(args.pdf_path, llm_client=client, source_id=args.source_id)
+    tier = OcrTier(args.ocr_tier) if args.ocr_tier else None
+    config = OcrConfig(
+        languages=tuple(args.ocr_lang),
+        dpi=args.ocr_dpi,
+        use_gpu=args.ocr_gpu,
+    )
+    outline = extract_outline(
+        args.pdf_path,
+        llm_client=client,
+        source_id=args.source_id,
+        ocr_tier=tier,
+        ocr_config=config,
+        llm_model=args.llm_model,
+    )
     store.save(outline)
     for entry in outline.entries:
         print(
@@ -99,13 +114,50 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable GPU usage for supported OCR backends.",
     )
+    extract_parser.add_argument(
+        "--start-page",
+        type=int,
+        default=1,
+        help="First PDF page to process in OCR modes.",
+    )
+    extract_parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=None,
+        help="Maximum number of pages to process in OCR modes.",
+    )
     extract_parser.set_defaults(func=_cmd_extract)
 
     outline_parser = subparsers.add_parser("outline", help="Extract a document outline")
     outline_parser.add_argument("pdf_path", help="Path to PDF")
     outline_parser.add_argument("--source-id", required=True)
     outline_parser.add_argument("--provider", default=None, help="LLM provider (claude/openai/gemini)")
+    outline_parser.add_argument(
+        "--llm-model",
+        default=None,
+        dest="llm_model",
+        metavar="MODEL",
+        help="Model id for this run (overrides the client default for each LLM call).",
+    )
     outline_parser.add_argument("--store", default="./outline_store", help="Storage root")
+    outline_parser.add_argument(
+        "--ocr-tier",
+        choices=[t.value for t in OcrTier],
+        default=None,
+        help="Enable OCR fallback for pages where pypdf returns no text (small/medium/high).",
+    )
+    outline_parser.add_argument(
+        "--ocr-dpi", type=int, default=300, help="Rasterization DPI for OCR."
+    )
+    outline_parser.add_argument(
+        "--ocr-lang",
+        action="append",
+        default=["en"],
+        help="OCR language code (repeatable).",
+    )
+    outline_parser.add_argument(
+        "--ocr-gpu", action="store_true", help="Enable GPU for supported OCR backends."
+    )
     outline_parser.set_defaults(func=_cmd_outline)
 
     return parser

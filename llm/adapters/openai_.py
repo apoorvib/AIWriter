@@ -29,9 +29,10 @@ class OpenAIClient:
         user: str,
         json_schema: dict[str, Any],
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> dict[str, Any]:
         response = self._sdk.chat.completions.create(
-            model=self._model,
+            model=model or self._model,
             max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},

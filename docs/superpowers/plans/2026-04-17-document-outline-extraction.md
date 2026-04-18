@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status (2026-04-18):** All 24 planned tasks executed and committed. 96 tests passing. 7 post-plan review fixes landed (commits `2d80c6e`, `0f848f7`, `dccf79d`, `6ee3997`, `af6e22c`, `12099a8`, plus the prompt/logging/dotenv changes on top). Live validation on `testpdfs/IntelTechniques-OSINT.pdf` recovered 47/47 chapters. Spec §12 tracks deferred sub-items (chunk-boundary TOC merge, multi-segment detection, OCR-tier escalation) — these are intentional gaps, not bugs introduced by the plan. This plan is preserved as a historical build log; new work should start a new plan rather than edit this one.
+
 **Goal:** Build a document outline extractor that turns ingested PDFs into a canonical, versioned outline (chapters/sections with resolved `pdf_page` ranges) and exposes it as a `list_outline` / `get_section` tool surface for downstream LLM workflow stages.
 
 **Architecture:** Four-layer pipeline. Layer 1 reads structural PDF metadata (`/Outlines`, `/PageLabels`) when present. Layer 2 uses an LLM to extract raw TOC entries from the first N pages (text-extraction first, OCR fallback per-page). Layer 3 resolves printed→pdf_page offsets deterministically via anchor-scan + fuzzy title matching + cross-validation — no per-entry LLM calls. Layer 4 assigns chapter end pages. A minimal multi-provider LLM shim (Claude / OpenAI / Gemini) ships as a prerequisite.
