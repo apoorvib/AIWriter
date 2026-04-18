@@ -41,6 +41,9 @@ pdf-extract path/to/file.pdf --mode ocr_only --ocr-tier medium --ocr-lang en --o
 pdf-extract path/to/file.pdf --mode ocr_only --ocr-tier high --ocr-gpu
 ```
 
+For Tesseract-backed small OCR, the pipeline maps `--ocr-lang en` to
+Tesseract's `eng` language code automatically.
+
 The CLI prints JSON with:
 - source path
 - page count

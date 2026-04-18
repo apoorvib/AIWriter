@@ -47,8 +47,18 @@ class PageTextSource:
 
 
 class PyPdfPageExtractor:
-    """Minimal per-page text extractor wrapping pypdf directly."""
+    """Minimal per-page text extractor wrapping pypdf directly.
+
+    Caches the most recently opened PdfReader by path so extracting many
+    pages from the same file doesn't re-parse the xref table on each call.
+    """
+
+    def __init__(self) -> None:
+        self._cached_path: str | None = None
+        self._cached_reader: PdfReader | None = None
 
     def extract_page_text(self, pdf_path: str, pdf_page: int) -> str:
-        reader = PdfReader(pdf_path)
-        return reader.pages[pdf_page - 1].extract_text() or ""
+        if pdf_path != self._cached_path or self._cached_reader is None:
+            self._cached_reader = PdfReader(pdf_path)
+            self._cached_path = pdf_path
+        return self._cached_reader.pages[pdf_page - 1].extract_text() or ""

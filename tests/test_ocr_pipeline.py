@@ -71,11 +71,11 @@ def test_tesseract_backend_with_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
     import pdf_pipeline.extractors.tesseract_extractor as module
 
     monkeypatch.setattr(module, "rasterize_pdf_pages", lambda _path, dpi: [object(), object()])
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "pytesseract",
-        SimpleNamespace(image_to_string=lambda _image, lang: f"text-{lang}"),
-    )
+    def image_to_string(_image, lang: str) -> str:
+        assert lang == "eng"
+        return f"text-{lang}"
+
+    monkeypatch.setitem(__import__("sys").modules, "pytesseract", SimpleNamespace(image_to_string=image_to_string))
 
     result = module.TesseractOcrExtractor().extract("fake.pdf")
     assert result.page_count == 2

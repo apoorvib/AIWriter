@@ -1,6 +1,7 @@
 """Layer 3: deterministic offset resolution via anchor scan."""
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Literal
@@ -10,6 +11,8 @@ from rapidfuzz import fuzz
 from pdf_pipeline.outline._hierarchy import parent_for, push_ancestor
 from pdf_pipeline.outline.entry_extraction import RawEntry
 from pdf_pipeline.outline.schema import OutlineEntry
+
+logger = logging.getLogger(__name__)
 
 _CHAPTER_TOKEN = re.compile(r"\b(chapter|part|section|book)\s*\d+", re.IGNORECASE)
 
@@ -136,12 +139,18 @@ def derive_offset(
     pdf_page. Returns the first offset that passes validation, or None.
     """
     candidates = pick_anchor_candidates(entries, k=3)
+    logger.debug(
+        "derive_offset: %d candidates: %s",
+        len(candidates),
+        [c.title for c in candidates],
+    )
 
     for anchor in candidates:
         match = find_anchor_page(
             anchor, pages_text, max_offset=max_offset, total_pages=total_pages
         )
         if match is None:
+            logger.debug("anchor %r: no match within max_offset=%d", anchor.title, max_offset)
             continue
         try:
             anchor_printed = int(anchor.printed_page)
@@ -163,13 +172,28 @@ def derive_offset(
                     break
 
         if confirmed >= min_validators:
+            logger.info(
+                "derive_offset: offset=%d from anchor %r (pass %s, %d validators)",
+                offset,
+                anchor.title,
+                match.pass_,
+                confirmed,
+            )
             return OffsetResult(
                 offset=offset,
                 anchor=anchor,
                 match=match,
                 validated_count=confirmed,
             )
+        logger.debug(
+            "anchor %r: offset=%d rejected (%d/%d validators)",
+            anchor.title,
+            offset,
+            confirmed,
+            min_validators,
+        )
 
+    logger.info("derive_offset: no offset passed cross-validation")
     return None
 
 

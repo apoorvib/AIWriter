@@ -9,6 +9,11 @@ from pdf_pipeline.ocr import OcrConfig
 from pdf_pipeline.text_utils import normalize_text
 
 
+TESSERACT_LANGUAGE_ALIASES = {
+    "en": "eng",
+}
+
+
 class TesseractOcrExtractor(PdfExtractor):
     def __init__(self, config: OcrConfig | None = None) -> None:
         self.config = config or OcrConfig()
@@ -22,7 +27,7 @@ class TesseractOcrExtractor(PdfExtractor):
             ) from exc
 
         images = rasterize_pdf_pages(pdf_path, dpi=self.config.dpi)
-        lang = "+".join(self.config.languages)
+        lang = "+".join(_normalize_tesseract_language(language) for language in self.config.languages)
         pages: list[PageText] = []
         for idx, image in enumerate(images, start=1):
             try:
@@ -32,3 +37,7 @@ class TesseractOcrExtractor(PdfExtractor):
             text = normalize_text(raw_text or "")
             pages.append(PageText(idx, text, len(text), "ocr:tesseract"))
         return DocumentExtractionResult(source_path=str(Path(pdf_path)), page_count=len(pages), pages=pages)
+
+
+def _normalize_tesseract_language(language: str) -> str:
+    return TESSERACT_LANGUAGE_ALIASES.get(language, language)

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from typing import Sequence
+
+from dotenv import load_dotenv
 
 from pdf_pipeline.modes import ExtractionMode
 from pdf_pipeline.ocr import OcrConfig, OcrTier
 from pdf_pipeline.pipeline import ExtractionPipeline
+
+load_dotenv()
 
 
 def _cmd_extract(args: argparse.Namespace) -> int:
@@ -54,6 +59,13 @@ def _cmd_outline(args: argparse.Namespace) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PDF extraction and outline tools.")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Enable logging (-v for INFO, -vv for DEBUG).",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     extract_parser = subparsers.add_parser("extract", help="Extract text from a text-native PDF.")
@@ -102,6 +114,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    level = logging.WARNING
+    if args.verbose == 1:
+        level = logging.INFO
+    elif args.verbose >= 2:
+        level = logging.DEBUG
+    logging.basicConfig(
+        level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     return args.func(args)
 
 
