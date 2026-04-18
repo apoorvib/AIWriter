@@ -22,11 +22,21 @@ def make_client(provider: str | None = None) -> LLMClient:
 
     if name == "claude":
         from llm.adapters.claude import ClaudeClient
-        return ClaudeClient(api_key=os.environ["ANTHROPIC_API_KEY"])
+        return ClaudeClient(api_key=_require_env("ANTHROPIC_API_KEY", name))
     if name == "openai":
         from llm.adapters.openai_ import OpenAIClient
-        return OpenAIClient(api_key=os.environ["OPENAI_API_KEY"])
+        return OpenAIClient(api_key=_require_env("OPENAI_API_KEY", name))
     if name == "gemini":
         from llm.adapters.gemini import GeminiClient
-        return GeminiClient(api_key=os.environ["GEMINI_API_KEY"])
+        return GeminiClient(api_key=_require_env("GEMINI_API_KEY", name))
     raise ValueError(f"unknown provider: {name}")
+
+
+def _require_env(var: str, provider: str) -> str:
+    try:
+        return os.environ[var]
+    except KeyError:
+        raise KeyError(
+            f"{var} environment variable is not set; "
+            f"required by the {provider!r} LLM provider"
+        ) from None

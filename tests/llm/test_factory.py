@@ -40,3 +40,9 @@ def test_factory_errors_when_key_missing(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(KeyError, match="ANTHROPIC_API_KEY"):
         make_client("claude")
+
+
+def test_factory_error_message_names_provider(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(KeyError, match="openai"):
+        make_client("openai")
