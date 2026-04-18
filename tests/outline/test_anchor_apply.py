@@ -41,6 +41,31 @@ def test_unresolved_entries_when_no_offset_found():
     assert resolved[0].confidence == 0.0
 
 
+def test_parent_id_threaded_from_level_stack():
+    entries = [
+        _e("Chapter 1: Origins", "1", level=1),
+        _e("1.1 First Subsection", "2", level=2),
+        _e("1.2 Second Subsection", "8", level=2),
+        _e("Chapter 2: Methods", "25", level=1),
+        _e("Chapter 3: Results", "50", level=1),
+    ]
+    pages = {
+        17: "\n\nChapter 1: Origins\n\nbody",
+        18: "\n\n1.1 First Subsection\n\nbody",
+        24: "\n\n1.2 Second Subsection\n\nbody",
+        41: "\n\nChapter 2: Methods\n\nbody",
+        66: "\n\nChapter 3: Results\n\nbody",
+    }
+    resolved = resolve_entries(entries, pages, max_offset=100)
+    assert len(resolved) == 5
+    c1, s11, s12, c2, c3 = resolved
+    assert c1.parent_id is None
+    assert s11.parent_id == c1.id
+    assert s12.parent_id == c1.id
+    assert c2.parent_id is None
+    assert c3.parent_id is None
+
+
 def test_low_confidence_for_entry_that_doesnt_cross_validate():
     entries = [
         _e("Chapter 1: Origins of the Problem", "1"),

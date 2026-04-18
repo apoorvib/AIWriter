@@ -190,19 +190,23 @@ def resolve_entries(
     resolved: list[OutlineEntry] = []
 
     if offset_result is None:
+        ancestors: list[tuple[int, str]] = []
         for i, raw in enumerate(entries):
-            resolved.append(
-                _to_unresolved(raw, idx=i)
-            )
+            entry = _to_unresolved(raw, idx=i, parent_id=_parent_for(raw.level, ancestors))
+            resolved.append(entry)
+            _push_ancestor(ancestors, raw.level, entry.id)
         return resolved
 
     offset = offset_result.offset
+    ancestors: list[tuple[int, str]] = []  # (level, entry_id) stack
 
     for i, raw in enumerate(entries):
         try:
             printed_int = int(raw.printed_page)
         except (ValueError, TypeError):
-            resolved.append(_to_unresolved(raw, idx=i))
+            entry = _to_unresolved(raw, idx=i, parent_id=_parent_for(raw.level, ancestors))
+            resolved.append(entry)
+            _push_ancestor(ancestors, raw.level, entry.id)
             continue
         pdf_page = printed_int + offset
         text = pages_text.get(pdf_page, "")
@@ -221,12 +225,13 @@ def resolve_entries(
             else:
                 confidence = _CONFIDENCE_GLOBAL_ONLY
 
+        entry_id = f"a{i}"
         resolved.append(
             OutlineEntry(
-                id=f"a{i}",
+                id=entry_id,
                 title=raw.title,
                 level=raw.level,
-                parent_id=None,  # wired up later in orchestrator
+                parent_id=_parent_for(raw.level, ancestors),
                 start_pdf_page=pdf_page,
                 end_pdf_page=None,
                 printed_page=raw.printed_page,
@@ -234,16 +239,32 @@ def resolve_entries(
                 source="anchor_scan",
             )
         )
+        _push_ancestor(ancestors, raw.level, entry_id)
 
     return resolved
 
 
-def _to_unresolved(raw: RawEntry, idx: int) -> OutlineEntry:
+def _parent_for(level: int, ancestors: list[tuple[int, str]]) -> str | None:
+    """Return the nearest ancestor id whose level is strictly less than `level`."""
+    for anc_level, anc_id in reversed(ancestors):
+        if anc_level < level:
+            return anc_id
+    return None
+
+
+def _push_ancestor(ancestors: list[tuple[int, str]], level: int, entry_id: str) -> None:
+    """Drop ancestors at or deeper than `level` then append this entry."""
+    while ancestors and ancestors[-1][0] >= level:
+        ancestors.pop()
+    ancestors.append((level, entry_id))
+
+
+def _to_unresolved(raw: RawEntry, idx: int, parent_id: str | None = None) -> OutlineEntry:
     return OutlineEntry(
         id=f"u{idx}",
         title=raw.title,
         level=raw.level,
-        parent_id=None,
+        parent_id=parent_id,
         start_pdf_page=None,
         end_pdf_page=None,
         printed_page=raw.printed_page,
