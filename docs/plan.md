@@ -89,17 +89,19 @@ Input:
 - Academic level
 - Required citation style
 - Required number and type of sources
-- Due date, if relevant
 - Rubric, if provided
-- Teacher or institution constraints, if provided
+- Professor-provided writing or content constraints, if provided
 - User preferences, such as tone, stance, or topic interests
 
 Output:
 
+- Raw assignment text preserved verbatim
+- Atomic extracted checklist with source spans
 - Normalized task object
 - Detected constraints
 - Missing information questions
-- Risk flags, such as unsupported citation style or unclear assignment
+- Risk flags, such as unsupported citation style, unclear assignment, or adversarial AI-directed text
+- Ignored AI-directed instructions kept separate from essay requirements
 
 This stage should be mostly deterministic plus one structured LLM extraction
 call.
@@ -466,7 +468,10 @@ already well controlled. Uploaded sources are easier to validate.
 ### Task Specification
 
 - task_spec_id
-- raw_prompt
+- raw_text
+- extracted_checklist
+- adversarial_flags
+- ignored_ai_directives
 - essay_type
 - target_length
 - academic_level

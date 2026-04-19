@@ -1,4 +1,8 @@
-from pdf_pipeline.outline.prefilter import looks_like_toc
+from pdf_pipeline.outline.prefilter import (
+    looks_like_toc,
+    select_toc_candidate_pages,
+    toc_page_score,
+)
 
 
 def test_detects_contents_heading():
@@ -39,3 +43,18 @@ def test_rejects_narrative_text():
 
 def test_rejects_empty_text():
     assert looks_like_toc("") is False
+
+
+def test_scores_single_toc_page():
+    text = "CONTENTS\n\nChapter 1 ........ 1\nChapter 2 ........ 25\nChapter 3 ........ 50"
+    assert toc_page_score(text) >= 3
+
+
+def test_selects_likely_toc_window_not_whole_scan():
+    pages = {i: "front matter" for i in range(1, 21)}
+    pages[12] = "CONTENTS\n\nChapter 1 ........ 1\nChapter 2 ........ 25"
+    pages[13] = "Chapter 3 ........ 50\nChapter 4 ........ 75"
+
+    selected = select_toc_candidate_pages(pages)
+
+    assert selected == [11, 12, 13, 14]

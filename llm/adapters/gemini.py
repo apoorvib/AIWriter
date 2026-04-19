@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from llm.client import LLMError
+from llm.client import DEFAULT_LLM_MAX_OUTPUT_TOKENS, LLMError
 
 
 class GeminiClient:
@@ -29,7 +29,7 @@ class GeminiClient:
         system: str,
         user: str,
         json_schema: dict[str, Any],
-        max_tokens: int = 4096,
+        max_tokens: int = DEFAULT_LLM_MAX_OUTPUT_TOKENS,
         model: str | None = None,
     ) -> dict[str, Any]:
         combined = f"{system}\n\n{user}"

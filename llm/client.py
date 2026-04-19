@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+DEFAULT_LLM_MAX_OUTPUT_TOKENS = 16000
+
 
 @dataclass(frozen=True)
 class ChatMessage:
@@ -29,6 +31,6 @@ class LLMClient(Protocol):
         system: str,
         user: str,
         json_schema: dict[str, Any],
-        max_tokens: int = 4096,
+        max_tokens: int = DEFAULT_LLM_MAX_OUTPUT_TOKENS,
         model: str | None = None,
     ) -> dict[str, Any]: ...

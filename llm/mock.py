@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from llm.client import DEFAULT_LLM_MAX_OUTPUT_TOKENS
+
 
 class MockLLMClient:
     """LLMClient stand-in that returns queued responses and records calls."""
@@ -16,7 +18,7 @@ class MockLLMClient:
         system: str,
         user: str,
         json_schema: dict[str, Any],
-        max_tokens: int = 4096,
+        max_tokens: int = DEFAULT_LLM_MAX_OUTPUT_TOKENS,
         model: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append(

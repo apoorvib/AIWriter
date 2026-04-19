@@ -34,7 +34,7 @@ def resolve_entries_via_labels(
     ancestors: list[tuple[int, str]] = []
 
     for i, raw in enumerate(entries):
-        target = raw.printed_page.strip().lower()
+        target = raw.printed_page.strip().lower() if raw.printed_page else ""
         pdf_page = inverted.get(target)
 
         if pdf_page is None:

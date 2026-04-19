@@ -3,14 +3,18 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, Mapping
 
 from pypdf import PdfReader
 
 from llm.client import LLMClient
 from pdf_pipeline.ocr import OcrConfig, OcrTier
 from pdf_pipeline.outline.anchor_scan import resolve_entries
-from pdf_pipeline.outline.entry_extraction import extract_toc_entries
+from pdf_pipeline.outline.entry_extraction import (
+    extract_toc_entries,
+    extract_toc_entries_deterministic,
+    RawEntry,
+)
 from pdf_pipeline.outline.label_resolve import resolve_entries_via_labels
 from pdf_pipeline.outline.metadata import read_page_labels, read_pdf_outlines
 from pdf_pipeline.outline.page_text import (
@@ -20,11 +24,14 @@ from pdf_pipeline.outline.page_text import (
     PageTextSource,
     PyPdfPageExtractor,
 )
-from pdf_pipeline.outline.prefilter import looks_like_toc
+from pdf_pipeline.outline.prefilter import looks_like_toc, select_toc_candidate_pages
 from pdf_pipeline.outline.range_assignment import assign_end_pages
 from pdf_pipeline.outline.schema import DocumentOutline
 
 logger = logging.getLogger(__name__)
+
+TocExtractionMode = Literal["auto", "deterministic", "llm"]
+LLM_TOC_MAX_PAGES_PER_CHUNK = 1
 
 
 def extract_outline(
@@ -40,6 +47,8 @@ def extract_outline(
     llm_model: str | None = None,
     parallel_workers: int | str | None = None,
     calibrate: bool = False,
+    toc_extraction_mode: TocExtractionMode = "auto",
+    deterministic_min_entries: int = 10,
 ) -> DocumentOutline:
     """Extract a DocumentOutline from `pdf_path`.
 
@@ -86,19 +95,42 @@ def extract_outline(
     if not looks_like_toc(combined):
         logger.info("Prefilter: no TOC-like text found; returning empty outline")
         return DocumentOutline(source_id=source_id, version=version, entries=[])
-    logger.info("Prefilter: TOC-like text detected; invoking LLM (Layer 2)")
+    candidate_pages = select_toc_candidate_pages(
+        {p: pages_text.get(p, "") for p in range(1, scan_pages + 1)}
+    )
+    if candidate_pages:
+        logger.info(
+            "Prefilter: TOC-like text detected on candidate pages %s; running Layer 2",
+            candidate_pages,
+        )
+    else:
+        logger.info(
+            "Prefilter: TOC-like text detected but no candidate window isolated; "
+            "running Layer 2 over full scan window"
+        )
+        candidate_pages = list(range(1, scan_pages + 1))
 
     # Layer 2
     pages_payload = [
-        {"pdf_page": p, "text": pages_text.get(p, "")} for p in range(1, scan_pages + 1)
+        {"pdf_page": p, "text": pages_text.get(p, "")} for p in candidate_pages
     ]
-    raw = extract_toc_entries(
-        pages_payload,
-        llm_client,
-        chunk_size=chunk_size,
-        model=llm_model,
+    effective_chunk_size = min(
+        max(1, chunk_size),
+        LLM_TOC_MAX_PAGES_PER_CHUNK,
+        max(1, len(pages_payload)),
     )
-    logger.info("Layer 2: LLM returned %d raw TOC entries", len(raw))
+    logger.info(
+        "Layer 2 LLM chunk size: %d page(s) max per call", effective_chunk_size
+    )
+    raw = _extract_layer2_entries(
+        pages_payload,
+        llm_client=llm_client,
+        chunk_size=effective_chunk_size,
+        llm_model=llm_model,
+        mode=toc_extraction_mode,
+        deterministic_min_entries=deterministic_min_entries,
+        allow_deterministic=ocr_tier is None,
+    )
     if not raw:
         return DocumentOutline(source_id=source_id, version=version, entries=[])
 
@@ -146,6 +178,68 @@ def extract_outline(
     finalized = assign_end_pages(resolved, total_pages=total_pages)
     logger.info("Layer 4: assigned end_pdf_page for %d entries", len(finalized))
     return DocumentOutline(source_id=source_id, version=version, entries=finalized)
+
+
+def _extract_layer2_entries(
+    pages_payload: list[dict],
+    *,
+    llm_client: LLMClient,
+    chunk_size: int,
+    llm_model: str | None,
+    mode: TocExtractionMode,
+    deterministic_min_entries: int,
+    allow_deterministic: bool = True,
+) -> list[RawEntry]:
+    if mode not in ("auto", "deterministic", "llm"):
+        raise ValueError(f"Unsupported TOC extraction mode: {mode!r}")
+    if mode == "deterministic" and not allow_deterministic:
+        raise ValueError(
+            "Deterministic TOC extraction is disabled for OCR text. "
+            "Use toc_extraction_mode='llm' for OCR, or omit ocr_tier for "
+            "direct-PDF deterministic experiments."
+        )
+
+    deterministic: list[RawEntry] = []
+    if mode == "auto" and not allow_deterministic:
+        logger.info(
+            "Layer 2: OCR text source detected; skipping deterministic parser "
+            "and invoking LLM"
+        )
+    if mode == "deterministic" or (mode == "auto" and allow_deterministic):
+        deterministic = extract_toc_entries_deterministic(pages_payload)
+        logger.info(
+            "Layer 2 deterministic: returned %d raw TOC entries",
+            len(deterministic),
+        )
+        if mode == "deterministic":
+            return deterministic
+        if len(deterministic) >= deterministic_min_entries:
+            logger.info(
+                "Layer 2: using deterministic entries; skipping LLM "
+                "(threshold=%d)",
+                deterministic_min_entries,
+            )
+            return deterministic
+        logger.info(
+            "Layer 2: deterministic result below threshold=%d; invoking LLM",
+            deterministic_min_entries,
+        )
+
+    raw = extract_toc_entries(
+        pages_payload,
+        llm_client,
+        chunk_size=chunk_size,
+        model=llm_model,
+    )
+    logger.info("Layer 2: LLM returned %d raw TOC entries", len(raw))
+    if raw:
+        return raw
+    if deterministic:
+        logger.info(
+            "Layer 2 fallback: using %d deterministic raw TOC entries after empty LLM result",
+            len(deterministic),
+        )
+    return deterministic
 
 
 def _load_pages_text(
@@ -222,6 +316,7 @@ def _parallel_ocr_pages(
         source = _build_page_text_source(ocr_tier=ocr_tier, ocr_config=ocr_config)
         upper = min(total_pages, max_pages)
         return {p: source.get(pdf_path, p).text for p in range(1, upper + 1)}
+
     config = ocr_config or OcrConfig()
     upper = min(total_pages, max_pages)
     tmp = tempfile.mkdtemp(prefix="outline_ocr_")

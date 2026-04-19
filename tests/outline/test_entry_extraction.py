@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from pdf_pipeline.outline.entry_extraction import RawEntry, extract_toc_entries
+from pdf_pipeline.outline.entry_extraction import (
+    RawEntry,
+    TOC_LLM_MAX_OUTPUT_TOKENS,
+    extract_toc_entries,
+    extract_toc_entries_heuristic,
+)
 from llm.mock import MockLLMClient
 
 
@@ -93,3 +98,156 @@ def test_returns_empty_when_no_toc_ever_seen():
     client = MockLLMClient(responses=responses)
     entries = extract_toc_entries(_pages(1, 10), client, chunk_size=5)
     assert entries == []
+
+
+def test_uses_high_toc_output_budget_by_default():
+    client = MockLLMClient(
+        responses=[
+            {"pages": [{"pdf_page": 1, "is_toc": False}], "entries": []},
+        ]
+    )
+
+    extract_toc_entries(_pages(1, 1), client)
+
+    assert client.calls[0]["max_tokens"] == TOC_LLM_MAX_OUTPUT_TOKENS
+    assert TOC_LLM_MAX_OUTPUT_TOKENS == 64000
+
+
+def test_recovers_entries_nested_under_pages():
+    client = MockLLMClient(
+        responses=[
+            {
+                "pages": [
+                    {
+                        "pdf_page": 1,
+                        "is_toc": True,
+                        "entries": [
+                            {"title": "Chapter 1", "level": 1, "printed_page": "1"},
+                        ],
+                    }
+                ],
+                "entries": [],
+            }
+        ]
+    )
+
+    entries = extract_toc_entries(_pages(1, 1), client, chunk_size=5)
+
+    assert entries == [RawEntry(title="Chapter 1", level=1, printed_page="1")]
+
+
+def test_ignores_malformed_entries_string_without_crashing():
+    client = MockLLMClient(
+        responses=[
+            {
+                "pages": [{"pdf_page": 1, "is_toc": True}],
+                "entries": "not-json" * 10,
+            }
+        ]
+    )
+
+    entries = extract_toc_entries(_pages(1, 1), client)
+
+    assert entries == []
+
+
+def test_recovers_entries_from_json_string_when_possible():
+    client = MockLLMClient(
+        responses=[
+            {
+                "pages": [{"pdf_page": 1, "is_toc": True}],
+                "entries": '[{"title": "Chapter 1", "level": 1, "printed_page": "1"}]',
+            }
+        ]
+    )
+
+    entries = extract_toc_entries(_pages(1, 1), client)
+
+    assert entries == [RawEntry(title="Chapter 1", level=1, printed_page="1")]
+
+
+def test_skips_malformed_entry_objects():
+    client = MockLLMClient(
+        responses=[
+            {
+                "pages": [{"pdf_page": 1, "is_toc": True}],
+                "entries": [
+                    {"title": "Missing level", "printed_page": "1"},
+                    {"title": "Chapter 1", "level": 1, "printed_page": "1"},
+                ],
+            }
+        ]
+    )
+
+    entries = extract_toc_entries(_pages(1, 1), client)
+
+    assert entries == [RawEntry(title="Chapter 1", level=1, printed_page="1")]
+
+
+def test_allows_entries_with_missing_printed_page():
+    client = MockLLMClient(
+        responses=[
+            {
+                "pages": [{"pdf_page": 1, "is_toc": True}],
+                "entries": [
+                    {"title": "Visible Right Column Title", "level": 2, "printed_page": None},
+                    {"title": "Missing Key Title", "level": 2},
+                ],
+            }
+        ]
+    )
+
+    entries = extract_toc_entries(_pages(1, 1), client)
+
+    assert entries == [
+        RawEntry(title="Visible Right Column Title", level=2, printed_page=None),
+        RawEntry(title="Missing Key Title", level=2, printed_page=None),
+    ]
+
+
+def test_records_source_pdf_page_when_provided():
+    client = MockLLMClient(
+        responses=[
+            {
+                "pages": [{"pdf_page": 7, "is_toc": True}],
+                "entries": [
+                    {
+                        "title": "Chapter 7",
+                        "level": 1,
+                        "printed_page": "70",
+                        "source_pdf_page": 7,
+                    },
+                ],
+            }
+        ]
+    )
+
+    entries = extract_toc_entries(_pages(7, 1), client)
+
+    assert entries == [
+        RawEntry(title="Chapter 7", level=1, printed_page="70", source_pdf_page=7)
+    ]
+
+
+def test_heuristic_extracts_ocr_toc_entries():
+    pages = [
+        {
+            "pdf_page": 13,
+            "text": (
+                "CONTENTS\n\n"
+                "Osteology.\n"
+                "General Properties of Bone . 1 | Vertex of the Skull . 19\n"
+                "The Spine.\n"
+                "Atlas . 5\n"
+                "The Thorax.\n"
+                "The Sternum . 55\n"
+            ),
+        }
+    ]
+
+    entries = extract_toc_entries_heuristic(pages)
+
+    assert RawEntry(title="Osteology", level=1, printed_page="1", source_pdf_page=13) in entries
+    assert RawEntry(title="General Properties of Bone", level=2, printed_page="1", source_pdf_page=13) in entries
+    assert RawEntry(title="Vertex of the Skull", level=2, printed_page="19", source_pdf_page=13) in entries
+    assert RawEntry(title="The Spine", level=1, printed_page="5", source_pdf_page=13) in entries

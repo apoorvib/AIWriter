@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from llm.client import LLMError
+from llm.client import DEFAULT_LLM_MAX_OUTPUT_TOKENS, LLMError
 
 
 class ClaudeClient:
@@ -14,6 +14,7 @@ class ClaudeClient:
     """
 
     _TOOL_NAME = "return_result"
+    _STREAMING_TOKEN_THRESHOLD = 20000
 
     def __init__(
         self,
@@ -33,23 +34,40 @@ class ClaudeClient:
         system: str,
         user: str,
         json_schema: dict[str, Any],
-        max_tokens: int = 4096,
+        max_tokens: int = DEFAULT_LLM_MAX_OUTPUT_TOKENS,
         model: str | None = None,
     ) -> dict[str, Any]:
-        response = self._sdk.messages.create(
-            model=model or self._model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-            tools=[
+        params = {
+            "model": model or self._model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+            "tools": [
                 {
                     "name": self._TOOL_NAME,
                     "description": "Return the structured result.",
                     "input_schema": json_schema,
                 }
             ],
-            tool_choice={"type": "tool", "name": self._TOOL_NAME},
-        )
+            "tool_choice": {"type": "tool", "name": self._TOOL_NAME},
+        }
+        if max_tokens > self._STREAMING_TOKEN_THRESHOLD:
+            response = self._create_streaming_message(params)
+        else:
+            try:
+                response = self._sdk.messages.create(**params)
+            except ValueError as exc:
+                if "Streaming is required" not in str(exc):
+                    raise
+                response = self._create_streaming_message(params)
+        return self._extract_tool_input(response)
+
+    def _create_streaming_message(self, params: dict[str, Any]) -> Any:
+        with self._sdk.messages.stream(**params) as stream:
+            stream.until_done()
+            return stream.get_final_message()
+
+    def _extract_tool_input(self, response: Any) -> dict[str, Any]:
         for block in response.content:
             if getattr(block, "type", None) == "tool_use" and block.name == self._TOOL_NAME:
                 return dict(block.input)

@@ -63,6 +63,34 @@ Near-term engineering work. This file is for active or pre-launch tasks. Longer-
   - Current reader extracts paragraphs and tables.
   - It does not handle comments, footnotes, endnotes, headers, or tracked changes.
 
+## Task Specification
+
+- [ ] Wire `TaskSpecParser` into the essay job flow.
+  - Accept pasted assignment text.
+  - Accept text extracted from PDF and `.docx` assignment files.
+  - Persist the returned `TaskSpecification` with `TaskSpecStore`.
+
+- [ ] Add an LLM-backed task-spec extraction path.
+  - Use the guarded task-spec prompt/schema.
+  - Keep raw assignment text as the canonical source of truth.
+  - Merge deterministic adversarial flags with LLM-detected flags.
+
+- [ ] Add a clarification flow for blocking questions.
+  - Ask the user to choose among multiple prompt options.
+  - Store the selected prompt as a new task-spec version.
+  - Avoid mutating earlier task-spec versions.
+
+- [ ] Add downstream task-spec views.
+  - Topic generation view.
+  - Research planning view.
+  - Draft validation view.
+  - All views should reference the raw text and checklist rather than replacing them.
+
+- [ ] Add final essay validation against task spec.
+  - Check length, citation style, source count, structure, rubric, and selected prompt.
+  - Validate against `extracted_checklist`.
+  - Do not treat `adversarial_flags` or ignored AI directives as essay requirements.
+
 ## Outline Pipeline
 
 - [ ] Keep small-tier OCR fallback lazy.
@@ -87,5 +115,5 @@ Near-term engineering work. This file is for active or pre-launch tasks. Longer-
   - Report pages/minute, worker count, DPI, and failure count.
 
 - [ ] Consider a repo cleanup of generated OCR outputs.
-  - `_ocr.json`, `_ocr_sample.json`, `_text.json`, and `ocr_store*/` are now ignored.
+  - `_ocr.json`, `_ocr_sample.json`, `_text.json`, `ocr_store*/`, and `outline_store/` are now ignored.
   - Existing generated files may still need manual cleanup if already tracked.

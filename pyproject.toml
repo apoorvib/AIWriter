@@ -43,7 +43,7 @@ outline = ["rapidfuzz>=3.10.0", "pypdf>=5.0.0", "jsonschema>=4.21.0"]
 pdf-extract = "pdf_pipeline.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["pdf_pipeline*", "llm*"]
+include = ["pdf_pipeline*", "llm*", "essay_writer*"]
 exclude = ["tests*", "testpdfs*", "docs*"]
 
 [tool.pytest.ini_options]

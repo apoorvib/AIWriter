@@ -47,6 +47,51 @@ def test_claude_client_per_call_model_overrides_default():
     assert sdk.messages.create.call_args.kwargs["model"] == "claude-opus-4-7"
 
 
+def test_claude_client_streams_high_output_requests():
+    sdk = MagicMock()
+    stream = MagicMock()
+    stream.get_final_message.return_value = _fake_response(
+        "return_result", {"answer": 64}
+    )
+    sdk.messages.stream.return_value.__enter__.return_value = stream
+    client = ClaudeClient(sdk=sdk, model="claude-haiku-4-5-20251001")
+
+    result = client.chat_json(
+        "s",
+        "u",
+        {"type": "object"},
+        max_tokens=64000,
+    )
+
+    assert result == {"answer": 64}
+    sdk.messages.create.assert_not_called()
+    stream.until_done.assert_called_once()
+    assert sdk.messages.stream.call_args.kwargs["max_tokens"] == 64000
+
+
+def test_claude_client_falls_back_to_streaming_when_sdk_requires_it():
+    sdk = MagicMock()
+    sdk.messages.create.side_effect = ValueError("Streaming is required")
+    stream = MagicMock()
+    stream.get_final_message.return_value = _fake_response(
+        "return_result", {"answer": 16}
+    )
+    sdk.messages.stream.return_value.__enter__.return_value = stream
+    client = ClaudeClient(sdk=sdk, model="claude-opus-4-20250514")
+
+    result = client.chat_json(
+        "s",
+        "u",
+        {"type": "object"},
+        max_tokens=16000,
+    )
+
+    assert result == {"answer": 16}
+    sdk.messages.create.assert_called_once()
+    stream.until_done.assert_called_once()
+    assert sdk.messages.stream.call_args.kwargs["max_tokens"] == 16000
+
+
 def test_claude_client_raises_when_no_tool_use_block():
     sdk = MagicMock()
     text_block = MagicMock()

@@ -1,4 +1,4 @@
-from llm.client import ChatMessage, LLMClient, LLMError
+from llm.client import ChatMessage, DEFAULT_LLM_MAX_OUTPUT_TOKENS, LLMClient, LLMError
 
 
 def test_chat_message_fields():
@@ -9,10 +9,21 @@ def test_chat_message_fields():
 
 def test_llm_client_is_protocol_runtime_checkable():
     class StubClient:
-        def chat_json(self, system, user, json_schema, max_tokens=4096, model=None):
+        def chat_json(
+            self,
+            system,
+            user,
+            json_schema,
+            max_tokens=DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+            model=None,
+        ):
             return {}
 
     assert isinstance(StubClient(), LLMClient)
+
+
+def test_default_llm_output_budget_is_16k():
+    assert DEFAULT_LLM_MAX_OUTPUT_TOKENS == 16000
 
 
 def test_llm_client_rejects_non_conforming():

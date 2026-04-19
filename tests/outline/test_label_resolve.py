@@ -44,6 +44,21 @@ def test_unmatched_printed_pages_become_unresolved():
     assert resolved[1].confidence == 0.0
 
 
+def test_missing_printed_page_becomes_unresolved():
+    labels = {1: "1", 2: "2", 3: "3"}
+    entries = [
+        RawEntry(title="Title Only From OCR", level=1, printed_page=None),
+    ]
+
+    resolved = resolve_entries_via_labels(entries, labels)
+
+    assert resolved[0].source == "unresolved"
+    assert resolved[0].start_pdf_page is None
+    assert resolved[0].end_pdf_page is None
+    assert resolved[0].printed_page is None
+    assert resolved[0].confidence == 0.0
+
+
 def test_parent_ids_are_threaded_across_levels():
     labels = {1: "1", 2: "2", 3: "3", 4: "4"}
     entries = [
