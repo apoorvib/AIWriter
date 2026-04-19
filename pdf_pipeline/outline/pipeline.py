@@ -213,6 +213,15 @@ def _parallel_ocr_pages(
 
     if ocr_tier is None:
         raise ValueError("parallel_workers requires ocr_tier to be set")
+    if ocr_tier != OcrTier.SMALL:
+        logger.info(
+            "parallel_workers ignored for tier=%s (only Tesseract/small supports "
+            "per-page parallelism); using sequential OCR",
+            ocr_tier.value,
+        )
+        source = _build_page_text_source(ocr_tier=ocr_tier, ocr_config=ocr_config)
+        upper = min(total_pages, max_pages)
+        return {p: source.get(pdf_path, p).text for p in range(1, upper + 1)}
     config = ocr_config or OcrConfig()
     upper = min(total_pages, max_pages)
     tmp = tempfile.mkdtemp(prefix="outline_ocr_")
