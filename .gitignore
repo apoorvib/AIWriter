@@ -4,6 +4,7 @@
 *.egg-info/
 build/
 ocr_store*/
+source_store*/
 outline_store/
 outputs/
 test-output/

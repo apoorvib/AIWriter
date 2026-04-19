@@ -635,3 +635,141 @@ Caveats:
 Follow-ups:
 
 - See `TODO.md`.
+
+---
+
+## 2026-04-19 - Codex - Source Document Ingestion
+
+Summary:
+
+- Added a real `essay_writer.sources` ingestion layer for uploaded source documents.
+- Added page-aware chunking, durable JSON/JSONL artifacts, bounded source cards, and SQLite FTS chunk indexing.
+- Added PDF routing behavior for full-read vs indexed sources, OCR fallback for no-text PDFs, and `FileTooLargeWithoutIndexError` when large sources cannot be indexed.
+- Added source-card summarization with an LLM-backed path and deterministic fallback that stays grounded in uploaded-source excerpts.
+- Ignored generated `source_store*/` artifacts.
+
+Files changed:
+
+- `.gitignore`
+- `essay_writer/sources/__init__.py`
+- `essay_writer/sources/schema.py`
+- `essay_writer/sources/chunking.py`
+- `essay_writer/sources/index.py`
+- `essay_writer/sources/storage.py`
+- `essay_writer/sources/summary.py`
+- `essay_writer/sources/ingestion.py`
+- `tests/sources/__init__.py`
+- `tests/sources/test_chunking.py`
+- `tests/sources/test_index.py`
+- `tests/sources/test_ingestion.py`
+- `tests/sources/test_summary.py`
+
+Verification:
+
+```powershell
+pytest tests\sources
+pytest tests\task_spec
+python -m compileall essay_writer tests\sources
+pytest tests\test_pypdf_extractor.py
+pytest tests\test_word_doc_extractor.py
+pytest tests\test_word_doc_extractor.py --basetemp=.pytest_tmp_sources_docx
+```
+
+Results:
+
+- `tests\sources`: 7 passed.
+- `tests\task_spec`: 11 passed.
+- `compileall`: passed.
+- `tests\test_pypdf_extractor.py`: 7 passed.
+- `tests\test_word_doc_extractor.py`: blocked during pytest `tmp_path` setup by the known Windows temp-directory permission issue before assertions ran.
+- DOCX rerun with repo-local `--basetemp` also hit a pytest temp-directory permission error during setup/cleanup.
+
+Caveats:
+
+- SQLite FTS is the first real local index; embeddings/vector search are not implemented yet.
+- Default ingestion does not use web search. Source cards are based only on uploaded-source text.
+- Live OCR is not exercised in default tests; OCR routing is covered with a fake extractor.
+
+---
+
+## 2026-04-19 - Codex - Source Index Manifest for Ideation
+
+Summary:
+
+- Added a complete ideation-facing source index manifest for indexed sources.
+- Each manifest entry maps one indexed chunk to chunk id, ordinal, page range, char count, heading, and preview.
+- Persisted `index_manifest.json` alongside SQLite FTS indexes and exposed `SourceIndexManifest.to_context()` for topic ideation context.
+
+Files changed:
+
+- `essay_writer/sources/__init__.py`
+- `essay_writer/sources/schema.py`
+- `essay_writer/sources/manifest.py`
+- `essay_writer/sources/storage.py`
+- `essay_writer/sources/ingestion.py`
+- `tests/sources/test_manifest.py`
+- `tests/sources/test_ingestion.py`
+
+Verification:
+
+```powershell
+pytest tests\sources
+python -m compileall essay_writer\sources tests\sources
+```
+
+Results:
+
+- `tests\sources`: 8 passed.
+- `compileall`: passed.
+
+Caveats:
+
+- The manifest is a complete chunk map, not the full chunk text. Topic ideation should use it to understand source coverage and then query the SQLite FTS index for detailed passages.
+
+---
+
+## 2026-04-19 - Codex - Topic Ideation Context and Retrieval
+
+Summary:
+
+- Added `essay_writer.topic_ideation` for source-grounded topic ideation.
+- Added context assembly from `TaskSpecification`, bounded source cards, and complete `SourceIndexManifest` chunk maps.
+- Added a guarded structured-output prompt/schema that asks the LLM for candidate topics, source leads, manifest chunk IDs, and suggested source-index search queries.
+- Added `TopicEvidenceRetriever` for app-side retrieval: explicit chunk IDs are loaded from `SourceStore`, and suggested searches are executed against internal SQLite FTS indexes.
+- Changed model-facing source manifest context to expose `source_id` as the index handle instead of filesystem index paths.
+
+Files changed:
+
+- `essay_writer/sources/schema.py`
+- `essay_writer/topic_ideation/__init__.py`
+- `essay_writer/topic_ideation/schema.py`
+- `essay_writer/topic_ideation/context.py`
+- `essay_writer/topic_ideation/prompts.py`
+- `essay_writer/topic_ideation/service.py`
+- `essay_writer/topic_ideation/retrieval.py`
+- `tests/topic_ideation/__init__.py`
+- `tests/topic_ideation/test_context.py`
+- `tests/topic_ideation/test_service.py`
+- `tests/topic_ideation/test_retrieval.py`
+
+Verification:
+
+```powershell
+pytest tests\topic_ideation
+python -m compileall essay_writer\topic_ideation tests\topic_ideation
+pytest tests\sources
+pytest tests\task_spec
+python -m compileall essay_writer tests\sources tests\topic_ideation
+```
+
+Results:
+
+- `tests\topic_ideation`: 3 passed.
+- `tests\sources`: 8 passed.
+- `tests\task_spec`: 11 passed.
+- Compile checks passed.
+
+Caveats:
+
+- Topic ideation currently requires an `LLMClient`; deterministic topic generation is not implemented.
+- Retrieval is orchestrator-controlled after ideation. The model receives source IDs/chunk IDs/search-query suggestions, not direct index filesystem paths.
