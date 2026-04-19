@@ -63,6 +63,8 @@ def _cmd_outline(args: argparse.Namespace) -> int:
         ocr_tier=tier,
         ocr_config=config,
         llm_model=args.llm_model,
+        parallel_workers=args.parallel_workers,
+        calibrate=args.calibrate,
     )
     store.save(outline)
     for entry in outline.entries:
@@ -299,6 +301,26 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     outline_parser.add_argument(
         "--ocr-gpu", action="store_true", help="Enable GPU for supported OCR backends."
+    )
+    outline_parser.add_argument(
+        "--parallel-workers",
+        default=None,
+        dest="parallel_workers",
+        metavar="N|auto",
+        help=(
+            "Worker count for parallel OCR of the TOC window. "
+            "Use 'auto' for automatic worker planning. "
+            "Omit for sequential OCR (default)."
+        ),
+    )
+    outline_parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help=(
+            "When --parallel-workers is auto, benchmark sample pages "
+            "to select the optimal worker count. Ignored when "
+            "--parallel-workers is a specific integer."
+        ),
     )
     outline_parser.set_defaults(func=_cmd_outline)
 
