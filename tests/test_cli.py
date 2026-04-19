@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from pdf_pipeline.cli import _build_parser, _configure_utf8_stdio
 
 
@@ -44,23 +46,14 @@ def test_outline_parallel_workers_defaults_to_none():
     assert args.calibrate is False
 
 
-def test_outline_toc_extraction_mode_parsed():
+def test_outline_no_longer_accepts_deterministic_toc_flags():
     parser = _build_parser()
-    args = parser.parse_args([
-        "outline", "doc.pdf",
-        "--source-id", "my-doc",
-        "--toc-extraction-mode", "deterministic",
-        "--deterministic-min-toc-entries", "25",
-    ])
-    assert args.toc_extraction_mode == "deterministic"
-    assert args.deterministic_min_toc_entries == 25
-
-
-def test_outline_toc_extraction_mode_defaults():
-    parser = _build_parser()
-    args = parser.parse_args(["outline", "doc.pdf", "--source-id", "my-doc"])
-    assert args.toc_extraction_mode == "auto"
-    assert args.deterministic_min_toc_entries == 10
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "outline", "doc.pdf",
+            "--source-id", "my-doc",
+            "--toc-extraction-mode", "deterministic",
+        ])
 
 
 def test_configure_utf8_stdio_reconfigures_stdout_and_stderr(monkeypatch):

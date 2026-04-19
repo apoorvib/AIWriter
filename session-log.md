@@ -2,6 +2,74 @@
 
 Chronological log of agent sessions. Add a new entry whenever an agent changes code, tests, docs, dependencies, or configuration.
 
+## 2026-04-19 - Codex - TODO Review After LLM-Only TOC Change
+
+Summary:
+
+- Reviewed `TODO.md` after removing deterministic TOC extraction.
+- Confirmed there were no active deterministic TOC TODO items to remove.
+- Added active follow-ups for LLM rate-limit-aware TOC/index scheduling and extraction-window metadata semantics.
+
+Files changed:
+
+- `TODO.md`
+- `session-log.md`
+
+Verification:
+
+- Documentation-only update; no tests run.
+
+---
+
+## 2026-04-19 - Codex - LLM-Only TOC Extraction And Readable Encrypted PDFs
+
+Summary:
+
+- Removed the deterministic/heuristic TOC parser from the outline extraction path.
+- Removed `--toc-extraction-mode` and `--deterministic-min-toc-entries` from the outline CLI.
+- Kept Layer 2 as LLM-only after TOC prefiltering, with one page per LLM call.
+- Fixed `PyPdfExtractor` so PDFs flagged as encrypted are attempted with an empty password before being rejected.
+- Made text-only pypdf extraction honor `start_page` and `max_pages`, matching the OCR command surface.
+- Added coverage for readable encrypted PDFs and removed deterministic TOC parser tests.
+
+Files changed:
+
+- `pdf_pipeline/cli.py`
+- `pdf_pipeline/extractors/pypdf_extractor.py`
+- `pdf_pipeline/pipeline.py`
+- `pdf_pipeline/outline/entry_extraction.py`
+- `pdf_pipeline/outline/pipeline.py`
+- `docs/superpowers/plans/2026-04-18-hybrid-toc-extraction.md`
+- `docs/superpowers/specs/2026-04-18-hybrid-toc-extraction.md`
+- `tests/test_cli.py`
+- `tests/test_pypdf_extractor.py`
+- `tests/outline/test_entry_extraction.py`
+- `tests/outline/test_pipeline.py`
+- `session-log.md`
+
+Verification:
+
+```powershell
+python -m pytest --import-mode=importlib tests\test_pypdf_extractor.py tests\test_cli.py tests\outline\test_entry_extraction.py tests\outline\test_pipeline.py::test_extract_outline_uses_llm_even_when_toc_text_has_parseable_rows tests\outline\test_pipeline.py::test_extract_outline_uses_single_page_llm_toc_chunks tests\outline\test_pipeline.py::test_extract_outline_sends_only_candidate_toc_window_to_llm
+python -m compileall pdf_pipeline\extractors\pypdf_extractor.py pdf_pipeline\pipeline.py pdf_pipeline\outline pdf_pipeline\cli.py tests\outline tests\test_cli.py tests\test_pypdf_extractor.py
+python -c "from pdf_pipeline.extractors.pypdf_extractor import PyPdfExtractor; r=PyPdfExtractor().extract(r'testpdfs\IntelTechniques-OSINT.pdf'); print(r.page_count); print(r.pages[2].text[:80].replace('\n',' | '))"
+python -m pdf_pipeline.cli extract testpdfs\IntelTechniques-OSINT.pdf --mode text_only --start-page 3 --max-pages 1 > outputs\codex_osint_page_3_text_smoke.json
+```
+
+Results:
+
+- Focused extractor/CLI/outline tests: 26 passed.
+- Compile pass succeeded.
+- OSINT direct extractor smoke check succeeded: 590 pages read and page 3 starts with `CONTENTS`.
+- OSINT CLI text-only page-window smoke check succeeded and wrote one page, page 3, to `outputs/codex_osint_page_3_text_smoke.json`.
+
+Caveats:
+
+- Historical hybrid TOC plan/spec docs were reduced to superseded tombstones instead of deleted.
+- `DocumentExtractionResult.page_count` for text-only pypdf extraction still reports total document pages, while `pages` contains the selected extraction window.
+
+---
+
 ## 2026-04-19 - Codex - Skip Deterministic TOC Parser For OCR
 
 Summary:

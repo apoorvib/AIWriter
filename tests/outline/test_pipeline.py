@@ -229,137 +229,7 @@ def test_extract_outline_sends_only_candidate_toc_window_to_llm(monkeypatch):
         assert sent_page_groups == [[12], [13], [14], [15]]
 
 
-def test_extract_outline_auto_skips_llm_when_deterministic_is_strong(monkeypatch):
-    writer = PdfWriter()
-    for _ in range(40):
-        writer.add_blank_page(width=612, height=792)
-    from tests.task_spec._tmp import LocalTempDir
-
-    with LocalTempDir() as tmp_path:
-        pdf_path = tmp_path / "plain.pdf"
-        with pdf_path.open("wb") as fh:
-            writer.write(fh)
-
-        toc_lines = ["CONTENTS"]
-        toc_lines.extend(f"Chapter {i} ........ {i * 10}" for i in range(1, 13))
-        fake_pages = {i: "front matter" for i in range(1, 31)}
-        fake_pages[13] = "\n".join(toc_lines)
-
-        from pdf_pipeline.outline import pipeline as pipeline_mod
-
-        monkeypatch.setattr(
-            pipeline_mod,
-            "_load_pages_text",
-            lambda pdf_path_, total_pages, max_pages, **_: fake_pages,
-        )
-        monkeypatch.setattr(pipeline_mod, "select_toc_candidate_pages", lambda _pages_text: [13])
-        labels = {i: str(i) for i in range(1, 41)}
-        monkeypatch.setattr(pipeline_mod, "read_page_labels", lambda _p: labels)
-
-        client = MockLLMClient(responses=[])
-        outline = extract_outline(
-            str(pdf_path),
-            llm_client=client,
-            source_id="s-deterministic",
-            max_toc_pages=30,
-        )
-
-        assert len(outline.entries) == 12
-        assert client.calls == []
-
-
-def test_extract_outline_auto_skips_deterministic_when_ocr_enabled(monkeypatch):
-    from pdf_pipeline.ocr import OcrTier
-    from tests.task_spec._tmp import LocalTempDir
-
-    writer = PdfWriter()
-    for _ in range(40):
-        writer.add_blank_page(width=612, height=792)
-
-    with LocalTempDir() as tmp_path:
-        pdf_path = tmp_path / "plain.pdf"
-        with pdf_path.open("wb") as fh:
-            writer.write(fh)
-
-        toc_lines = ["CONTENTS"]
-        toc_lines.extend(f"Chapter {i} ........ {i * 10}" for i in range(1, 13))
-        fake_pages = {i: "front matter" for i in range(1, 31)}
-        fake_pages[13] = "\n".join(toc_lines)
-
-        from pdf_pipeline.outline import pipeline as pipeline_mod
-
-        monkeypatch.setattr(
-            pipeline_mod,
-            "_load_pages_text",
-            lambda pdf_path_, total_pages, max_pages, **_: fake_pages,
-        )
-        monkeypatch.setattr(pipeline_mod, "select_toc_candidate_pages", lambda _pages_text: [13])
-        labels = {i: str(i) for i in range(1, 41)}
-        monkeypatch.setattr(pipeline_mod, "read_page_labels", lambda _p: labels)
-
-        client = MockLLMClient(
-            responses=[
-                {
-                    "pages": [{"pdf_page": 13, "is_toc": True}],
-                    "entries": [
-                        {"title": "LLM OCR Chapter", "level": 1, "printed_page": "10"},
-                    ],
-                }
-            ]
-        )
-        outline = extract_outline(
-            str(pdf_path),
-            llm_client=client,
-            source_id="s-ocr-auto-llm",
-            max_toc_pages=30,
-            ocr_tier=OcrTier.SMALL,
-        )
-
-        assert len(client.calls) == 1
-        assert [entry.title for entry in outline.entries] == ["LLM OCR Chapter"]
-
-
-def test_extract_outline_rejects_deterministic_mode_when_ocr_enabled(monkeypatch):
-    import pytest
-    from pdf_pipeline.ocr import OcrTier
-    from tests.task_spec._tmp import LocalTempDir
-
-    writer = PdfWriter()
-    for _ in range(20):
-        writer.add_blank_page(width=612, height=792)
-
-    with LocalTempDir() as tmp_path:
-        pdf_path = tmp_path / "plain.pdf"
-        with pdf_path.open("wb") as fh:
-            writer.write(fh)
-
-        fake_pages = {i: "front matter" for i in range(1, 11)}
-        fake_pages[4] = "CONTENTS\nChapter 1 ........ 1\nChapter 2 ........ 10"
-
-        from pdf_pipeline.outline import pipeline as pipeline_mod
-
-        monkeypatch.setattr(
-            pipeline_mod,
-            "_load_pages_text",
-            lambda pdf_path_, total_pages, max_pages, **_: fake_pages,
-        )
-        monkeypatch.setattr(pipeline_mod, "select_toc_candidate_pages", lambda _pages_text: [4])
-
-        client = MockLLMClient(responses=[])
-        with pytest.raises(ValueError, match="disabled for OCR text"):
-            extract_outline(
-                str(pdf_path),
-                llm_client=client,
-                source_id="s-ocr-det-rejected",
-                max_toc_pages=10,
-                ocr_tier=OcrTier.SMALL,
-                toc_extraction_mode="deterministic",
-            )
-
-        assert client.calls == []
-
-
-def test_extract_outline_llm_mode_calls_llm_even_with_deterministic_entries(monkeypatch):
+def test_extract_outline_uses_llm_even_when_toc_text_has_parseable_rows(monkeypatch):
     writer = PdfWriter()
     for _ in range(40):
         writer.add_blank_page(width=612, height=792)
@@ -399,9 +269,8 @@ def test_extract_outline_llm_mode_calls_llm_even_with_deterministic_entries(monk
         outline = extract_outline(
             str(pdf_path),
             llm_client=client,
-            source_id="s-llm",
+            source_id="s-llm-only",
             max_toc_pages=30,
-            toc_extraction_mode="llm",
         )
 
         assert len(client.calls) == 1
@@ -456,7 +325,6 @@ def test_extract_outline_uses_single_page_llm_toc_chunks(monkeypatch):
             source_id="s-llm-chunk-cap",
             max_toc_pages=30,
             chunk_size=20,
-            toc_extraction_mode="llm",
         )
 
         sent_page_groups = [
@@ -467,45 +335,6 @@ def test_extract_outline_uses_single_page_llm_toc_chunks(monkeypatch):
         assert [entry.title for entry in outline.entries] == [
             f"Chapter {page}" for page in range(10, 19)
         ]
-
-
-def test_extract_outline_deterministic_mode_never_calls_llm(monkeypatch):
-    writer = PdfWriter()
-    for _ in range(20):
-        writer.add_blank_page(width=612, height=792)
-    from tests.task_spec._tmp import LocalTempDir
-
-    with LocalTempDir() as tmp_path:
-        pdf_path = tmp_path / "plain.pdf"
-        with pdf_path.open("wb") as fh:
-            writer.write(fh)
-
-        fake_pages = {
-            i: "front matter" for i in range(1, 11)
-        }
-        fake_pages[4] = "CONTENTS\nChapter 1 ........ 1\nChapter 2 ........ 10"
-
-        from pdf_pipeline.outline import pipeline as pipeline_mod
-
-        monkeypatch.setattr(
-            pipeline_mod,
-            "_load_pages_text",
-            lambda pdf_path_, total_pages, max_pages, **_: fake_pages,
-        )
-        labels = {i: str(i) for i in range(1, 21)}
-        monkeypatch.setattr(pipeline_mod, "read_page_labels", lambda _p: labels)
-
-        client = MockLLMClient(responses=[])
-        outline = extract_outline(
-            str(pdf_path),
-            llm_client=client,
-            source_id="s-det-mode",
-            max_toc_pages=10,
-            toc_extraction_mode="deterministic",
-        )
-
-        assert len(outline.entries) == 2
-        assert client.calls == []
 
 
 def test_load_pages_text_parallel_calls_run_parallel_ocr(monkeypatch):

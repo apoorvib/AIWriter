@@ -59,6 +59,12 @@ Near-term engineering work. This file is for active or pre-launch tasks. Longer-
   - Route low-text pages to OCR.
   - Avoid OCR for text-native pages.
 
+- [ ] Decide extraction-window metadata semantics.
+  - Text-only extraction now honors `--start-page` and `--max-pages`.
+  - `DocumentExtractionResult.page_count` currently reports total PDF pages.
+  - `DocumentExtractionResult.pages` contains only the selected extraction window.
+  - Decide whether to add `total_pages` / `extracted_page_count` fields before downstream code depends on this shape.
+
 - [ ] Improve `.docx` extraction if needed.
   - Current reader extracts paragraphs and tables.
   - It does not handle comments, footnotes, endnotes, headers, or tracked changes.
@@ -92,6 +98,13 @@ Near-term engineering work. This file is for active or pre-launch tasks. Longer-
   - Do not treat `adversarial_flags` or ignored AI directives as essay requirements.
 
 ## Outline Pipeline
+
+- [ ] Add rate-limit-aware LLM scheduling for per-page TOC/index extraction.
+  - Current one-page-per-call extraction improves quality but can hit provider request/token limits.
+  - Throttle based on provider limits where available.
+  - Add bounded concurrency only after rate budgeting is in place.
+  - Preserve deterministic page order in the merged output.
+  - Consider response caching/resume before retrying expensive pages.
 
 - [ ] Keep small-tier OCR fallback lazy.
   - `OcrTier.SMALL` should continue using `LazyTesseractPageExtractor`.

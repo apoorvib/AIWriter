@@ -4,7 +4,6 @@ from pdf_pipeline.outline.entry_extraction import (
     RawEntry,
     TOC_LLM_MAX_OUTPUT_TOKENS,
     extract_toc_entries,
-    extract_toc_entries_heuristic,
 )
 from llm.mock import MockLLMClient
 
@@ -228,26 +227,3 @@ def test_records_source_pdf_page_when_provided():
         RawEntry(title="Chapter 7", level=1, printed_page="70", source_pdf_page=7)
     ]
 
-
-def test_heuristic_extracts_ocr_toc_entries():
-    pages = [
-        {
-            "pdf_page": 13,
-            "text": (
-                "CONTENTS\n\n"
-                "Osteology.\n"
-                "General Properties of Bone . 1 | Vertex of the Skull . 19\n"
-                "The Spine.\n"
-                "Atlas . 5\n"
-                "The Thorax.\n"
-                "The Sternum . 55\n"
-            ),
-        }
-    ]
-
-    entries = extract_toc_entries_heuristic(pages)
-
-    assert RawEntry(title="Osteology", level=1, printed_page="1", source_pdf_page=13) in entries
-    assert RawEntry(title="General Properties of Bone", level=2, printed_page="1", source_pdf_page=13) in entries
-    assert RawEntry(title="Vertex of the Skull", level=2, printed_page="19", source_pdf_page=13) in entries
-    assert RawEntry(title="The Spine", level=1, printed_page="5", source_pdf_page=13) in entries

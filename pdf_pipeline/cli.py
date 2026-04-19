@@ -66,8 +66,6 @@ def _cmd_outline(args: argparse.Namespace) -> int:
         llm_model=args.llm_model,
         parallel_workers=args.parallel_workers,
         calibrate=args.calibrate,
-        toc_extraction_mode=args.toc_extraction_mode,
-        deterministic_min_entries=args.deterministic_min_toc_entries,
     )
     store.save(outline)
     for entry in outline.entries:
@@ -323,25 +321,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "When --parallel-workers is auto, benchmark sample pages "
             "to select the optimal worker count. Ignored when "
             "--parallel-workers is a specific integer."
-        ),
-    )
-    outline_parser.add_argument(
-        "--toc-extraction-mode",
-        choices=["auto", "deterministic", "llm"],
-        default="auto",
-        help=(
-            "Layer 2 TOC parsing strategy. "
-            "auto runs deterministic parsing first and calls the LLM only if weak; "
-            "deterministic never calls the LLM; llm skips deterministic parsing."
-        ),
-    )
-    outline_parser.add_argument(
-        "--deterministic-min-toc-entries",
-        type=int,
-        default=10,
-        help=(
-            "Minimum deterministic TOC entries needed for --toc-extraction-mode auto "
-            "to skip the LLM."
         ),
     )
     outline_parser.set_defaults(func=_cmd_outline)

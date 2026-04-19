@@ -3,18 +3,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Literal, Mapping
+from typing import Mapping
 
 from pypdf import PdfReader
 
 from llm.client import LLMClient
 from pdf_pipeline.ocr import OcrConfig, OcrTier
 from pdf_pipeline.outline.anchor_scan import resolve_entries
-from pdf_pipeline.outline.entry_extraction import (
-    extract_toc_entries,
-    extract_toc_entries_deterministic,
-    RawEntry,
-)
+from pdf_pipeline.outline.entry_extraction import extract_toc_entries
 from pdf_pipeline.outline.label_resolve import resolve_entries_via_labels
 from pdf_pipeline.outline.metadata import read_page_labels, read_pdf_outlines
 from pdf_pipeline.outline.page_text import (
@@ -30,7 +26,6 @@ from pdf_pipeline.outline.schema import DocumentOutline
 
 logger = logging.getLogger(__name__)
 
-TocExtractionMode = Literal["auto", "deterministic", "llm"]
 LLM_TOC_MAX_PAGES_PER_CHUNK = 1
 
 
@@ -47,8 +42,6 @@ def extract_outline(
     llm_model: str | None = None,
     parallel_workers: int | str | None = None,
     calibrate: bool = False,
-    toc_extraction_mode: TocExtractionMode = "auto",
-    deterministic_min_entries: int = 10,
 ) -> DocumentOutline:
     """Extract a DocumentOutline from `pdf_path`.
 
@@ -122,15 +115,13 @@ def extract_outline(
     logger.info(
         "Layer 2 LLM chunk size: %d page(s) max per call", effective_chunk_size
     )
-    raw = _extract_layer2_entries(
+    raw = extract_toc_entries(
         pages_payload,
-        llm_client=llm_client,
+        llm_client,
         chunk_size=effective_chunk_size,
-        llm_model=llm_model,
-        mode=toc_extraction_mode,
-        deterministic_min_entries=deterministic_min_entries,
-        allow_deterministic=ocr_tier is None,
+        model=llm_model,
     )
+    logger.info("Layer 2: LLM returned %d raw TOC entries", len(raw))
     if not raw:
         return DocumentOutline(source_id=source_id, version=version, entries=[])
 
@@ -178,68 +169,6 @@ def extract_outline(
     finalized = assign_end_pages(resolved, total_pages=total_pages)
     logger.info("Layer 4: assigned end_pdf_page for %d entries", len(finalized))
     return DocumentOutline(source_id=source_id, version=version, entries=finalized)
-
-
-def _extract_layer2_entries(
-    pages_payload: list[dict],
-    *,
-    llm_client: LLMClient,
-    chunk_size: int,
-    llm_model: str | None,
-    mode: TocExtractionMode,
-    deterministic_min_entries: int,
-    allow_deterministic: bool = True,
-) -> list[RawEntry]:
-    if mode not in ("auto", "deterministic", "llm"):
-        raise ValueError(f"Unsupported TOC extraction mode: {mode!r}")
-    if mode == "deterministic" and not allow_deterministic:
-        raise ValueError(
-            "Deterministic TOC extraction is disabled for OCR text. "
-            "Use toc_extraction_mode='llm' for OCR, or omit ocr_tier for "
-            "direct-PDF deterministic experiments."
-        )
-
-    deterministic: list[RawEntry] = []
-    if mode == "auto" and not allow_deterministic:
-        logger.info(
-            "Layer 2: OCR text source detected; skipping deterministic parser "
-            "and invoking LLM"
-        )
-    if mode == "deterministic" or (mode == "auto" and allow_deterministic):
-        deterministic = extract_toc_entries_deterministic(pages_payload)
-        logger.info(
-            "Layer 2 deterministic: returned %d raw TOC entries",
-            len(deterministic),
-        )
-        if mode == "deterministic":
-            return deterministic
-        if len(deterministic) >= deterministic_min_entries:
-            logger.info(
-                "Layer 2: using deterministic entries; skipping LLM "
-                "(threshold=%d)",
-                deterministic_min_entries,
-            )
-            return deterministic
-        logger.info(
-            "Layer 2: deterministic result below threshold=%d; invoking LLM",
-            deterministic_min_entries,
-        )
-
-    raw = extract_toc_entries(
-        pages_payload,
-        llm_client,
-        chunk_size=chunk_size,
-        model=llm_model,
-    )
-    logger.info("Layer 2: LLM returned %d raw TOC entries", len(raw))
-    if raw:
-        return raw
-    if deterministic:
-        logger.info(
-            "Layer 2 fallback: using %d deterministic raw TOC entries after empty LLM result",
-            len(deterministic),
-        )
-    return deterministic
 
 
 def _load_pages_text(

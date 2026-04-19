@@ -30,7 +30,10 @@ class ExtractionPipeline:
 
     def _resolve_extractor(self) -> PdfExtractor:
         if self.mode == ExtractionMode.TEXT_ONLY:
-            return PyPdfExtractor()
+            return PyPdfExtractor(
+                start_page=self.ocr_config.start_page,
+                max_pages=self.ocr_config.max_pages,
+            )
         if self.mode == ExtractionMode.OCR_ONLY:
             if self.ocr_tier == OcrTier.SMALL:
                 return TesseractOcrExtractor(config=self.ocr_config)

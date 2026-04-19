@@ -7,6 +7,7 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from pdf_pipeline.extractors import EncryptedPdfError, InvalidPdfError, PyPdfExtractor
+from tests.task_spec._tmp import LocalTempDir
 
 
 def _add_text_page(writer: PdfWriter, text: str) -> None:
@@ -41,11 +42,12 @@ def _write_text_pdf(path: Path) -> None:
         writer.write(handle)
 
 
-def test_extracts_multi_page_text_pdf(tmp_path: Path) -> None:
-    pdf_path = tmp_path / "sample.pdf"
-    _write_text_pdf(pdf_path)
+def test_extracts_multi_page_text_pdf() -> None:
+    with LocalTempDir() as tmp_path:
+        pdf_path = tmp_path / "sample.pdf"
+        _write_text_pdf(pdf_path)
 
-    result = PyPdfExtractor().extract(pdf_path)
+        result = PyPdfExtractor().extract(pdf_path)
 
     assert result.page_count == 2
     assert [p.page_number for p in result.pages] == [1, 2]
@@ -54,46 +56,77 @@ def test_extracts_multi_page_text_pdf(tmp_path: Path) -> None:
     assert [p.extraction_method for p in result.pages] == ["pypdf", "pypdf"]
 
 
-def test_emits_empty_page_text_when_page_has_no_content(tmp_path: Path) -> None:
-    pdf_path = tmp_path / "empty_page.pdf"
-    writer = PdfWriter()
-    writer.add_blank_page(width=612, height=792)
-    with pdf_path.open("wb") as handle:
-        writer.write(handle)
+def test_emits_empty_page_text_when_page_has_no_content() -> None:
+    with LocalTempDir() as tmp_path:
+        pdf_path = tmp_path / "empty_page.pdf"
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        with pdf_path.open("wb") as handle:
+            writer.write(handle)
 
-    result = PyPdfExtractor().extract(pdf_path)
+        result = PyPdfExtractor().extract(pdf_path)
 
     assert result.page_count == 1
     assert result.pages[0].text == ""
     assert result.pages[0].char_count == 0
 
 
-def test_rejects_corrupt_pdf(tmp_path: Path) -> None:
-    pdf_path = tmp_path / "corrupt.pdf"
-    pdf_path.write_bytes(b"this-is-not-a-real-pdf")
+def test_rejects_corrupt_pdf() -> None:
+    with LocalTempDir() as tmp_path:
+        pdf_path = tmp_path / "corrupt.pdf"
+        pdf_path.write_bytes(b"this-is-not-a-real-pdf")
 
-    with pytest.raises(InvalidPdfError):
-        PyPdfExtractor().extract(pdf_path)
-
-
-def test_rejects_encrypted_pdf(tmp_path: Path) -> None:
-    input_pdf = tmp_path / "encrypted.pdf"
-    writer = PdfWriter()
-    _add_text_page(writer, "secret text")
-    writer.encrypt("pass123")
-    with input_pdf.open("wb") as handle:
-        writer.write(handle)
-
-    with pytest.raises(EncryptedPdfError):
-        PyPdfExtractor().extract(input_pdf)
+        with pytest.raises(InvalidPdfError):
+            PyPdfExtractor().extract(pdf_path)
 
 
-def test_returns_deterministic_page_order(tmp_path: Path) -> None:
-    pdf_path = tmp_path / "ordered.pdf"
-    _write_text_pdf(pdf_path)
+def test_rejects_encrypted_pdf() -> None:
+    with LocalTempDir() as tmp_path:
+        input_pdf = tmp_path / "encrypted.pdf"
+        writer = PdfWriter()
+        _add_text_page(writer, "secret text")
+        writer.encrypt("pass123")
+        with input_pdf.open("wb") as handle:
+            writer.write(handle)
 
-    first = PyPdfExtractor().extract(pdf_path)
-    second = PyPdfExtractor().extract(pdf_path)
+        with pytest.raises(EncryptedPdfError):
+            PyPdfExtractor().extract(input_pdf)
+
+
+def test_extracts_encrypted_pdf_when_empty_password_is_readable() -> None:
+    with LocalTempDir() as tmp_path:
+        input_pdf = tmp_path / "empty_password_encrypted.pdf"
+        writer = PdfWriter()
+        _add_text_page(writer, "readable encrypted text")
+        writer.encrypt("")
+        with input_pdf.open("wb") as handle:
+            writer.write(handle)
+
+        result = PyPdfExtractor().extract(input_pdf)
+
+    assert result.page_count == 1
+    assert "readable encrypted text" in result.pages[0].text
+
+
+def test_extracts_requested_text_page_window() -> None:
+    with LocalTempDir() as tmp_path:
+        pdf_path = tmp_path / "windowed.pdf"
+        _write_text_pdf(pdf_path)
+
+        result = PyPdfExtractor(start_page=2, max_pages=1).extract(pdf_path)
+
+    assert result.page_count == 2
+    assert [page.page_number for page in result.pages] == [2]
+    assert "Hello from page 2" in result.pages[0].text
+
+
+def test_returns_deterministic_page_order() -> None:
+    with LocalTempDir() as tmp_path:
+        pdf_path = tmp_path / "ordered.pdf"
+        _write_text_pdf(pdf_path)
+
+        first = PyPdfExtractor().extract(pdf_path)
+        second = PyPdfExtractor().extract(pdf_path)
 
     first_page_numbers = [page.page_number for page in first.pages]
     second_page_numbers = [page.page_number for page in second.pages]
