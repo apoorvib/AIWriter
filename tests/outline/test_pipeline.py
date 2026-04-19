@@ -198,3 +198,36 @@ def test_load_pages_text_parallel_calls_run_parallel_ocr(tmp_path, monkeypatch):
     assert cfg.dpi == 200
     assert cfg.languages == ("en",)
     assert cfg.calibrate is False
+
+
+def test_extract_outline_passes_parallel_params_to_load_pages_text(tmp_path, monkeypatch):
+    from pypdf import PdfWriter
+    from pdf_pipeline.outline import pipeline as pipeline_mod
+    from llm.mock import MockLLMClient
+
+    writer = PdfWriter()
+    for _ in range(5):
+        writer.add_blank_page(width=612, height=792)
+    pdf_path = tmp_path / "plain.pdf"
+    with pdf_path.open("wb") as fh:
+        writer.write(fh)
+
+    captured = {}
+
+    def fake_load_pages_text(pdf_path_, total_pages, max_pages, **kwargs):
+        captured.update(kwargs)
+        return {i: "narrative body text here" for i in range(1, 6)}
+
+    monkeypatch.setattr(pipeline_mod, "_load_pages_text", fake_load_pages_text)
+
+    client = MockLLMClient(responses=[])
+    pipeline_mod.extract_outline(
+        str(pdf_path),
+        llm_client=client,
+        source_id="s",
+        parallel_workers="auto",
+        calibrate=True,
+    )
+
+    assert captured.get("parallel_workers") == "auto"
+    assert captured.get("calibrate") is True

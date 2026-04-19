@@ -38,6 +38,8 @@ def extract_outline(
     ocr_tier: OcrTier | None = None,
     ocr_config: OcrConfig | None = None,
     llm_model: str | None = None,
+    parallel_workers: int | str | None = None,
+    calibrate: bool = False,
 ) -> DocumentOutline:
     """Extract a DocumentOutline from `pdf_path`.
 
@@ -75,6 +77,8 @@ def extract_outline(
         source=source,
         ocr_tier=ocr_tier,
         ocr_config=ocr_config,
+        parallel_workers=parallel_workers,
+        calibrate=calibrate,
     )
 
     # Prefilter: is there a TOC to extract at all?
