@@ -158,3 +158,43 @@ def test_returns_empty_outline_when_no_toc_and_no_metadata(tmp_path: Path, monke
     outline = extract_outline(str(pdf), llm_client=client, source_id="s3", max_toc_pages=5)
     assert outline.entries == []
     assert client.calls == []
+
+
+def test_load_pages_text_parallel_calls_run_parallel_ocr(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    import pdf_pipeline.ocr_parallel as par_mod
+    from pdf_pipeline.models import DocumentExtractionResult, PageText
+    from pdf_pipeline.ocr import OcrConfig, OcrTier
+    from pdf_pipeline.outline import pipeline as pipeline_mod
+
+    fake_pages = [
+        PageText(page_number=i, text=f"text {i}", char_count=6, extraction_method="ocr:small")
+        for i in range(1, 4)
+    ]
+    fake_result = DocumentExtractionResult(source_path="x.pdf", page_count=10, pages=fake_pages)
+    fake_summary = MagicMock()
+    captured = {}
+
+    def fake_run_parallel_ocr(pdf_path, config):
+        captured["config"] = config
+        return fake_summary, fake_result
+
+    monkeypatch.setattr(par_mod, "run_parallel_ocr", fake_run_parallel_ocr)
+
+    result = pipeline_mod._load_pages_text(
+        "x.pdf",
+        total_pages=10,
+        max_pages=3,
+        ocr_tier=OcrTier.SMALL,
+        ocr_config=OcrConfig(languages=("en",), dpi=200),
+        parallel_workers=2,
+        calibrate=False,
+    )
+
+    assert result == {1: "text 1", 2: "text 2", 3: "text 3"}
+    cfg = captured["config"]
+    assert cfg.max_pages == 3
+    assert cfg.workers == 2
+    assert cfg.dpi == 200
+    assert cfg.languages == ("en",)
+    assert cfg.calibrate is False

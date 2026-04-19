@@ -153,6 +153,8 @@ def _load_pages_text(
     lazy: bool = False,
     ocr_tier: OcrTier | None = None,
     ocr_config: OcrConfig | None = None,
+    parallel_workers: int | str | None = None,
+    calibrate: bool = False,
 ) -> Mapping[int, str]:
     """Extract text for pages 1..max_pages. Overridable in tests.
 
@@ -162,7 +164,20 @@ def _load_pages_text(
     If `lazy=True`, returns a LazyPageTextMap that fetches pages on demand
     (used for the anchor-scan body-pages phase, where only a small fraction
     of pages are typically probed). Otherwise returns an eager dict.
+
+    If `parallel_workers` is set (and not lazy), delegates to `_parallel_ocr_pages`
+    which runs `run_parallel_ocr` scoped to the TOC window using a temp store.
     """
+    if parallel_workers is not None and not lazy:
+        return _parallel_ocr_pages(
+            pdf_path,
+            total_pages,
+            max_pages,
+            ocr_tier=ocr_tier,
+            ocr_config=ocr_config,
+            parallel_workers=parallel_workers,
+            calibrate=calibrate,
+        )
     if source is None:
         source = _build_page_text_source(ocr_tier=ocr_tier, ocr_config=ocr_config)
     if lazy:
@@ -174,6 +189,51 @@ def _load_pages_text(
             logger.info("  extracting text for page %d/%d", p, upper)
         pages[p] = source.get(pdf_path, p).text
     return pages
+
+
+def _parallel_ocr_pages(
+    pdf_path: str,
+    total_pages: int,
+    max_pages: int,
+    *,
+    ocr_tier: OcrTier | None,
+    ocr_config: OcrConfig | None,
+    parallel_workers: int | str,
+    calibrate: bool,
+) -> dict[int, str]:
+    import shutil
+    import tempfile
+
+    import pdf_pipeline.ocr_parallel as par_mod
+    from pdf_pipeline.ocr_parallel.schema import ParallelOcrConfig
+
+    if ocr_tier is None:
+        raise ValueError("parallel_workers requires ocr_tier to be set")
+    config = ocr_config or OcrConfig()
+    upper = min(total_pages, max_pages)
+    tmp = tempfile.mkdtemp(prefix="outline_ocr_")
+    try:
+        par_config = ParallelOcrConfig(
+            ocr_tier=ocr_tier,
+            languages=config.languages,
+            dpi=config.dpi,
+            use_gpu=config.use_gpu,
+            start_page=1,
+            max_pages=upper,
+            workers=parallel_workers,
+            calibrate=calibrate,
+            store_path=tmp,
+        )
+        logger.info(
+            "Parallel OCR: fetching %d pages with workers=%s calibrate=%s",
+            upper,
+            parallel_workers,
+            calibrate,
+        )
+        _, result = par_mod.run_parallel_ocr(pdf_path, config=par_config)
+        return {p.page_number: p.text for p in result.pages}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _build_page_text_source(
