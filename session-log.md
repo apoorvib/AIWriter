@@ -2,6 +2,50 @@
 
 Chronological log of agent sessions. Add a new entry whenever an agent changes code, tests, docs, dependencies, or configuration.
 
+## 2026-04-18 — Claude Sonnet 4.6 — Parallel OCR integrated into outline pipeline
+
+Summary:
+
+- Changed default Claude model in `ClaudeClient` from `claude-sonnet-4-6` to `claude-haiku-4-5-20251001` (cost reduction for structured extraction tasks).
+- Added `_parallel_ocr_pages` helper to `pdf_pipeline/outline/pipeline.py` that calls `run_parallel_ocr` scoped to the TOC window (`max_pages=scan_pages`) using a `tempfile.mkdtemp()` store, converts the result to `dict[int, str]`, and cleans up the temp dir in a `finally` block.
+- Updated `_load_pages_text` to accept `parallel_workers: int | str | None` and `calibrate: bool`; when `parallel_workers` is set and `lazy=False`, delegates to `_parallel_ocr_pages` instead of sequential Tesseract loop.
+- Updated `extract_outline` to accept and thread `parallel_workers` and `calibrate` through to the eager TOC window call only. Layer 3 anchor scan remains lazy/sequential.
+- Added `--parallel-workers N|auto` and `--calibrate` flags to the `outline` CLI subparser.
+- Added `tests/test_cli.py` with three argparse parsing tests.
+- Added two tests to `tests/outline/test_pipeline.py` covering the parallel branch and the `extract_outline` passthrough.
+
+Files changed:
+
+- `llm/adapters/claude.py`
+- `pdf_pipeline/outline/pipeline.py`
+- `pdf_pipeline/cli.py`
+- `tests/outline/test_pipeline.py`
+- `tests/test_cli.py` (new)
+- `docs/superpowers/specs/2026-04-18-parallel-ocr-outline-design.md` (new)
+- `docs/superpowers/plans/2026-04-18-parallel-ocr-outline.md` (new)
+
+Verification:
+
+```bash
+pytest tests/outline/ tests/test_cli.py --ignore=pytest-tmp -v
+# 85 passed
+pytest --ignore=pytest-tmp -v
+# 143 passed
+```
+
+Usage:
+
+```bash
+python -m pdf_pipeline.cli -vv outline testpdfs/anatomydescripti1858gray.pdf \
+  --source-id greys-anatomy \
+  --ocr-tier small \
+  --parallel-workers auto \
+  --calibrate \
+  > outputs/greys_anatomy_outline.txt 2>&1
+```
+
+---
+
 ## 2026-04-18 — Codex — Parallel OCR Implementation
 
 Summary:
