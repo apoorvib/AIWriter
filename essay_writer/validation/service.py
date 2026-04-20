@@ -140,7 +140,7 @@ def _build_user_message(
     }
     return (
         "Validate the essay draft below against the task specification, evidence map, and rubric.\n"
-        "The deterministic_issues have already been identified — do not re-check them.\n\n"
+        "The deterministic_issues have already been identified; do not re-check them.\n\n"
         f"{json.dumps(context)}\n\n"
         f"<essay_draft>\n{draft_text}\n</essay_draft>"
     )

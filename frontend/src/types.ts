@@ -86,6 +86,27 @@ export interface SSEEvent {
   message?: string;
 }
 
+export interface AppSettings {
+  llm_model: string;
+  model_task_spec: string;
+  model_source_card: string;
+  model_topic_ideation: string;
+  model_research: string;
+  model_drafting: string;
+  model_drafting_revision: string;
+  model_validation: string;
+  ocr_tier: "small" | "medium" | "high";
+  chunk_target_chars: number;
+  chunk_overlap_chars: number;
+  max_full_read_pages: number;
+  min_text_chars_per_page: number;
+}
+
+export interface AppSettingsResponse extends AppSettings {
+  llm_provider: string;
+  api_key_configured: boolean;
+}
+
 export type StageStatus = "pending" | "running" | "done" | "error" | "skipped";
 
 export interface PipelineStage {

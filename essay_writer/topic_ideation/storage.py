@@ -13,6 +13,7 @@ from essay_writer.topic_ideation.schema import (
     TopicIdeationRound,
     TopicSourceLead,
 )
+from essay_writer.sources.access_schema import locator_from_payload
 
 
 class TopicRoundStore:
@@ -84,12 +85,14 @@ def _round_from_payload(payload: dict) -> TopicIdeationRound:
 def _selected_from_payload(payload: dict) -> SelectedTopic:
     payload = dict(payload)
     payload["source_leads"] = [_source_lead_from_payload(item) for item in payload.get("source_leads", [])]
+    payload["source_requests"] = [locator_from_payload(item) for item in payload.get("source_requests", [])]
     return SelectedTopic(**payload)
 
 
 def _candidate_from_payload(payload: dict) -> CandidateTopic:
     payload = dict(payload)
     payload["source_leads"] = [_source_lead_from_payload(item) for item in payload.get("source_leads", [])]
+    payload["source_requests"] = [locator_from_payload(item) for item in payload.get("source_requests", [])]
     return CandidateTopic(**payload)
 
 

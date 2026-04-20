@@ -65,7 +65,7 @@ def test_mvp_workflow_runs_from_selected_topic_through_validation() -> None:
             research_plan_store=research_plan_store,
             research_service=FinalTopicResearchService(MockLLMClient(responses=[_research_response()])),
             research_store=research_store,
-            outline_service=ThesisOutlineService(),
+            outline_service=_outline_service(),
             outline_store=outline_store,
             draft_service=DraftService(MockLLMClient(responses=[_draft_response()])),
             draft_store=draft_store,
@@ -148,7 +148,7 @@ def test_mvp_preflight_rejects_mismatched_task_before_llm_calls() -> None:
             research_plan_store=research_plan_store,
             research_service=FinalTopicResearchService(research_client),
             research_store=research_store,
-            outline_service=ThesisOutlineService(),
+            outline_service=_outline_service(),
             outline_store=outline_store,
             draft_service=DraftService(draft_client),
             draft_store=draft_store,
@@ -211,7 +211,7 @@ def test_mvp_blocks_when_selected_topic_has_no_retrieved_evidence() -> None:
             research_plan_store=research_plan_store,
             research_service=FinalTopicResearchService(research_client),
             research_store=research_store,
-            outline_service=ThesisOutlineService(),
+            outline_service=_outline_service(),
             outline_store=outline_store,
             draft_service=DraftService(draft_client),
             draft_store=draft_store,
@@ -290,7 +290,7 @@ def test_run_selected_job_resumes_from_persisted_drafting_ready_state() -> None:
             research_plan_store=research_plan_store,
             research_service=FinalTopicResearchService(resume_research_client),
             research_store=research_store,
-            outline_service=ThesisOutlineService(),
+            outline_service=_outline_service(),
             outline_store=outline_store,
             draft_service=DraftService(MockLLMClient(responses=[_draft_response()])),
             draft_store=draft_store,
@@ -338,7 +338,7 @@ def test_mvp_records_stage_error_when_drafting_fails() -> None:
             research_plan_store=research_plan_store,
             research_service=FinalTopicResearchService(MockLLMClient(responses=[_research_response()])),
             research_store=research_store,
-            outline_service=ThesisOutlineService(),
+            outline_service=_outline_service(),
             outline_store=outline_store,
             draft_service=DraftService(MockLLMClient(responses=[])),
             draft_store=draft_store,
@@ -404,7 +404,7 @@ def test_run_selected_job_resumes_validation_ready_and_writes_next_validation_ve
         )
         research_store.save_result(research, version=1)
         job = workflow.record_research_complete(job_id=job.id, research_result=research)
-        outline = ThesisOutlineService().create_outline(
+        outline = _outline_service().create_outline(
             job=job,
             task_spec=task_spec,
             selected_topic=selected,
@@ -439,7 +439,7 @@ def test_run_selected_job_resumes_validation_ready_and_writes_next_validation_ve
             research_plan_store=research_plan_store,
             research_service=FinalTopicResearchService(MockLLMClient(responses=[])),
             research_store=research_store,
-            outline_service=ThesisOutlineService(),
+            outline_service=_outline_service(),
             outline_store=outline_store,
             draft_service=DraftService(draft_client),
             draft_store=draft_store,
@@ -493,7 +493,7 @@ def test_revision_loop_writes_draft_v2_reruns_validation_and_exports() -> None:
             research_plan_store=research_plan_store,
             research_service=FinalTopicResearchService(MockLLMClient(responses=[_research_response()])),
             research_store=research_store,
-            outline_service=ThesisOutlineService(),
+            outline_service=_outline_service(),
             outline_store=outline_store,
             draft_service=DraftService(MockLLMClient(responses=[_draft_response()])),
             draft_store=draft_store,
@@ -707,4 +707,37 @@ def _revision_draft_response() -> dict:
         ],
         "bibliography_candidates": ["Urban Heat. Uploaded source PDF."],
         "known_weak_spots": [],
+    }
+
+
+def _outline_service() -> ThesisOutlineService:
+    return ThesisOutlineService(MockLLMClient(responses=[_outline_response()]))
+
+
+def _outline_response() -> dict:
+    return {
+        "working_thesis": "Urban heat should be treated as housing policy.",
+        "sections": [
+            {
+                "heading": "Introduction",
+                "purpose": "introduce topic and thesis",
+                "key_points": ["Urban heat should be treated as housing policy."],
+                "note_ids": [],
+                "target_words": None,
+            },
+            {
+                "heading": "Housing risk",
+                "purpose": "thesis_support",
+                "key_points": ["Heat risk can support a housing-policy argument."],
+                "note_ids": ["note_001"],
+                "target_words": None,
+            },
+            {
+                "heading": "Conclusion",
+                "purpose": "synthesize argument",
+                "key_points": ["Return to the housing-policy stakes."],
+                "note_ids": [],
+                "target_words": None,
+            },
+        ],
     }

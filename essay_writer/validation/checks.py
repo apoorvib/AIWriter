@@ -2,38 +2,12 @@ from __future__ import annotations
 
 import re
 
+from essay_writer.drafting.anti_ai_rules import (
+    BAD_CONCLUSION_OPENERS,
+    SIGNPOSTING_PHRASES,
+    TIER1_FLAGGED_VOCAB,
+)
 from essay_writer.validation.schema import DeterministicCheckResult, SentenceRun, VocabHit
-
-_TIER1_VOCAB: list[str] = [
-    "delve", "tapestry", "landscape", "realm", "embark", "multifaceted",
-    "pivotal", "underscores", "showcasing", "highlighting", "emphasizing",
-    "foster", "leverage", "utilize", "facilitate", "enhance", "streamline",
-    "elevate", "robust", "seamless",
-]
-
-_BAD_CONCLUSION_OPENERS: list[str] = [
-    "in conclusion",
-    "in summary",
-    "to summarize",
-    "to conclude",
-    "overall,",
-]
-
-_SIGNPOSTING_PHRASES: list[str] = [
-    "let's now turn to",
-    "let us now turn to",
-    "having examined",
-    "having explored",
-    "this brings us to",
-    "as we have seen",
-    "it is also worth considering",
-    "another key aspect is",
-    "building on this idea",
-    "with this in mind",
-    "turning now to",
-    "let's now consider",
-    "let us now consider",
-]
 
 _CONTRASTIVE_NEGATION_PATTERNS: list[str] = [
     r"\bnot just\b",
@@ -70,7 +44,7 @@ def run_deterministic_checks(text: str) -> DeterministicCheckResult:
         len(re.findall(p, lower)) for p in _CONTRASTIVE_NEGATION_PATTERNS
     )
 
-    signposting_hits = [p for p in _SIGNPOSTING_PHRASES if p in lower]
+    signposting_hits = [p for p in SIGNPOSTING_PHRASES if p in lower]
 
     return DeterministicCheckResult(
         word_count=word_count,
@@ -87,7 +61,7 @@ def run_deterministic_checks(text: str) -> DeterministicCheckResult:
 
 def _check_tier1_vocab(lower_text: str) -> list[VocabHit]:
     hits = []
-    for word in _TIER1_VOCAB:
+    for word in TIER1_FLAGGED_VOCAB:
         count = len(re.findall(r"\b" + re.escape(word) + r"\b", lower_text))
         if count > 0:
             hits.append(VocabHit(word=word, count=count))
@@ -99,7 +73,7 @@ def _check_conclusion_opener(text: str) -> bool:
     if not paragraphs:
         return False
     last = paragraphs[-1].lower()
-    return any(last.startswith(opener) for opener in _BAD_CONCLUSION_OPENERS)
+    return any(last.startswith(opener) for opener in BAD_CONCLUSION_OPENERS)
 
 
 def _split_sentences(text: str) -> list[str]:

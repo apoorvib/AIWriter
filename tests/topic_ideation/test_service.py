@@ -56,6 +56,19 @@ def test_topic_ideation_service_returns_structured_source_leads() -> None:
                                 "suggested_source_search_queries": ["urban heat renters housing"],
                             }
                         ],
+                        "source_requests": [
+                            {
+                                "source_id": "src1",
+                                "locator_type": "pdf_pages",
+                                "pdf_page_start": 2,
+                                "pdf_page_end": 4,
+                                "printed_page_label": None,
+                                "section_id": None,
+                                "query": None,
+                                "chunk_id": None,
+                                "reason": "Relevant report section.",
+                            }
+                        ],
                         "fit_score": 0.9,
                         "evidence_score": 0.8,
                         "originality_score": 0.7,
@@ -75,6 +88,8 @@ def test_topic_ideation_service_returns_structured_source_leads() -> None:
     assert "internal.sqlite" not in user_payload
     assert result.candidates[0].source_leads[0].chunk_ids == ["src1-chunk-0001"]
     assert result.candidates[0].source_leads[0].suggested_source_search_queries == ["urban heat renters housing"]
+    assert result.candidates[0].source_requests[0].pdf_page_start == 2
+    assert result.candidates[0].source_requests[0].pdf_page_end == 4
     assert result.candidates[0].parent_topic_id is None
     assert result.candidates[0].novelty_note == "Initial source-grounded topic."
     assert json.loads(user_payload.split("\n\n", 1)[1])["source_index_manifests"][0]["index_handle"] == "src1"
@@ -111,6 +126,7 @@ def test_topic_ideation_service_includes_user_instruction_and_previous_candidate
                         "parent_topic_id": "topic_old",
                         "novelty_note": "Narrows the prior topic toward cooling access.",
                         "source_leads": [],
+                        "source_requests": [],
                         "fit_score": 0.8,
                         "evidence_score": 0.7,
                         "originality_score": 0.8,

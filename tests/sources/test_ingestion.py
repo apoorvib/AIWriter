@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from llm.mock import MockLLMClient
 from essay_writer.sources import FileTooLargeWithoutIndexError, SourceIngestionService, SourceStore
 from essay_writer.sources.schema import SourceIngestionConfig
 from pdf_pipeline.models import DocumentExtractionResult, PageText
@@ -28,6 +29,7 @@ def test_ingests_short_pdf_with_full_text_artifacts_and_index() -> None:
             SourceStore(tmp_path / "source_store"),
             config=SourceIngestionConfig(min_text_chars_per_page=5, source_card_context_char_budget=1_000),
             document_reader=reader,
+            llm_client=_source_card_client(),
         )
 
         result = service.ingest(source_path, source_id="src-short")
@@ -61,6 +63,7 @@ def test_long_readable_pdf_is_chunked_and_indexed_not_full_read() -> None:
                 chunk_overlap_chars=25,
             ),
             document_reader=FakeExtractor(_result(source_path, page_count=7, page_texts=page_texts)),
+            llm_client=_source_card_client(),
         )
 
         result = service.ingest(source_path, source_id="src-long")
@@ -92,6 +95,7 @@ def test_long_source_without_index_raises() -> None:
                     page_texts=[f"Readable policy source page {idx}." for idx in range(1, 6)],
                 )
             ),
+            llm_client=_source_card_client(),
         )
 
         with pytest.raises(FileTooLargeWithoutIndexError):
@@ -108,6 +112,7 @@ def test_low_text_pdf_routes_to_ocr_then_indexes() -> None:
             config=SourceIngestionConfig(min_text_chars_per_page=5),
             document_reader=reader,
             ocr_extractor=ocr,
+            llm_client=_source_card_client(),
         )
 
         result = service.ingest(source_path, source_id="src-ocr")
@@ -136,6 +141,7 @@ def test_partial_pdf_uses_ocr_for_unreadable_pages_only() -> None:
             config=SourceIngestionConfig(min_text_chars_per_page=5),
             document_reader=reader,
             ocr_extractor=ocr,
+            llm_client=_source_card_client(),
         )
 
         result = service.ingest(source_path, source_id="src-mixed")
@@ -160,6 +166,7 @@ def test_unreadable_short_source_is_not_marked_indexed_when_no_chunks_exist() ->
             config=SourceIngestionConfig(min_text_chars_per_page=5),
             document_reader=reader,
             ocr_extractor=ocr,
+            llm_client=_source_card_client(),
         )
 
         result = service.ingest(source_path, source_id="src-empty")
@@ -186,6 +193,7 @@ def test_long_unreadable_source_with_no_chunks_raises_even_when_indexing_enabled
             ),
             document_reader=reader,
             ocr_extractor=ocr,
+            llm_client=_source_card_client(),
         )
 
         with pytest.raises(FileTooLargeWithoutIndexError, match="no index is available"):
@@ -216,4 +224,21 @@ def _result(
             )
             for idx, text in enumerate(page_texts, start=1)
         ],
+    )
+
+
+def _source_card_client() -> MockLLMClient:
+    return MockLLMClient(
+        responses=[
+            {
+                "title": "Source",
+                "brief_summary": "Summary.",
+                "key_topics": ["policy"],
+                "useful_for_topic_ideation": ["Useful for policy essays."],
+                "notable_sections": ["Opening section."],
+                "limitations": [],
+                "citation_metadata": {},
+                "warnings": [],
+            }
+        ]
     )

@@ -1296,3 +1296,360 @@ Caveats:
 - The first sandboxed Vite dev-server attempt hit an esbuild `spawn EPERM`; rerunning with approved escalation started the server.
 - Pytest still emits the known Windows `.pytest_cache` warning and a Gemini SDK deprecation warning.
 - Live LLM/OCR behavior was not exercised; tests used existing mocks/deterministic services.
+
+---
+
+## 2026-04-20 - Codex - Nonstandard Web Ports
+
+Summary:
+
+- Changed local web defaults from conventional Vite/FastAPI ports to nonstandard ports: API `8629`, frontend dev `3527`, Vite preview `4627`.
+- Updated backend CORS allowlist, Vite proxy/server/preview config, and README run commands.
+
+Files changed:
+
+- `backend/app.py`
+- `frontend/vite.config.ts`
+- `README.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+rg -n "8000|5173|4173|3527|4627|8629" README.md backend frontend\vite.config.ts frontend\package.json
+python -m compileall backend
+npm run build
+```
+
+Results:
+
+- Backend compile check passed.
+- Frontend production build passed.
+
+Caveats:
+
+- Servers were not started for this change, per user preference.
+
+---
+
+## 2026-04-20 - Codex - Source Access Layer First Pass
+
+Summary:
+
+- Added a source access layer with `SourceAccessConfig`, `SourceUnit`, `SourceMap`, `SourceLocator`, and `SourceTextPacket`.
+- Source ingestion now builds and stores PDF page maps and section maps for Markdown/DOCX/TXT-style sources, alongside existing chunks/indexes.
+- Added `SourceAccessService` to resolve PDF physical page ranges, non-PDF sections, search locators, and chunk locators into bounded source text packets.
+- Added high default source-access budgets with env overrides: research rounds, packet count, total source chars, per-request/total PDF page caps, per-packet chars, and oversized-request policy.
+- Topic ideation now sees source maps and can return `source_requests` while keeping `chunk_ids`/search queries backward-compatible.
+- Research planning now validates selected-topic source requests against job source IDs, source maps, physical PDF page ranges, and configured bounds.
+- The MVP runner resolves source packets before final research; final research treats packets as primary retrieved evidence and keeps legacy chunk retrieval as fallback.
+- Outlining can now be LLM-backed when an LLM client is provided and receives source packets plus the evidence map; deterministic outline fallback remains for tests and non-LLM use.
+- Added targeted tests for source maps, source access resolution, oversized request rejection, topic `source_requests`, and research-plan validation.
+
+Files changed:
+
+- `README.md`
+- `backend/deps.py`
+- `backend/routes/topics.py`
+- `essay_writer/jobs/workflow.py`
+- `essay_writer/outlining/service.py`
+- `essay_writer/research/service.py`
+- `essay_writer/research_planning/schema.py`
+- `essay_writer/research_planning/service.py`
+- `essay_writer/research_planning/storage.py`
+- `essay_writer/sources/__init__.py`
+- `essay_writer/sources/access.py`
+- `essay_writer/sources/access_schema.py`
+- `essay_writer/sources/ingestion.py`
+- `essay_writer/sources/map.py`
+- `essay_writer/sources/schema.py`
+- `essay_writer/sources/storage.py`
+- `essay_writer/topic_ideation/context.py`
+- `essay_writer/topic_ideation/prompts.py`
+- `essay_writer/topic_ideation/schema.py`
+- `essay_writer/topic_ideation/service.py`
+- `essay_writer/topic_ideation/storage.py`
+- `essay_writer/workflow/bootstrap.py`
+- `essay_writer/workflow/mvp.py`
+- `tests/research_planning/test_service.py`
+- `tests/sources/test_source_access.py`
+- `tests/topic_ideation/test_service.py`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+python -m compileall essay_writer backend tests
+pytest tests\sources tests\research_planning tests\topic_ideation tests\research tests\outlining tests\workflow\test_mvp.py tests\jobs\test_workflow.py
+pytest tests\llm tests\workflow tests\jobs tests\sources tests\task_spec tests\topic_ideation tests\research tests\research_planning tests\outlining tests\drafting tests\validation tests\exporting
+npm run build
+python -m compileall essay_writer backend tests\sources tests\research_planning tests\topic_ideation tests\research tests\outlining tests\workflow
+python -c "from backend.app import app; print(app.title)"
+rg -n "[^\x00-\x7F]" essay_writer\sources essay_writer\topic_ideation essay_writer\research_planning essay_writer\research essay_writer\outlining tests\sources tests\research_planning tests\topic_ideation README.md
+```
+
+Results:
+
+- Focused source/research/outline workflow suite: 54 passed.
+- Broad MVP-adjacent suite: 169 passed.
+- Frontend production build passed.
+- Backend app import check passed.
+- New/edited source-access Python and README files are ASCII-clean.
+
+Caveats:
+
+- Lazy per-page OCR hooks are not implemented in `SourceAccessService` yet; current resolver uses stored page text from ingestion and returns warnings for missing pages.
+- Embedding search is still deferred; retrieval uses explicit source requests, legacy chunks, and SQLite FTS fallback.
+- Follow-up research rounds are configurable but not yet wired into a multi-round research loop.
+- Pytest still emits the known Windows `.pytest_cache` warning and Gemini SDK deprecation warning.
+
+---
+
+## 2026-04-20 - Codex - README E2E Workflow Documentation
+
+Summary:
+
+- Added a complete end-to-end application logic section to `README.md`.
+- Documented the web workflow from source ingestion and task specification through topic ideation, source access resolution, research, outlining, drafting, validation, revision, and Markdown export.
+- Clarified which stages are LLM-backed, deterministic, or fallback paths, and documented current source-access limitations.
+
+Files changed:
+
+- `README.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+rg -n "End-to-End Application Logic|Source Access|Final Topic Research|Current Limitations" README.md
+rg -n "[^\x00-\x7F]" README.md
+git diff -- README.md
+```
+
+Results:
+
+- README now contains the full E2E application workflow.
+- README ASCII scan passed.
+
+Caveats:
+
+- Documentation-only change; no code tests were run.
+
+---
+
+## 2026-04-20 - Codex - Require LLM Configuration And Direct Anti-AI Prompt
+
+Summary:
+
+- Replaced silent no-LLM fallbacks with `LLMConfigurationError` for task specification parsing, source-card generation, and thesis outlining.
+- Removed dead deterministic fallback code for task parsing and source-card summarization.
+- Added direct inclusion of the local `anti-ai-detection-SKILL.md` document in `DRAFTING_SYSTEM_PROMPT`, so drafting and revision see the full document.
+- Kept structured anti-AI word/phrase lists for deterministic validation counters and wired validation checks to those shared constants.
+- Updated README LLM usage and prompt inventory to describe required LLM configuration and direct anti-AI document inclusion.
+- Updated tests to use `MockLLMClient` for LLM-backed stages and to assert missing task parser LLM raises.
+
+Files changed:
+
+- `README.md`
+- `llm/client.py`
+- `essay_writer/drafting/anti_ai_rules.py`
+- `essay_writer/drafting/anti_ai_skill.py`
+- `essay_writer/drafting/prompts.py`
+- `essay_writer/outlining/service.py`
+- `essay_writer/sources/summary.py`
+- `essay_writer/task_spec/parser.py`
+- `essay_writer/validation/checks.py`
+- `essay_writer/validation/prompts.py`
+- `essay_writer/validation/service.py`
+- `tests/drafting/test_service.py`
+- `tests/outlining/test_service.py`
+- `tests/sources/test_ingestion.py`
+- `tests/task_spec/test_parser.py`
+- `tests/task_spec/test_storage.py`
+- `tests/workflow/test_bootstrap.py`
+- `tests/workflow/test_mvp.py`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+python -m compileall llm essay_writer\drafting essay_writer\validation essay_writer\sources essay_writer\task_spec essay_writer\outlining
+pytest tests\drafting tests\validation tests\sources\test_summary.py tests\task_spec\test_parser.py tests\outlining\test_service.py
+pytest tests\task_spec\test_parser.py tests\outlining\test_service.py
+python -m compileall tests\task_spec tests\outlining
+pytest tests\sources tests\task_spec tests\outlining tests\workflow\test_bootstrap.py tests\workflow\test_mvp.py tests\drafting tests\validation
+pytest tests\drafting tests\validation tests\sources tests\task_spec tests\outlining tests\workflow\test_bootstrap.py tests\workflow\test_mvp.py
+python -m compileall llm essay_writer tests\drafting tests\validation tests\sources tests\task_spec tests\outlining tests\workflow
+```
+
+Results:
+
+- Final focused LLM/source/workflow suite: 100 passed.
+- Compile checks passed.
+
+Caveats:
+
+- Pytest still emits the known Windows `.pytest_cache` warning.
+- The anti-AI document is loaded from the repo root at import time; missing file now raises during drafting prompt import.
+
+---
+
+## 2026-04-20 - Codex - Pass Source Packets To Drafting And Revision
+
+Summary:
+
+- Updated `DraftService.generate` to include resolved `SourceTextPacket` objects in the drafting LLM user payload.
+- Updated `DraftRevisionService.revise` to include resolved source packets in the revision LLM user payload.
+- Updated the MVP workflow runner to pass source packets into drafting and to re-resolve source packets for revision passes.
+- Left validation unchanged; it still receives draft text, evidence notes, source-card metadata, bibliography candidates, and deterministic findings, not full excerpts.
+- Updated README workflow and prompt inventory to document that drafting and revision receive source packet excerpts.
+- Added tests for draft and revision source-packet payloads.
+
+Files changed:
+
+- `README.md`
+- `essay_writer/drafting/service.py`
+- `essay_writer/drafting/revision.py`
+- `essay_writer/workflow/mvp.py`
+- `tests/drafting/test_service.py`
+- `tests/drafting/test_revision.py`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+pytest tests\drafting
+python -m compileall essay_writer\drafting tests\drafting essay_writer\workflow
+pytest tests\workflow\test_mvp.py tests\outlining tests\research tests\research_planning tests\drafting tests\validation
+python -m compileall essay_writer tests\workflow tests\outlining tests\research tests\research_planning tests\drafting tests\validation
+pytest tests\drafting tests\validation tests\sources tests\task_spec tests\outlining tests\workflow\test_bootstrap.py tests\workflow\test_mvp.py
+```
+
+Results:
+
+- Final focused workflow/source/drafting/validation suite: 102 passed.
+- Compile checks passed.
+
+Caveats:
+
+- Validation still does not receive full source excerpts; this is intentional for now because validation checks the draft against evidence notes and source metadata.
+- Pytest still emits the known Windows `.pytest_cache` warning.
+
+---
+
+## 2026-04-20 - Codex - Lazy PDF Page OCR Source Access
+
+Summary:
+
+- Implemented lazy per-page OCR for source access when requested PDF pages are missing readable text or only have low/partial text.
+- Persisted uploaded original source files into each source artifact directory so the resolver can OCR specific pages after ingestion.
+- Kept PDF source map units for empty pages so physical PDF page numbers and printed labels remain traceable before lazy OCR refreshes text.
+- Added source access config/env controls for lazy OCR tier, DPI, language list, and enable/disable behavior.
+- Updated README workflow docs to describe stored originals and lazy page OCR behavior.
+
+Files changed:
+
+- `README.md`
+- `essay_writer/sources/__init__.py`
+- `essay_writer/sources/access.py`
+- `essay_writer/sources/access_schema.py`
+- `essay_writer/sources/lazy_ocr.py`
+- `essay_writer/sources/map.py`
+- `essay_writer/sources/storage.py`
+- `tests/sources/test_source_access.py`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+pytest tests\sources
+python -m compileall essay_writer\sources tests\sources
+pytest tests\research_planning tests\topic_ideation tests\research tests\outlining tests\workflow\test_mvp.py tests\jobs\test_workflow.py
+pytest tests\sources tests\research_planning tests\workflow\test_mvp.py
+python -m compileall essay_writer\sources
+pytest tests\sources tests\research_planning tests\topic_ideation tests\research tests\outlining tests\workflow\test_mvp.py tests\jobs\test_workflow.py
+```
+
+Results:
+
+- Final combined source-to-outline workflow suite: 56 passed.
+- Compile checks passed for source modules.
+
+Caveats:
+
+- Lazy OCR requires the stored original PDF and installed OCR dependencies; sources ingested before original-file persistence may need re-ingestion.
+- Lazy refresh updates page/full-text/source-map artifacts, but it does not rebuild chunk indexes or source cards yet.
+- Pytest still emits the known Windows `.pytest_cache` warning.
+
+---
+
+## 2026-04-20 - Codex - README LLM Step And Prompt Inventory
+
+Summary:
+
+- Updated `README.md` with a workflow table that clearly marks which steps use an LLM, which are conditional, and which are deterministic.
+- Added a prompt inventory listing each prompt family, prompt constant, user payload builder, output schema, stored version, and purpose.
+- Clarified that research planning and source resolution do not call an LLM today.
+
+Files changed:
+
+- `README.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+rg -n "LLM Usage By Step|Prompt Inventory|Assignment Parsing Prompt|Source Card Prompt|Topic Ideation Prompt|Final Topic Research Prompt|Outline Prompt|Drafting Prompt|Revision Prompt|Validation Prompt" README.md
+rg -n "[^\x00-\x7F]" README.md
+git diff -- README.md
+```
+
+Results:
+
+- README now lists LLM usage per workflow step and documents all current prompt families.
+- README ASCII scan passed.
+
+Caveats:
+
+- Documentation-only change; no code tests were run.
+
+---
+
+## 2026-04-20 - Codex - Draft And Revision Source Packet Context
+
+Summary:
+
+- Updated drafting and revision LLM user payloads to include resolved source packets, including source excerpts and locator metadata.
+- Wired the workflow to resolve source packets for both initial draft generation and later revision runs.
+- Kept validation focused on the draft, evidence map, validation notes, and source-card metadata rather than raw excerpts.
+- Updated README workflow/prompt docs and added focused tests for draft/revision source packet payloads.
+
+Files changed:
+
+- `README.md`
+- `essay_writer/drafting/service.py`
+- `essay_writer/drafting/revision.py`
+- `essay_writer/workflow/mvp.py`
+- `tests/drafting/test_service.py`
+- `tests/drafting/test_revision.py`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+pytest tests\drafting
+python -m compileall essay_writer\drafting tests\drafting essay_writer\workflow
+pytest tests\workflow\test_mvp.py tests\outlining tests\research tests\research_planning tests\drafting tests\validation
+python -m compileall essay_writer tests\workflow tests\outlining tests\research tests\research_planning tests\drafting tests\validation
+pytest tests\drafting tests\validation tests\sources tests\task_spec tests\outlining tests\workflow\test_bootstrap.py tests\workflow\test_mvp.py
+```
+
+Results:
+
+- Final focused suite: 102 passed.
+- Compile checks passed for drafting, workflow, and related test modules.
+
+Caveats:
+
+- Validation still does not receive full source packet text by design; it validates against evidence notes and source-card metadata.
+- Pytest still emits the known Windows `.pytest_cache` warning.

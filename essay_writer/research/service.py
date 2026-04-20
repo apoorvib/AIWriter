@@ -14,6 +14,7 @@ from essay_writer.research.schema import (
     ResearchReport,
 )
 from essay_writer.task_spec.schema import TaskSpecification
+from essay_writer.sources.access_schema import SourceTextPacket
 from essay_writer.topic_ideation.schema import RetrievedTopicEvidence, SelectedTopic, TopicEvidenceChunk
 
 
@@ -42,11 +43,15 @@ class FinalTopicResearchService:
         task_spec: TaskSpecification,
         selected_topic: SelectedTopic,
         retrieved_evidence: list[RetrievedTopicEvidence],
+        source_packets: list[SourceTextPacket] | None = None,
         evidence_map_version: int = 1,
         model: str | None = None,
         enable_web_search: bool = False,
     ) -> FinalTopicResearchResult:
-        chunks = _flatten_chunks(selected_topic.topic_id, retrieved_evidence)
+        chunks = [
+            *_packet_chunks(source_packets or []),
+            *_flatten_chunks(selected_topic.topic_id, retrieved_evidence),
+        ]
         if not chunks:
             return _empty_result(
                 job=job,
@@ -262,6 +267,25 @@ def _flatten_chunks(topic_id: str, retrieved_evidence: list[RetrievedTopicEviden
                 continue
             chunks.append(chunk)
             seen.add(chunk.chunk_id)
+    return chunks
+
+
+def _packet_chunks(source_packets: list[SourceTextPacket]) -> list[TopicEvidenceChunk]:
+    chunks: list[TopicEvidenceChunk] = []
+    for packet in source_packets:
+        if not packet.text.strip():
+            continue
+        chunks.append(
+            TopicEvidenceChunk(
+                source_id=packet.source_id,
+                chunk_id=packet.packet_id,
+                page_start=packet.pdf_page_start or 1,
+                page_end=packet.pdf_page_end or packet.pdf_page_start or 1,
+                text=packet.text,
+                score=None,
+                retrieval_method=f"source_packet:{packet.locator.locator_type}",
+            )
+        )
     return chunks
 
 

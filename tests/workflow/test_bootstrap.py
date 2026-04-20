@@ -140,6 +140,13 @@ def test_bootstrap_blocks_when_task_spec_has_blocking_questions() -> None:
         bootstrapper, stores = _bootstrapper(
             tmp_path,
             source_reader=FakeExtractor(_result(tmp_path / "unused.pdf", ["unused"])),
+            task_llm=MockLLMClient(
+                responses=[
+                    _blocking_task_response(),
+                    _blocking_task_response(),
+                    _task_response(selected_prompt="Write about urban heat."),
+                ]
+            ),
             topic_llm=llm,
         )
 
@@ -210,6 +217,7 @@ def _bootstrapper(
     *,
     source_reader: FakeExtractor,
     assignment_reader: FakeExtractor | None = None,
+    task_llm: MockLLMClient | None = None,
     topic_llm: MockLLMClient | None = None,
 ):
     job_store = EssayJobStore(tmp_path / "essay_store")
@@ -224,7 +232,7 @@ def _bootstrapper(
     return (
         MvpWorkflowBootstrapper(
             workflow=EssayWorkflow(job_store, topic_store),
-            task_parser=TaskSpecParser(),
+            task_parser=TaskSpecParser(llm_client=task_llm or MockLLMClient(responses=[_task_response()])),
             task_store=stores["task_store"],
             source_ingestion=SourceIngestionService(
                 source_store,
@@ -233,6 +241,7 @@ def _bootstrapper(
                     source_card_context_char_budget=1_000,
                 ),
                 document_reader=source_reader,
+                llm_client=MockLLMClient(responses=[_source_card_response()]),
             ),
             topic_ideation=TopicIdeationService(topic_llm) if topic_llm is not None else None,
             assignment_reader=assignment_reader,
@@ -277,5 +286,73 @@ def _topic_response() -> dict:
             }
         ],
         "blocking_questions": [],
+        "warnings": [],
+    }
+
+
+def _task_response(
+    *,
+    selected_prompt: str | None = None,
+    blocking_questions: list[str] | None = None,
+) -> dict:
+    return {
+        "assignment_title": "Essay",
+        "course_context": None,
+        "essay_type": "argumentative",
+        "academic_level": None,
+        "target_length": 1000,
+        "length_unit": "words",
+        "citation_style": "MLA",
+        "prompt_options": [],
+        "selected_prompt": selected_prompt,
+        "required_sources": [],
+        "allowed_sources": [],
+        "forbidden_sources": [],
+        "topic_scope": None,
+        "required_materials": [],
+        "required_claims_or_questions": [],
+        "required_structure": [],
+        "formatting_requirements": [],
+        "rubric": [],
+        "grading_criteria": [],
+        "submission_requirements": [],
+        "professor_constraints": [],
+        "missing_information": [],
+        "ambiguities": [],
+        "risk_flags": [],
+        "adversarial_flags": [],
+        "ignored_ai_directives": [],
+        "extracted_checklist": [
+            {
+                "text": "Write 1000 words in MLA.",
+                "category": "formatting",
+                "required": True,
+                "source_span": "Write 1000 words in MLA.",
+                "confidence": 0.9,
+            }
+        ],
+        "blocking_questions": blocking_questions or [],
+        "nonblocking_warnings": [],
+        "confidence_by_field": {"citation_style": 0.9},
+    }
+
+
+def _blocking_task_response() -> dict:
+    return _task_response(
+        blocking_questions=[
+            "The assignment appears to list multiple prompt options. Which prompt should the essay answer?"
+        ]
+    )
+
+
+def _source_card_response() -> dict:
+    return {
+        "title": "Uploaded Source",
+        "brief_summary": "Uploaded source summary.",
+        "key_topics": ["urban heat", "housing"],
+        "useful_for_topic_ideation": ["Supports urban heat and housing topics."],
+        "notable_sections": ["Opening pages introduce the evidence."],
+        "limitations": [],
+        "citation_metadata": {},
         "warnings": [],
     }

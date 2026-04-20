@@ -23,6 +23,8 @@ from essay_writer.research_planning.schema import ResearchPlan
 from essay_writer.research_planning.service import ResearchPlanningService
 from essay_writer.research_planning.storage import ResearchPlanStore
 from essay_writer.sources.schema import SourceCard, SourceIndexManifest
+from essay_writer.sources.access import SourceAccessService
+from essay_writer.sources.access_schema import SourceMap, SourceTextPacket
 from essay_writer.sources.storage import SourceStore
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.task_spec.storage import TaskSpecStore
@@ -85,6 +87,7 @@ class MvpWorkflowRunner:
         task_store: TaskSpecStore | None = None,
         topic_store: TopicRoundStore | None = None,
         source_store: SourceStore | None = None,
+        source_access_service: SourceAccessService | None = None,
         model_config: StageModelConfig | None = None,
     ) -> None:
         self._workflow = workflow
@@ -105,6 +108,7 @@ class MvpWorkflowRunner:
         self._task_store = task_store
         self._topic_store = topic_store
         self._source_store = source_store
+        self._source_access_service = source_access_service
         self._model_config = model_config or StageModelConfig()
 
     def run_after_topic_selection(
@@ -114,6 +118,7 @@ class MvpWorkflowRunner:
         task_spec: TaskSpecification,
         selected_topic: SelectedTopic,
         index_manifests: list[SourceIndexManifest],
+        source_maps: list[SourceMap] | None = None,
         model: str | None = None,
         external_search_allowed: bool = False,
         on_stage: StageCallback | None = None,
@@ -130,6 +135,7 @@ class MvpWorkflowRunner:
                 task_spec=task_spec,
                 selected_topic=selected_topic,
                 index_manifests=index_manifests,
+                source_maps=source_maps or [],
                 retrieved=retrieved,
                 model=model,
                 external_search_allowed=external_search_allowed,
@@ -162,6 +168,7 @@ class MvpWorkflowRunner:
             task_spec = task_store.load_latest(job.task_spec_id)
             selected_topic = topic_store.load_selected_topic(job_id)
             index_manifests = _load_index_manifests(source_store, job.source_ids)
+            source_maps = _load_source_maps(source_store, job.source_ids)
             _validate_contract(job, task_spec, selected_topic, index_manifests)
             retrieved = self._retriever.retrieve_for_selected_topic(
                 selected_topic,
@@ -174,6 +181,7 @@ class MvpWorkflowRunner:
                     task_spec=task_spec,
                     selected_topic=selected_topic,
                     index_manifests=index_manifests,
+                    source_maps=source_maps,
                     retrieved=retrieved,
                     model=model,
                     external_search_allowed=external_search_allowed,
@@ -184,6 +192,7 @@ class MvpWorkflowRunner:
                 research = self._research_store.load_latest(job_id)
                 _validate_research_plan(job, selected_topic, research_plan)
                 _validate_research(job, selected_topic, research)
+                source_packets = self._resolve_source_packets(research_plan)
                 return self._run_draft_to_validation(
                     job=job,
                     task_spec=task_spec,
@@ -191,6 +200,7 @@ class MvpWorkflowRunner:
                     retrieved=retrieved,
                     research_plan=research_plan,
                     research=research,
+                    source_packets=source_packets,
                     model=model,
                     on_stage=on_stage,
                 )
@@ -286,6 +296,7 @@ class MvpWorkflowRunner:
             if validation.passes:
                 raise WorkflowContractError("Revision requires a failed validation report.")
 
+            source_packets = self._resolve_source_packets(research_plan)
             _emit_stage(on_stage, "revision", "start")
             revision_version = self._draft_store.next_version(job_id)
             revised_draft = self._revision_service.revise(
@@ -297,6 +308,7 @@ class MvpWorkflowRunner:
                 previous_draft=previous_draft,
                 validation=validation,
                 version=revision_version,
+                source_packets=source_packets,
                 model=model or self._model_config.drafting_revision,
             )
             self._draft_store.save(revised_draft)
@@ -325,6 +337,7 @@ class MvpWorkflowRunner:
         task_spec: TaskSpecification,
         selected_topic: SelectedTopic,
         index_manifests: list[SourceIndexManifest],
+        source_maps: list[SourceMap],
         retrieved: RetrievedTopicEvidence,
         model: str | None,
         external_search_allowed: bool = False,
@@ -338,6 +351,10 @@ class MvpWorkflowRunner:
                 task_spec=task_spec,
                 selected_topic=selected_topic,
                 index_manifests=index_manifests,
+                source_maps=source_maps,
+                source_access_config=self._source_access_service.config
+                if self._source_access_service is not None
+                else None,
                 version=research_plan_version,
                 external_search_allowed=external_search_allowed,
             )
@@ -346,12 +363,14 @@ class MvpWorkflowRunner:
             _emit_stage(on_stage, "research_planning", "done")
 
             _emit_stage(on_stage, "research", "start")
+            source_packets = self._resolve_source_packets(research_plan)
             research_version = self._research_store.next_version(job.id)
             research = self._research_service.extract(
                 job=job,
                 task_spec=task_spec,
                 selected_topic=selected_topic,
                 retrieved_evidence=[retrieved],
+                source_packets=source_packets,
                 evidence_map_version=research_version,
                 model=model or self._model_config.research,
                 enable_web_search=research_plan.external_search_allowed,
@@ -378,6 +397,7 @@ class MvpWorkflowRunner:
             retrieved=retrieved,
             research_plan=research_plan,
             research=research,
+            source_packets=source_packets,
             model=model,
             on_stage=on_stage,
         )
@@ -391,6 +411,7 @@ class MvpWorkflowRunner:
         retrieved: RetrievedTopicEvidence,
         research_plan: ResearchPlan,
         research: FinalTopicResearchResult,
+        source_packets: list[SourceTextPacket] | None = None,
         model: str | None,
         on_stage: StageCallback | None = None,
     ) -> MvpWorkflowResult:
@@ -404,6 +425,7 @@ class MvpWorkflowRunner:
                 selected_topic=selected_topic,
                 research_plan=research_plan,
                 evidence_map=research.evidence_map,
+                source_packets=source_packets or [],
                 version=outline_version,
             )
             self._outline_store.save(outline)
@@ -418,6 +440,7 @@ class MvpWorkflowRunner:
                 selected_topic,
                 research.evidence_map,
                 outline=outline,
+                source_packets=source_packets or [],
                 version=draft_version,
                 model=model or self._model_config.drafting,
             )
@@ -517,6 +540,15 @@ class MvpWorkflowRunner:
         except Exception:
             return
 
+    def _resolve_source_packets(self, research_plan: ResearchPlan) -> list[SourceTextPacket]:
+        if self._source_access_service is None or not research_plan.source_requests:
+            return []
+        return [
+            packet
+            for packet in self._source_access_service.resolve_locators(research_plan.source_requests)
+            if packet.text.strip()
+        ]
+
 
 def _emit_stage(callback: StageCallback | None, stage: str, status: str) -> None:
     if callback is not None:
@@ -531,6 +563,16 @@ def _load_index_manifests(source_store: SourceStore, source_ids: list[str]) -> l
         except (FileNotFoundError, KeyError):
             continue
     return manifests
+
+
+def _load_source_maps(source_store: SourceStore, source_ids: list[str]) -> list[SourceMap]:
+    maps: list[SourceMap] = []
+    for source_id in source_ids:
+        try:
+            maps.append(source_store.load_source_map(source_id))
+        except (FileNotFoundError, KeyError):
+            continue
+    return maps
 
 
 def _load_source_cards(source_store: SourceStore, source_ids: list[str]) -> list[SourceCard]:

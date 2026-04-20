@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
+from essay_writer.sources.access_schema import SourceLocator
+
 
 ResearchPriority = Literal["high", "medium", "low"]
 
@@ -31,6 +33,7 @@ class ResearchPlan:
     source_requirements: list[str]
     uploaded_source_priorities: list[SourceReadingPriority]
     expected_evidence_categories: list[str]
+    source_requests: list[SourceLocator] = field(default_factory=list)
     external_search_allowed: bool = False
     external_search_queries: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

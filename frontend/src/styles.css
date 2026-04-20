@@ -36,6 +36,36 @@ a:focus-visible {
   outline-offset: 2px;
 }
 
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 16px;
+  height: 48px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.nav-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 0.88rem;
+  padding: 6px 10px;
+  border-radius: 6px;
+  transition: color 0.12s, background 0.12s;
+}
+
+.nav-link:hover {
+  color: var(--ink);
+  background: var(--surface-strong);
+}
+
+.nav-link-active {
+  color: var(--accent-dark);
+  background: var(--surface-strong);
+}
+
 .page {
   width: min(920px, calc(100vw - 32px));
   margin: 0 auto;
@@ -583,6 +613,85 @@ a:focus-visible {
   background: var(--surface-strong);
 }
 
+.settings-env-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.settings-env-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.9rem;
+}
+
+.settings-env-label {
+  color: var(--muted);
+  width: 72px;
+  flex-shrink: 0;
+}
+
+.settings-env-value {
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.88rem;
+}
+
+.settings-ok { color: var(--success); }
+.settings-warn { color: var(--warning); font-family: inherit; }
+
+.settings-advanced {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.settings-advanced-summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.95rem;
+  padding: 14px 16px;
+  color: var(--accent-dark);
+  list-style: none;
+  user-select: none;
+}
+
+.settings-advanced-summary::-webkit-details-marker { display: none; }
+.settings-advanced[open] .settings-advanced-summary { border-bottom: 1px solid var(--line); }
+
+.settings-stage-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.settings-stage-row {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-stage-label {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.settings-saved {
+  color: var(--success);
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+
+.settings-select {
+  cursor: pointer;
+}
+
 @media (max-width: 720px) {
   .page {
     width: min(100% - 24px, 920px);
@@ -590,7 +699,8 @@ a:focus-visible {
   }
 
   .source-chip-row,
-  .regenerate-row {
+  .regenerate-row,
+  .settings-stage-row {
     grid-template-columns: 1fr;
   }
 

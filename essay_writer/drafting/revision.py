@@ -10,6 +10,7 @@ from essay_writer.drafting.schema import EssayDraft, SectionSourceMap
 from essay_writer.jobs.schema import EssayJob
 from essay_writer.outlining.schema import ThesisOutline
 from essay_writer.research.schema import EvidenceMap
+from essay_writer.sources.access_schema import SourceTextPacket
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.topic_ideation.schema import SelectedTopic
 from essay_writer.validation.schema import ValidationReport
@@ -36,6 +37,7 @@ class DraftRevisionService:
         previous_draft: EssayDraft,
         validation: ValidationReport,
         version: int,
+        source_packets: list[SourceTextPacket] | None = None,
         model: str | None = None,
     ) -> EssayDraft:
         payload = self._llm.chat_json(
@@ -47,6 +49,7 @@ class DraftRevisionService:
                 outline=outline,
                 previous_draft=previous_draft,
                 validation=validation,
+                source_packets=source_packets or [],
             ),
             json_schema=DRAFTING_SCHEMA,
             max_tokens=8000,
@@ -71,6 +74,7 @@ def _build_revision_message(
     outline: ThesisOutline,
     previous_draft: EssayDraft,
     validation: ValidationReport,
+    source_packets: list[SourceTextPacket],
 ) -> str:
     context = {
         "revision_task": {
@@ -173,6 +177,7 @@ def _build_revision_message(
             ],
             "bibliography_candidates": previous_draft.bibliography_candidates,
         },
+        "source_packets": _source_packets_payload(source_packets),
     }
     return (
         "Revise the previous draft using the validation feedback while keeping every claim grounded "
@@ -221,3 +226,23 @@ def _payload_list(payload: dict[str, Any], key: str, *, max_items: int) -> list[
     if not isinstance(value, list):
         value = [value]
     return [str(item).strip() for item in value[:max_items] if str(item).strip()]
+
+
+def _source_packets_payload(source_packets: list[SourceTextPacket]) -> list[dict[str, Any]]:
+    return [
+        {
+            "packet_id": packet.packet_id,
+            "source_id": packet.source_id,
+            "locator_type": packet.locator.locator_type,
+            "pdf_page_start": packet.pdf_page_start,
+            "pdf_page_end": packet.pdf_page_end,
+            "printed_page_start": packet.printed_page_start,
+            "printed_page_end": packet.printed_page_end,
+            "heading_path": packet.heading_path,
+            "extraction_method": packet.extraction_method,
+            "text_quality": packet.text_quality,
+            "warnings": packet.warnings,
+            "text": packet.text,
+        }
+        for packet in source_packets
+    ]

@@ -8,6 +8,7 @@ from essay_writer.outlining.schema import OutlineSection, ThesisOutline
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.topic_ideation.schema import SelectedTopic
 from essay_writer.research.schema import EvidenceGroup, EvidenceMap, ResearchNote
+from essay_writer.sources.access_schema import SourceLocator, SourceTextPacket
 from essay_writer.drafting.prompts import DRAFTING_SYSTEM_PROMPT
 from essay_writer.drafting.service import DraftService
 
@@ -88,6 +89,25 @@ _MINIMAL_LLM_RESPONSE = {
     "bibliography_candidates": ["Smith, J. (2023). Urban Heat. Climate Press."],
     "known_weak_spots": [],
 }
+
+_SOURCE_PACKET = SourceTextPacket(
+    packet_id="src1-pdf-pages-0005-0006",
+    source_id="src1",
+    locator=SourceLocator(
+        source_id="src1",
+        locator_type="pdf_pages",
+        pdf_page_start=5,
+        pdf_page_end=6,
+    ),
+    text="Full source excerpt about renters and heat exposure.",
+    pdf_page_start=5,
+    pdf_page_end=6,
+    printed_page_start="4",
+    printed_page_end="5",
+    heading_path=[],
+    extraction_method="pypdf",
+    text_quality="readable",
+)
 
 
 def _service(response: dict | None = None) -> tuple[DraftService, MockLLMClient]:
@@ -183,6 +203,26 @@ def test_draft_service_passes_outline_to_llm_and_records_outline_id():
     assert draft.outline_id == "thesis_outline_v001"
 
 
+def test_draft_service_passes_source_packets_to_llm():
+    service, client = _service()
+
+    service.generate(
+        _JOB,
+        _TASK_SPEC,
+        _TOPIC,
+        _EVIDENCE_MAP,
+        source_packets=[_SOURCE_PACKET],
+    )
+    ctx = _parse_context(client)
+
+    assert ctx["source_packets"][0]["packet_id"] == "src1-pdf-pages-0005-0006"
+    assert ctx["source_packets"][0]["source_id"] == "src1"
+    assert ctx["source_packets"][0]["pdf_page_start"] == 5
+    assert ctx["source_packets"][0]["printed_page_start"] == "4"
+    assert ctx["source_packets"][0]["text"] == "Full source excerpt about renters and heat exposure."
+    assert ctx["source_packets"][0]["extraction_method"] == "pypdf"
+
+
 def test_draft_service_does_not_expose_index_paths():
     service, client = _service()
     service.generate(_JOB, _TASK_SPEC, _TOPIC, _EVIDENCE_MAP)
@@ -198,6 +238,8 @@ def test_draft_service_uses_correct_system_prompt():
 
 
 def test_draft_service_anti_ai_rules_in_system_prompt():
+    assert "Anti-AI Detection: Writing Text That Reads as Human" in DRAFTING_SYSTEM_PROMPT
+    assert "<anti_ai_detection_skill>" in DRAFTING_SYSTEM_PROMPT
     assert "em dash" in DRAFTING_SYSTEM_PROMPT.lower() or "\u2014" in DRAFTING_SYSTEM_PROMPT
     assert "leverage" in DRAFTING_SYSTEM_PROMPT
     assert "delve" in DRAFTING_SYSTEM_PROMPT

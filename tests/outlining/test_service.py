@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from llm.mock import MockLLMClient
 from essay_writer.jobs.schema import EssayJob
 from essay_writer.outlining.service import ThesisOutlineService
 from essay_writer.research.schema import EvidenceGroup, EvidenceMap, ResearchNote
@@ -9,7 +10,38 @@ from essay_writer.topic_ideation.schema import SelectedTopic
 
 
 def test_thesis_outline_uses_research_plan_evidence_groups_and_word_targets() -> None:
-    outline = ThesisOutlineService().create_outline(
+    outline = ThesisOutlineService(
+        MockLLMClient(
+            responses=[
+                {
+                    "working_thesis": "Heat policy should be housing policy.",
+                    "sections": [
+                        {
+                            "heading": "Introduction",
+                            "purpose": "introduce topic and thesis",
+                            "key_points": ["How does heat affect renters?", "Heat policy should be housing policy"],
+                            "note_ids": [],
+                            "target_words": 140,
+                        },
+                        {
+                            "heading": "Housing risk",
+                            "purpose": "thesis_support",
+                            "key_points": ["Heat risk supports a housing-policy argument."],
+                            "note_ids": ["note_001"],
+                            "target_words": 220,
+                        },
+                        {
+                            "heading": "Conclusion",
+                            "purpose": "synthesize argument",
+                            "key_points": ["Return to the thesis and source-grounded stakes."],
+                            "note_ids": [],
+                            "target_words": 100,
+                        },
+                    ],
+                }
+            ]
+        )
+    ).create_outline(
         job=EssayJob(id="job1", task_spec_id="task1", selected_topic_id="topic_001"),
         task_spec=TaskSpecification(
             id="task1",

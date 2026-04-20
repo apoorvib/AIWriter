@@ -17,6 +17,10 @@ class LLMError(Exception):
     """Raised when an LLM call fails or returns malformed output."""
 
 
+class LLMConfigurationError(LLMError):
+    """Raised when an LLM-backed workflow step is invoked without an LLM client."""
+
+
 @runtime_checkable
 class LLMClient(Protocol):
     """Minimal provider-agnostic JSON-output client.

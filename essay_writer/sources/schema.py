@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pdf_pipeline.ocr import OcrTier
+from essay_writer.sources.access_schema import SourceMap
 
 
 def utc_now_iso() -> str:
@@ -91,6 +92,7 @@ class SourceDocument:
     source_card_path: str | None = None
     index_path: str | None = None
     index_manifest_path: str | None = None
+    source_map_path: str | None = None
     created_at: str = field(default_factory=utc_now_iso)
 
 
@@ -136,6 +138,7 @@ class SourceIngestionResult:
     indexed: bool
     full_text_available: bool
     index_manifest: SourceIndexManifest | None = None
+    source_map: SourceMap | None = None
     warnings: list[str] = field(default_factory=list)
 
 

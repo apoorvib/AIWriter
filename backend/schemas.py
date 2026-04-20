@@ -1,7 +1,7 @@
 """Pydantic response/request models for the API layer."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Literal
 from pydantic import BaseModel
 
 
@@ -123,3 +123,24 @@ class ExportResponse(BaseModel):
     section_source_map: list[SectionSourceEntry]
     bibliography_candidates: list[str]
     validation: ValidationSummary
+
+
+class AppSettings(BaseModel):
+    llm_model: str = ""
+    model_task_spec: str = ""
+    model_source_card: str = ""
+    model_topic_ideation: str = ""
+    model_research: str = ""
+    model_drafting: str = ""
+    model_drafting_revision: str = ""
+    model_validation: str = ""
+    ocr_tier: Literal["small", "medium", "high"] = "small"
+    chunk_target_chars: int = 3000
+    chunk_overlap_chars: int = 300
+    max_full_read_pages: int = 30
+    min_text_chars_per_page: int = 300
+
+
+class AppSettingsResponse(AppSettings):
+    llm_provider: str
+    api_key_configured: bool

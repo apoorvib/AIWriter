@@ -38,9 +38,14 @@ def generate_topics(job_id: str, req: TopicsGenerateRequest = TopicsGenerateRequ
     source_store = get_source_store()
     source_cards = [source_store.load_source_card(sid) for sid in job.source_ids]
     index_manifests = []
+    source_maps = []
     for sid in job.source_ids:
         try:
             index_manifests.append(source_store.load_index_manifest(sid))
+        except (FileNotFoundError, KeyError):
+            pass
+        try:
+            source_maps.append(source_store.load_source_map(sid))
         except (FileNotFoundError, KeyError):
             pass
 
@@ -52,6 +57,7 @@ def generate_topics(job_id: str, req: TopicsGenerateRequest = TopicsGenerateRequ
         task_spec,
         source_cards=source_cards,
         index_manifests=index_manifests,
+        source_maps=source_maps,
         previous_candidates=previous_candidates or None,
         rejected_topics=rejected_topics or None,
         user_instruction=req.user_instruction,

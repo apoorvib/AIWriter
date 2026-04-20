@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from essay_writer.research_planning.schema import ResearchPlan, SourceReadingPriority
+from essay_writer.sources.access_schema import locator_from_payload
 
 
 class ResearchPlanStore:
@@ -58,6 +59,7 @@ def _plan_from_payload(payload: dict) -> ResearchPlan:
     payload["uploaded_source_priorities"] = [
         SourceReadingPriority(**item) for item in payload.get("uploaded_source_priorities", [])
     ]
+    payload["source_requests"] = [locator_from_payload(item) for item in payload.get("source_requests", [])]
     return ResearchPlan(**payload)
 
 

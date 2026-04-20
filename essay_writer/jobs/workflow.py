@@ -199,6 +199,7 @@ class EssayWorkflow:
             research_question=topic.research_question,
             tentative_thesis_direction=topic.tentative_thesis_direction,
             source_leads=topic.source_leads,
+            source_requests=topic.source_requests,
         )
         self._topic_store.save_selected_topic(selected)
         updated = replace(

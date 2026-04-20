@@ -1,4 +1,6 @@
 import type {
+  AppSettings,
+  AppSettingsResponse,
   AssignmentExtractResponse,
   SourceUploadResponse,
   CreateJobResponse,
@@ -96,4 +98,16 @@ export function getExport(jobId: string): Promise<ExportResponse> {
 
 export function openJobEvents(jobId: string): EventSource {
   return new EventSource(`${BASE}/jobs/${jobId}/events`);
+}
+
+export function getSettings(): Promise<AppSettingsResponse> {
+  return request<AppSettingsResponse>("/settings");
+}
+
+export function updateSettings(settings: AppSettings): Promise<AppSettingsResponse> {
+  return request<AppSettingsResponse>("/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
 }

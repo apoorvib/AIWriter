@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from essay_writer.sources.schema import SourceCard, SourceIndexManifest
+from essay_writer.sources.access_schema import SourceMap
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.topic_ideation.schema import CandidateTopic, RejectedTopic
 
@@ -12,12 +13,14 @@ def build_topic_ideation_context(
     *,
     source_cards: list[SourceCard],
     index_manifests: list[SourceIndexManifest] | None = None,
+    source_maps: list[SourceMap] | None = None,
     previous_candidates: list[CandidateTopic] | None = None,
     rejected_topics: list[RejectedTopic] | None = None,
     user_instruction: str | None = None,
     source_card_max_chars: int = 4_000,
     index_preview_chars: int = 180,
     max_manifest_entries: int | None = None,
+    max_source_map_units: int = 120,
 ) -> str:
     payload = {
         "task_specification": _task_spec_payload(task_spec),
@@ -45,6 +48,13 @@ def build_topic_ideation_context(
                 ),
             }
             for manifest in (index_manifests or [])
+        ],
+        "source_maps": [
+            {
+                "source_id": source_map.source_id,
+                "context": source_map.to_context(max_units=max_source_map_units),
+            }
+            for source_map in (source_maps or [])
         ],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)

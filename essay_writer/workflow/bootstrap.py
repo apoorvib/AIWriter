@@ -175,6 +175,9 @@ class MvpWorkflowBootstrapper:
                 index_manifests=[
                     result.index_manifest for result in source_results if result.index_manifest is not None
                 ],
+                source_maps=[
+                    result.source_map for result in source_results if result.source_map is not None
+                ],
                 previous_candidates=previous_candidates,
                 rejected_topics=rejected_topics,
                 user_instruction=user_instruction,

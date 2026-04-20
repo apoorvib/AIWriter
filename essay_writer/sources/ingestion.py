@@ -12,6 +12,7 @@ from pdf_pipeline.ocr import OcrConfig
 from pdf_pipeline.pipeline import ExtractionPipeline
 from essay_writer.sources.chunking import chunk_pages
 from essay_writer.sources.index import SQLiteChunkIndex, SourceIndexError
+from essay_writer.sources.map import build_source_map
 from essay_writer.sources.manifest import build_index_manifest
 from essay_writer.sources.schema import (
     SourceDocument,
@@ -128,6 +129,8 @@ class SourceIngestionService:
             indexed=indexed,
             index_path=str(index_path) if indexed else None,
         )
+        printed_page_labels = _read_pdf_page_labels(path) if path.suffix.lower() == ".pdf" else None
+        source_map = build_source_map(source, pages, printed_page_labels=printed_page_labels)
         source_card = build_source_card(
             source,
             chunks,
@@ -143,6 +146,7 @@ class SourceIngestionService:
             indexed=indexed,
             full_text_available=full_text_available,
             index_manifest=index_manifest,
+            source_map=source_map,
             warnings=warnings,
         )
         return self._store.save_result(result)
@@ -245,3 +249,12 @@ def _source_id(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return f"src-{digest.hexdigest()[:16]}"
+
+
+def _read_pdf_page_labels(path: Path) -> dict[int, str] | None:
+    try:
+        from pdf_pipeline.outline.metadata import read_page_labels
+
+        return read_page_labels(path)
+    except Exception:
+        return None

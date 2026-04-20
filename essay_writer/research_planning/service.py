@@ -3,6 +3,7 @@ from __future__ import annotations
 from essay_writer.jobs.schema import EssayJob
 from essay_writer.research_planning.schema import ResearchPlan, SourceReadingPriority
 from essay_writer.sources.schema import SourceIndexManifest
+from essay_writer.sources.access_schema import SourceAccessConfig, SourceLocator, SourceMap
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.topic_ideation.schema import SelectedTopic
 
@@ -18,11 +19,15 @@ class ResearchPlanningService:
         task_spec: TaskSpecification,
         selected_topic: SelectedTopic,
         index_manifests: list[SourceIndexManifest],
+        source_maps: list[SourceMap] | None = None,
+        source_access_config: SourceAccessConfig | None = None,
         version: int = 1,
         external_search_allowed: bool = False,
         model: str | None = None,
     ) -> ResearchPlan:
         manifest_by_source = {manifest.source_id: manifest for manifest in index_manifests}
+        source_map_by_id = {source_map.source_id: source_map for source_map in (source_maps or [])}
+        access_config = source_access_config or SourceAccessConfig()
         warnings: list[str] = []
         priorities: list[SourceReadingPriority] = []
         for lead in selected_topic.source_leads:
@@ -43,6 +48,14 @@ class ResearchPlanningService:
         if not priorities:
             warnings.append("No uploaded source priorities were available for the selected topic.")
 
+        source_requests = _validated_source_requests(
+            selected_topic.source_requests,
+            job_source_ids=set(job.source_ids),
+            source_maps=source_map_by_id,
+            config=access_config,
+            warnings=warnings,
+        )
+
         external_queries: list[str] = []
         if external_search_allowed:
             external_queries = _external_search_queries(selected_topic)
@@ -56,6 +69,7 @@ class ResearchPlanningService:
             source_requirements=_source_requirements(task_spec),
             uploaded_source_priorities=priorities,
             expected_evidence_categories=_expected_evidence_categories(task_spec),
+            source_requests=source_requests,
             external_search_allowed=external_search_allowed,
             external_search_queries=external_queries,
             warnings=warnings,
@@ -102,3 +116,90 @@ def _external_search_queries(selected_topic: SelectedTopic) -> list[str]:
         selected_topic.research_question,
         f"{selected_topic.title} evidence",
     ]
+
+
+def _validated_source_requests(
+    requests: list[SourceLocator],
+    *,
+    job_source_ids: set[str],
+    source_maps: dict[str, SourceMap],
+    config: SourceAccessConfig,
+    warnings: list[str],
+) -> list[SourceLocator]:
+    valid: list[SourceLocator] = []
+    for request in requests:
+        if request.source_id not in job_source_ids:
+            warnings.append(f"Dropped source request for source not attached to job: {request.source_id}.")
+            continue
+        source_map = source_maps.get(request.source_id)
+        if source_map is None:
+            warnings.append(f"Dropped source request without source map: {request.source_id}.")
+            continue
+        if request.locator_type == "pdf_pages":
+            if not _valid_pdf_request(request, source_map, config, warnings):
+                continue
+        elif request.locator_type == "section":
+            section_ids = {unit.unit_id for unit in source_map.units if unit.unit_type == "section"}
+            if request.section_id not in section_ids:
+                warnings.append(f"Dropped unknown section request: {request.section_id}.")
+                continue
+        elif request.locator_type == "search":
+            if not request.query:
+                warnings.append("Dropped search source request without query.")
+                continue
+        elif request.locator_type == "chunk":
+            if not request.chunk_id:
+                warnings.append("Dropped chunk source request without chunk_id.")
+                continue
+        else:
+            warnings.append(f"Dropped unsupported source request locator_type={request.locator_type}.")
+            continue
+        valid.append(request)
+    return valid
+
+
+def _valid_pdf_request(
+    request: SourceLocator,
+    source_map: SourceMap,
+    config: SourceAccessConfig,
+    warnings: list[str],
+) -> bool:
+    if source_map.source_type != "pdf":
+        warnings.append(f"Dropped PDF page request for non-PDF source: {request.source_id}.")
+        return False
+    page_numbers = {
+        unit.pdf_page_start
+        for unit in source_map.units
+        if unit.unit_type == "pdf_page" and unit.pdf_page_start is not None
+    }
+    start = request.pdf_page_start
+    end = request.pdf_page_end or start
+    if start is None and request.printed_page_label:
+        start = _pdf_page_for_label(source_map, request.printed_page_label)
+        end = start
+    if start is None or end is None:
+        warnings.append("Dropped PDF source request without physical pdf_page_start.")
+        return False
+    if start < 1 or end < start:
+        warnings.append(f"Dropped invalid PDF page request: {start}-{end}.")
+        return False
+    page_count = end - start + 1
+    if page_count > config.max_pdf_pages_per_request:
+        warnings.append(
+            f"Dropped oversized PDF page request {start}-{end}; max_pdf_pages_per_request="
+            f"{config.max_pdf_pages_per_request}."
+        )
+        return False
+    missing = [page for page in range(start, end + 1) if page not in page_numbers]
+    if missing:
+        warnings.append(f"Dropped PDF page request with missing stored pages: {missing}.")
+        return False
+    return True
+
+
+def _pdf_page_for_label(source_map: SourceMap, label: str) -> int | None:
+    target = label.strip().lower()
+    for unit in source_map.units:
+        if unit.printed_page_start and unit.printed_page_start.strip().lower() == target:
+            return unit.pdf_page_start
+    return None

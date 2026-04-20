@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from essay_writer.sources.access_schema import SourceLocator
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -25,6 +27,7 @@ class CandidateTopic:
     parent_topic_id: str | None = None
     novelty_note: str | None = None
     source_leads: list[TopicSourceLead] = field(default_factory=list)
+    source_requests: list[SourceLocator] = field(default_factory=list)
     fit_score: float = 0.0
     evidence_score: float = 0.0
     originality_score: float = 0.0
@@ -77,6 +80,7 @@ class SelectedTopic:
     research_question: str
     tentative_thesis_direction: str
     source_leads: list[TopicSourceLead] = field(default_factory=list)
+    source_requests: list[SourceLocator] = field(default_factory=list)
     selected_at: str = field(default_factory=utc_now_iso)
 
 

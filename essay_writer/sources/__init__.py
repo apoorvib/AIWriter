@@ -6,7 +6,15 @@ from essay_writer.sources.ingestion import (
     SourceIngestionService,
 )
 from essay_writer.sources.index import ChunkSearchResult, SQLiteChunkIndex
+from essay_writer.sources.lazy_ocr import DefaultPdfPageOcrProvider, PdfPageOcrProvider
 from essay_writer.sources.manifest import build_index_manifest
+from essay_writer.sources.access_schema import (
+    SourceAccessConfig,
+    SourceLocator,
+    SourceMap,
+    SourceTextPacket,
+    SourceUnit,
+)
 from essay_writer.sources.schema import (
     SourceCard,
     SourceChunk,
@@ -22,8 +30,11 @@ from essay_writer.sources.storage import SourceStore
 __all__ = [
     "ChunkSearchResult",
     "FileTooLargeWithoutIndexError",
+    "DefaultPdfPageOcrProvider",
+    "PdfPageOcrProvider",
     "SQLiteChunkIndex",
     "SourceCard",
+    "SourceAccessConfig",
     "SourceChunk",
     "SourceDocument",
     "SourceIndexEntry",
@@ -32,7 +43,11 @@ __all__ = [
     "SourceIngestionError",
     "SourceIngestionResult",
     "SourceIngestionService",
+    "SourceLocator",
+    "SourceMap",
     "SourcePage",
     "SourceStore",
+    "SourceTextPacket",
+    "SourceUnit",
     "build_index_manifest",
 ]

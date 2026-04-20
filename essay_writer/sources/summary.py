@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from llm.client import LLMClient
+from llm.client import LLMClient, LLMConfigurationError
 from essay_writer.sources.schema import SourceCard, SourceChunk, SourceDocument
 
 
@@ -56,15 +55,15 @@ def build_source_card(
     summary_char_limit: int = 1_200,
 ) -> SourceCard:
     excerpts = select_source_card_excerpts(chunks, char_budget=input_char_budget)
-    if llm_client is not None:
-        payload = llm_client.chat_json(
-            system=SOURCE_CARD_SYSTEM_PROMPT,
-            user=_build_source_card_user_message(source, excerpts, summary_char_limit),
-            json_schema=SOURCE_CARD_SCHEMA,
-            max_tokens=2500,
-        )
-        return _card_from_payload(source, payload, summary_char_limit)
-    return _deterministic_source_card(source, chunks, excerpts, summary_char_limit)
+    if llm_client is None:
+        raise LLMConfigurationError("Source card generation requires an LLM client.")
+    payload = llm_client.chat_json(
+        system=SOURCE_CARD_SYSTEM_PROMPT,
+        user=_build_source_card_user_message(source, excerpts, summary_char_limit),
+        json_schema=SOURCE_CARD_SCHEMA,
+        max_tokens=2500,
+    )
+    return _card_from_payload(source, payload, summary_char_limit)
 
 
 def select_source_card_excerpts(chunks: list[SourceChunk], *, char_budget: int) -> list[SourceChunk]:
@@ -90,41 +89,6 @@ def select_source_card_excerpts(chunks: list[SourceChunk], *, char_budget: int) 
     if not selected:
         _append_if_budget(selected, seen, chunks[0], char_budget)
     return sorted(selected, key=lambda item: item.ordinal)
-
-
-def _deterministic_source_card(
-    source: SourceDocument,
-    chunks: list[SourceChunk],
-    excerpts: list[SourceChunk],
-    summary_char_limit: int,
-) -> SourceCard:
-    excerpt_text = "\n\n".join(chunk.text for chunk in excerpts).strip()
-    title = _infer_title(source, excerpt_text)
-    summary = _compact_summary(excerpt_text, summary_char_limit)
-    topics = _extract_key_topics(" ".join(chunk.text for chunk in chunks), limit=10)
-    notable = [
-        f"Pages {chunk.page_start}-{chunk.page_end}: {_first_sentence(chunk.text, 180)}"
-        for chunk in excerpts[:5]
-    ]
-    return SourceCard(
-        source_id=source.id,
-        title=title,
-        source_type=source.source_type,
-        page_count=source.page_count,
-        extraction_method=source.extraction_method,
-        brief_summary=summary,
-        key_topics=topics,
-        useful_for_topic_ideation=[
-            f"Use the indexed chunks to search this source for: {topic}"
-            for topic in topics[:5]
-        ],
-        notable_sections=notable,
-        limitations=[
-            "LLM source-card summarization was not run; this card is based on deterministic excerpts and term extraction."
-        ],
-        citation_metadata={"file_name": source.file_name},
-        warnings=[],
-    )
 
 
 def _card_from_payload(source: SourceDocument, payload: dict[str, Any], summary_char_limit: int) -> SourceCard:
@@ -199,34 +163,6 @@ def _looks_section_dense(text: str) -> bool:
     return heading_like >= 2
 
 
-def _infer_title(source: SourceDocument, text: str) -> str:
-    for line in text.splitlines():
-        stripped = line.strip()
-        if 8 <= len(stripped) <= 160:
-            return stripped
-    return Path(source.file_name).stem
-
-
-def _compact_summary(text: str, limit: int) -> str:
-    if not text:
-        return "No readable source text was available for summary generation."
-    sentences = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text).strip())
-    summary = " ".join(sentence for sentence in sentences if sentence)[:limit].strip()
-    if len(summary) == limit:
-        summary = summary[: max(0, limit - 3)].rstrip() + "..."
-    return summary
-
-
-def _first_sentence(text: str, limit: int) -> str:
-    return _compact_summary(text, limit)
-
-
-def _extract_key_topics(text: str, *, limit: int) -> list[str]:
-    words = re.findall(r"[A-Za-z][A-Za-z\-]{3,}", text.lower())
-    counts = Counter(word for word in words if word not in _STOPWORDS)
-    return [word for word, _ in counts.most_common(limit)]
-
-
 def _payload_list(payload: dict[str, Any], key: str, *, max_items: int, max_chars: int) -> list[str]:
     value = payload.get(key, [])
     if not isinstance(value, list):
@@ -239,36 +175,3 @@ def _payload_list(payload: dict[str, Any], key: str, *, max_items: int, max_char
         if text:
             result.append(text)
     return result
-
-
-_STOPWORDS = {
-    "about",
-    "after",
-    "also",
-    "because",
-    "been",
-    "between",
-    "could",
-    "from",
-    "have",
-    "into",
-    "more",
-    "most",
-    "only",
-    "other",
-    "over",
-    "such",
-    "that",
-    "their",
-    "there",
-    "these",
-    "this",
-    "through",
-    "were",
-    "when",
-    "where",
-    "which",
-    "while",
-    "with",
-    "would",
-}

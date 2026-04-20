@@ -10,6 +10,7 @@ from essay_writer.outlining.schema import ThesisOutline
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.topic_ideation.schema import SelectedTopic
 from essay_writer.research.schema import EvidenceMap
+from essay_writer.sources.access_schema import SourceTextPacket
 from essay_writer.drafting.prompts import DRAFTING_SCHEMA, DRAFTING_SYSTEM_PROMPT
 from essay_writer.drafting.schema import EssayDraft, SectionSourceMap
 
@@ -32,12 +33,19 @@ class DraftService:
         evidence_map: EvidenceMap,
         *,
         outline: ThesisOutline | None = None,
+        source_packets: list[SourceTextPacket] | None = None,
         version: int = 1,
         model: str | None = None,
     ) -> EssayDraft:
         payload = self._llm.chat_json(
             system=DRAFTING_SYSTEM_PROMPT,
-            user=_build_user_message(task_spec, selected_topic, evidence_map, outline),
+            user=_build_user_message(
+                task_spec,
+                selected_topic,
+                evidence_map,
+                outline,
+                source_packets or [],
+            ),
             json_schema=DRAFTING_SCHEMA,
             max_tokens=8000,
             model=model,
@@ -58,6 +66,7 @@ def _build_user_message(
     selected_topic: SelectedTopic,
     evidence_map: EvidenceMap,
     outline: ThesisOutline | None,
+    source_packets: list[SourceTextPacket],
 ) -> str:
     context = {
         "task_spec": {
@@ -126,7 +135,28 @@ def _build_user_message(
                 for section in outline.sections
             ],
         }
+    context["source_packets"] = _source_packets_payload(source_packets)
     return json.dumps(context, ensure_ascii=False)
+
+
+def _source_packets_payload(source_packets: list[SourceTextPacket]) -> list[dict[str, Any]]:
+    return [
+        {
+            "packet_id": packet.packet_id,
+            "source_id": packet.source_id,
+            "locator_type": packet.locator.locator_type,
+            "pdf_page_start": packet.pdf_page_start,
+            "pdf_page_end": packet.pdf_page_end,
+            "printed_page_start": packet.printed_page_start,
+            "printed_page_end": packet.printed_page_end,
+            "heading_path": packet.heading_path,
+            "extraction_method": packet.extraction_method,
+            "text_quality": packet.text_quality,
+            "warnings": packet.warnings,
+            "text": packet.text,
+        }
+        for packet in source_packets
+    ]
 
 
 def _draft_from_payload(
