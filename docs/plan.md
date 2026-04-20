@@ -211,13 +211,9 @@ should never rely on unsupported claims.
 
 ### 7. Authenticity, Voice, and Integrity Layer
 
-The originally proposed "Anti-AI-Detection Skill" should be reframed.
+The originally proposed "Anti-AI-Detection Skill" is very useful and MUST be passed to the LLM.
 
-Avoid building detector evasion as a product feature. AI detectors are unreliable,
-and optimizing for bypassing them can create academic-integrity risk and lower
-writing quality.
-
-Instead, implement a legitimate authenticity and style layer:
+We could also implement an authenticity and style layer:
 
 - Preserve the user's stated voice and academic level
 - Avoid generic boilerplate phrasing
@@ -226,11 +222,6 @@ Instead, implement a legitimate authenticity and style layer:
 - Keep citations accurate
 - Avoid fabricated references
 - Ask for user notes, stance, or personal angle where appropriate
-- Produce drafts, outlines, and revision suggestions rather than pretending the
-  system is the student's own work
-
-This layer can still improve the essay's naturalness and specificity without
-making detector evasion the objective.
 
 ### 8. Drafting
 

@@ -119,6 +119,79 @@ def test_low_text_pdf_routes_to_ocr_then_indexes() -> None:
     assert result.pages[0].text == "OCR policy evidence."
 
 
+def test_partial_pdf_uses_ocr_for_unreadable_pages_only() -> None:
+    with LocalTempDir() as tmp_path:
+        source_path = _touch_pdf(tmp_path / "mixed.pdf")
+        reader = FakeExtractor(_result(source_path, page_count=2, page_texts=["Readable embedded text page.", ""]))
+        ocr = FakeExtractor(
+            _result(
+                source_path,
+                page_count=2,
+                page_texts=["Noisy OCR duplicate.", "OCR recovered scanned page."],
+                method="tesseract",
+            )
+        )
+        service = SourceIngestionService(
+            SourceStore(tmp_path / "source_store"),
+            config=SourceIngestionConfig(min_text_chars_per_page=5),
+            document_reader=reader,
+            ocr_extractor=ocr,
+        )
+
+        result = service.ingest(source_path, source_id="src-mixed")
+
+    assert reader.calls == [source_path]
+    assert ocr.calls == [source_path]
+    assert result.pages[0].text == "Readable embedded text page."
+    assert result.pages[0].extraction_method == "pypdf"
+    assert result.pages[1].text == "OCR recovered scanned page."
+    assert result.pages[1].extraction_method == "tesseract"
+    assert result.source.extraction_method == "pypdf+tesseract"
+    assert result.indexed is True
+
+
+def test_unreadable_short_source_is_not_marked_indexed_when_no_chunks_exist() -> None:
+    with LocalTempDir() as tmp_path:
+        source_path = _touch_pdf(tmp_path / "empty.pdf")
+        reader = FakeExtractor(_result(source_path, page_count=1, page_texts=[""]))
+        ocr = FakeExtractor(_result(source_path, page_count=1, page_texts=[""], method="tesseract"))
+        service = SourceIngestionService(
+            SourceStore(tmp_path / "source_store"),
+            config=SourceIngestionConfig(min_text_chars_per_page=5),
+            document_reader=reader,
+            ocr_extractor=ocr,
+        )
+
+        result = service.ingest(source_path, source_id="src-empty")
+        source_dir = tmp_path / "source_store" / "src-empty"
+
+    assert result.chunks == []
+    assert result.indexed is False
+    assert result.index_manifest is None
+    assert result.source.index_path is None
+    assert not (source_dir / "index_manifest.json").exists()
+    assert any("No readable text" in warning for warning in result.warnings)
+
+
+def test_long_unreadable_source_with_no_chunks_raises_even_when_indexing_enabled() -> None:
+    with LocalTempDir() as tmp_path:
+        source_path = _touch_pdf(tmp_path / "long_empty.pdf")
+        reader = FakeExtractor(_result(source_path, page_count=5, page_texts=["", "", "", "", ""]))
+        ocr = FakeExtractor(_result(source_path, page_count=5, page_texts=["", "", "", "", ""], method="tesseract"))
+        service = SourceIngestionService(
+            SourceStore(tmp_path / "source_store"),
+            config=SourceIngestionConfig(
+                max_indexless_pages=3,
+                min_text_chars_per_page=5,
+            ),
+            document_reader=reader,
+            ocr_extractor=ocr,
+        )
+
+        with pytest.raises(FileTooLargeWithoutIndexError, match="no index is available"):
+            service.ingest(source_path, source_id="src-long-empty")
+
+
 def _touch_pdf(path: Path) -> Path:
     path.write_bytes(b"%PDF-pretend-for-fake-extractor")
     return path

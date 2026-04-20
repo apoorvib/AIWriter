@@ -97,6 +97,19 @@ Near-term engineering work. This file is for active or pre-launch tasks. Longer-
   - Validate against `extracted_checklist`.
   - Do not treat `adversarial_flags` or ignored AI directives as essay requirements.
 
+## Topic Ideation
+
+- [ ] Add UI-facing topic selection/rejection state.
+  - Topic rounds are now persisted immutably.
+  - Selected topic state is now persisted.
+  - Add rejected topic state and user rejection reasons for the UI.
+  - Use persisted previous rounds instead of in-memory previous-candidate lists in the UI flow.
+
+- [ ] Add an explicit external research permission gate.
+  - Keep uploaded-source index queries separate from web/database search queries.
+  - Add external search planning only when assignment policy and user settings allow it.
+  - Store external search queries and results as separate research artifacts.
+
 ## Outline Pipeline
 
 - [ ] Add rate-limit-aware LLM scheduling for per-page TOC/index extraction.

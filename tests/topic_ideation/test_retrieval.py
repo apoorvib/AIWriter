@@ -5,7 +5,7 @@ from essay_writer.sources.manifest import build_index_manifest
 from essay_writer.sources.schema import SourceCard, SourceChunk, SourceDocument, SourceIngestionResult, SourcePage
 from essay_writer.sources.storage import SourceStore
 from essay_writer.topic_ideation.retrieval import TopicEvidenceRetriever
-from essay_writer.topic_ideation.schema import CandidateTopic, TopicSourceLead
+from essay_writer.topic_ideation.schema import CandidateTopic, SelectedTopic, TopicSourceLead
 from tests.task_spec._tmp import LocalTempDir
 
 
@@ -86,7 +86,7 @@ def test_topic_evidence_retriever_uses_explicit_chunk_ids_and_suggested_searches
                 TopicSourceLead(
                     source_id=source_id,
                     chunk_ids=["src1-chunk-0001"],
-                    suggested_search_queries=["cooling centers adaptation"],
+                    suggested_source_search_queries=["cooling centers adaptation"],
                 )
             ],
         )
@@ -97,3 +97,78 @@ def test_topic_evidence_retriever_uses_explicit_chunk_ids_and_suggested_searches
     assert [chunk.chunk_id for chunk in evidence.chunks] == ["src1-chunk-0001", "src1-chunk-0002"]
     assert evidence.chunks[0].retrieval_method == "manifest_chunk_id"
     assert evidence.chunks[1].retrieval_method.startswith("fts:")
+
+
+def test_topic_evidence_retriever_accepts_selected_topic() -> None:
+    with LocalTempDir() as tmp_path:
+        store = SourceStore(tmp_path / "source_store")
+        source_id = "src1"
+        chunks = [
+            SourceChunk(
+                id="src1-chunk-0001",
+                source_id=source_id,
+                ordinal=1,
+                page_start=1,
+                page_end=1,
+                text="Urban heat affects renters.",
+                char_count=27,
+            )
+        ]
+        manifest = build_index_manifest(
+            source_id=source_id,
+            index_path=str(store.source_dir(source_id) / "index.sqlite"),
+            chunks=chunks,
+        )
+        store.save_result(
+            SourceIngestionResult(
+                source=SourceDocument(
+                    id=source_id,
+                    original_path="source.pdf",
+                    file_name="source.pdf",
+                    source_type="pdf",
+                    page_count=1,
+                    char_count=27,
+                    extraction_method="pypdf",
+                    text_quality="readable",
+                    full_text_available=True,
+                    indexed=True,
+                    index_path=manifest.index_path,
+                    index_manifest_path=str(store.source_dir(source_id) / "index_manifest.json"),
+                ),
+                pages=[],
+                chunks=chunks,
+                source_card=SourceCard(
+                    source_id=source_id,
+                    title="Urban Heat",
+                    source_type="pdf",
+                    page_count=1,
+                    extraction_method="pypdf",
+                    brief_summary="Heat.",
+                ),
+                indexed=True,
+                full_text_available=True,
+                index_manifest=manifest,
+            )
+        )
+        selected = SelectedTopic(
+            job_id="job1",
+            round_id="round1",
+            topic_id="topic_001",
+            title="Urban heat",
+            research_question="How does heat affect renters?",
+            tentative_thesis_direction="Heat policy affects renters.",
+            source_leads=[
+                TopicSourceLead(
+                    source_id=source_id,
+                    chunk_ids=["src1-chunk-0001"],
+                )
+            ],
+        )
+
+        evidence = TopicEvidenceRetriever(store).retrieve_for_selected_topic(
+            selected,
+            index_manifests=[manifest],
+        )
+
+    assert evidence.topic_id == "topic_001"
+    assert [chunk.chunk_id for chunk in evidence.chunks] == ["src1-chunk-0001"]

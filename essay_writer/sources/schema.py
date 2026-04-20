@@ -119,6 +119,7 @@ class SourceCard:
             _format_list("Useful for topic ideation", self.useful_for_topic_ideation),
             _format_list("Notable sections", self.notable_sections),
             _format_list("Limitations", self.limitations),
+            _format_metadata("Citation metadata", self.citation_metadata),
         ]
         text = "\n".join(part for part in parts if part)
         if len(text) <= max_chars:
@@ -148,6 +149,13 @@ def _format_list(label: str, values: list[str]) -> str:
     return f"{label}: " + "; ".join(values)
 
 
+def _format_metadata(label: str, values: dict[str, str]) -> str:
+    if not values:
+        return ""
+    formatted = "; ".join(f"{key}: {value}" for key, value in sorted(values.items()) if value)
+    return f"{label}: {formatted}" if formatted else ""
+
+
 @dataclass(frozen=True)
 class SourceIndexEntry:
     chunk_id: str
@@ -168,14 +176,22 @@ class SourceIndexManifest:
     entries: list[SourceIndexEntry]
     created_at: str = field(default_factory=utc_now_iso)
 
-    def to_context(self, *, max_preview_chars: int = 180) -> str:
+    def to_context(
+        self,
+        *,
+        max_preview_chars: int = 180,
+        max_entries: int | None = None,
+    ) -> str:
+        entries = _budgeted_entries(self.entries, max_entries)
         lines = [
             f"Source ID: {self.source_id}",
             f"Index handle: {self.source_id}",
             f"Chunks: {self.total_chunks}; Indexed chars: {self.total_chars}",
-            "Complete chunk index:",
+            "Complete chunk index:"
+            if max_entries is None or len(entries) == len(self.entries)
+            else f"Budgeted chunk index: {len(entries)} of {len(self.entries)} entries included.",
         ]
-        for entry in self.entries:
+        for entry in entries:
             preview = entry.preview
             if len(preview) > max_preview_chars:
                 preview = preview[: max_preview_chars - 3].rstrip() + "..."
@@ -187,3 +203,17 @@ class SourceIndexManifest:
                 f"{entry.heading}: {preview}"
             )
         return "\n".join(lines)
+
+
+def _budgeted_entries(entries: list[SourceIndexEntry], max_entries: int | None) -> list[SourceIndexEntry]:
+    if max_entries is None or len(entries) <= max_entries:
+        return entries
+    if max_entries < 1:
+        return []
+    if max_entries == 1:
+        return [entries[0]]
+    if max_entries == 2:
+        return [entries[0], entries[-1]]
+    head_count = max_entries // 2
+    tail_count = max_entries - head_count
+    return [*entries[:head_count], *entries[-tail_count:]]

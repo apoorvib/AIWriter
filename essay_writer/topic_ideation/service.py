@@ -7,7 +7,7 @@ from essay_writer.sources.schema import SourceCard, SourceIndexManifest
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.topic_ideation.context import build_topic_ideation_context
 from essay_writer.topic_ideation.prompts import TOPIC_IDEATION_SCHEMA, TOPIC_IDEATION_SYSTEM_PROMPT
-from essay_writer.topic_ideation.schema import CandidateTopic, TopicIdeationResult, TopicSourceLead
+from essay_writer.topic_ideation.schema import CandidateTopic, RejectedTopic, TopicIdeationResult, TopicSourceLead
 
 
 class TopicIdeationService:
@@ -30,12 +30,19 @@ class TopicIdeationService:
         *,
         source_cards: list[SourceCard],
         index_manifests: list[SourceIndexManifest] | None = None,
+        previous_candidates: list[CandidateTopic] | None = None,
+        rejected_topics: list[RejectedTopic] | None = None,
+        user_instruction: str | None = None,
         model: str | None = None,
     ) -> TopicIdeationResult:
         context = build_topic_ideation_context(
             task_spec,
             source_cards=source_cards,
             index_manifests=index_manifests or [],
+            previous_candidates=previous_candidates or [],
+            rejected_topics=rejected_topics or [],
+            user_instruction=user_instruction,
+            max_manifest_entries=80,
         )
         payload = self._llm.chat_json(
             system=TOPIC_IDEATION_SYSTEM_PROMPT,
@@ -56,7 +63,11 @@ def _build_user_message(context: str, max_candidates: int) -> str:
     return (
         f"Generate up to {max_candidates} candidate essay topics.\n"
         "Return only topics that fit the assignment and can plausibly be supported by the uploaded sources.\n"
-        "Use chunk_ids from the manifests when possible and suggested_search_queries for follow-up retrieval.\n\n"
+        "If previous_candidates are present, avoid duplicates and use parent_topic_id only when refining a prior topic.\n"
+        "If rejected_topics are present, avoid repeating those directions and honor the rejection reasons.\n"
+        "If user_instruction is present, treat it as direction for this new round without overriding assignment requirements.\n"
+        "Use chunk_ids from the manifests when possible and suggested_source_search_queries for uploaded-source retrieval.\n"
+        "Do not include external web or database search queries in this stage.\n\n"
         f"{context}"
     )
 
@@ -75,11 +86,17 @@ def _result_from_payload(
             research_question=str(item.get("research_question", "")).strip(),
             tentative_thesis_direction=str(item.get("tentative_thesis_direction", "")).strip(),
             rationale=str(item.get("rationale", "")).strip(),
+            parent_topic_id=_optional_str(item.get("parent_topic_id")),
+            novelty_note=_optional_str(item.get("novelty_note")),
             source_leads=[
                 TopicSourceLead(
                     source_id=str(lead.get("source_id", "")).strip(),
                     chunk_ids=_payload_list(lead, "chunk_ids", max_items=20),
-                    suggested_search_queries=_payload_list(lead, "suggested_search_queries", max_items=10),
+                    suggested_source_search_queries=_payload_list(
+                        lead,
+                        "suggested_source_search_queries",
+                        max_items=10,
+                    ),
                 )
                 for lead in item.get("source_leads", [])
                 if str(lead.get("source_id", "")).strip()
@@ -114,3 +131,10 @@ def _bounded_float(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, min(1.0, number))
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

@@ -65,8 +65,12 @@ class SourceIngestionService:
         extraction_method = _extraction_method(text_pages)
 
         pages = text_pages
-        if path.suffix.lower() == ".pdf" and text_quality == "low":
-            pages = self._extract_ocr_pages(path, resolved_id)
+        if path.suffix.lower() == ".pdf" and text_quality in {"low", "partial"}:
+            ocr_pages = self._extract_ocr_pages(path, resolved_id)
+            if text_quality == "partial":
+                pages = _merge_partial_ocr_pages(text_pages, ocr_pages, self._config)
+            else:
+                pages = ocr_pages
             text_quality = _text_quality(pages, self._config)
             extraction_method = _extraction_method(pages)
             if text_quality == "low":
@@ -88,7 +92,7 @@ class SourceIngestionService:
         indexed = False
         index_manifest: SourceIndexManifest | None = None
         index_path = self._store.source_dir(resolved_id) / "index.sqlite"
-        if self._config.index_sources:
+        if self._config.index_sources and chunks:
             try:
                 with SQLiteChunkIndex(index_path) as index:
                     index.reset()
@@ -166,6 +170,31 @@ def _source_pages(source_id: str, result: DocumentExtractionResult) -> list[Sour
         )
         for page in result.pages
     ]
+
+
+def _merge_partial_ocr_pages(
+    text_pages: list[SourcePage],
+    ocr_pages: list[SourcePage],
+    config: SourceIngestionConfig,
+) -> list[SourcePage]:
+    ocr_by_page = {page.page_number: page for page in ocr_pages}
+    merged: list[SourcePage] = []
+    seen: set[int] = set()
+    for page in text_pages:
+        seen.add(page.page_number)
+        ocr_page = ocr_by_page.get(page.page_number)
+        if (
+            page.char_count < config.min_text_chars_per_page
+            and ocr_page is not None
+            and ocr_page.char_count > page.char_count
+        ):
+            merged.append(ocr_page)
+        else:
+            merged.append(page)
+    for page in ocr_pages:
+        if page.page_number not in seen:
+            merged.append(page)
+    return sorted(merged, key=lambda item: item.page_number)
 
 
 def _text_quality(pages: list[SourcePage], config: SourceIngestionConfig) -> str:

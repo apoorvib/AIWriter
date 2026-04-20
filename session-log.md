@@ -773,3 +773,473 @@ Caveats:
 
 - Topic ideation currently requires an `LLMClient`; deterministic topic generation is not implemented.
 - Retrieval is orchestrator-controlled after ideation. The model receives source IDs/chunk IDs/search-query suggestions, not direct index filesystem paths.
+
+---
+
+## 2026-04-19 - Codex - Clarify Topic Ideation Search Query Semantics
+
+Summary:
+
+- Renamed topic source-lead queries from ambiguous `suggested_search_queries` to `suggested_source_search_queries`.
+- Updated the topic ideation prompt/schema to state these queries are only for uploaded-source indexes.
+- Added explicit prompt language forbidding external web/database search queries in the current topic ideation stage.
+- Updated retrieval and tests to use the renamed field.
+
+Files changed:
+
+- `essay_writer/topic_ideation/schema.py`
+- `essay_writer/topic_ideation/prompts.py`
+- `essay_writer/topic_ideation/service.py`
+- `essay_writer/topic_ideation/retrieval.py`
+- `tests/topic_ideation/test_service.py`
+- `tests/topic_ideation/test_retrieval.py`
+
+Verification:
+
+```powershell
+pytest tests\topic_ideation
+python -m compileall essay_writer\topic_ideation tests\topic_ideation
+pytest tests\sources
+python -m compileall essay_writer tests\sources tests\topic_ideation
+```
+
+Results:
+
+- `tests\topic_ideation`: 3 passed.
+- `tests\sources`: 8 passed.
+- Compile checks passed.
+
+Caveats:
+
+- External web-search planning is intentionally not modeled yet. It should be a separate field/stage gated by explicit user or assignment permission.
+
+---
+
+## 2026-04-19 - Codex - Iterative Topic Ideation Inputs
+
+Summary:
+
+- Added iterative topic ideation support through optional `user_instruction` and compact `previous_candidates` context.
+- Added `parent_topic_id` and `novelty_note` to candidate topics so new rounds can refine or distinguish earlier topics.
+- Updated the topic ideation prompt/schema to avoid duplicates, follow user refinement requests, and preserve task/source constraints.
+- Added tests for "more choices"/refinement behavior.
+- Added `TODO.md` items for a future persisted topic ideation session/round store and explicit external research permission gate.
+
+Files changed:
+
+- `TODO.md`
+- `essay_writer/topic_ideation/schema.py`
+- `essay_writer/topic_ideation/context.py`
+- `essay_writer/topic_ideation/prompts.py`
+- `essay_writer/topic_ideation/service.py`
+- `tests/topic_ideation/test_service.py`
+
+Verification:
+
+```powershell
+pytest tests\topic_ideation
+python -m compileall essay_writer\topic_ideation tests\topic_ideation
+```
+
+Results:
+
+- `tests\topic_ideation`: 4 passed.
+- Compile check passed.
+
+Caveats:
+
+- Topic ideation rounds are not persisted yet. The UI/session store is tracked in `TODO.md` and should be added when the essay job flow is wired.
+
+---
+
+## 2026-04-19 - Codex - Essay Job and Topic Round Workflow
+
+Summary:
+
+- Added durable essay job state with `EssayJob`, `EssayJobStore`, and status/current-stage tracking.
+- Added immutable persisted topic ideation rounds and selected topic storage.
+- Added `EssayWorkflow` helpers to create jobs, record topic rounds, gather previous candidates, select a topic, and gate research planning until a topic is selected.
+- Updated `TODO.md` to reflect that round/selection storage exists and remaining topic UI work is rejection/reason state.
+
+Files changed:
+
+- `TODO.md`
+- `essay_writer/jobs/__init__.py`
+- `essay_writer/jobs/schema.py`
+- `essay_writer/jobs/storage.py`
+- `essay_writer/jobs/workflow.py`
+- `essay_writer/topic_ideation/__init__.py`
+- `essay_writer/topic_ideation/schema.py`
+- `essay_writer/topic_ideation/storage.py`
+- `tests/jobs/__init__.py`
+- `tests/jobs/test_workflow.py`
+- `tests/topic_ideation/test_storage.py`
+
+Verification:
+
+```powershell
+pytest tests\jobs tests\topic_ideation tests\sources tests\task_spec
+python -m compileall essay_writer tests\jobs tests\topic_ideation tests\sources
+```
+
+Results:
+
+- Focused workflow/source/task suites: 29 passed.
+- Compile check passed.
+
+Caveats:
+
+- Rejected topic state and rejection reasons are not modeled yet.
+- The job workflow does not yet run task-spec parsing or source ingestion end-to-end; it persists and coordinates the artifacts those stages produce.
+
+---
+
+## 2026-04-19 - Codex - Final Topic Research
+
+Summary:
+
+- Added `essay_writer.research` for uploaded-source-only final topic research.
+- Added `ResearchNote`, `EvidenceGroup`, `EvidenceMap`, `ResearchReport`, and `FinalTopicResearchResult` schemas.
+- Added a guarded structured-output research prompt/service that extracts notes from retrieved chunks for a selected topic.
+- Validates note references against retrieved chunk IDs, corrects page ranges to chunk pages, drops fabricated quotes, and removes invalid evidence-group note references.
+- Added versioned `ResearchStore` for `evidence_map_vNNN.json` and `research_report_vNNN.json`.
+
+Files changed:
+
+- `essay_writer/research/__init__.py`
+- `essay_writer/research/schema.py`
+- `essay_writer/research/prompts.py`
+- `essay_writer/research/service.py`
+- `essay_writer/research/storage.py`
+- `tests/research/__init__.py`
+- `tests/research/test_schema.py`
+- `tests/research/test_service.py`
+- `tests/research/test_storage.py`
+
+Verification:
+
+```powershell
+pytest tests\research
+python -m compileall essay_writer\research tests\research
+pytest tests\research tests\jobs tests\topic_ideation tests\sources tests\task_spec
+python -m compileall essay_writer tests\research tests\jobs tests\topic_ideation tests\sources
+```
+
+Results:
+
+- `tests\research`: 6 passed.
+- Focused research/job/topic/source/task suites: 35 passed.
+- Compile checks passed.
+
+Caveats:
+
+- This stage uses only already-retrieved uploaded-source chunks; web research is still out of scope.
+- Evidence maps are ready for drafting, but the service does not yet update `EssayJob.current_stage` after research completion.
+
+---
+
+## 2026-04-19 - Codex - MVP Workflow Wiring and Artifact Stores
+
+Summary:
+
+- Added `TopicEvidenceRetriever.retrieve_for_selected_topic()` so selected topics can drive uploaded-source retrieval directly.
+- Added versioned `DraftStore` and `ValidationStore`.
+- Extended `EssayJob` with downstream artifact IDs and statuses for drafting, validation, and completion.
+- Added `EssayWorkflow` stage updates for research completion, draft readiness, validation readiness, and validation completion.
+- Added `MvpWorkflowRunner` to run selected-topic retrieval, final topic research, draft generation, validation, artifact persistence, and job-state updates.
+- Added a mocked end-to-end MVP workflow test from selected topic through validation.
+
+Files changed:
+
+- `essay_writer/jobs/schema.py`
+- `essay_writer/jobs/workflow.py`
+- `essay_writer/topic_ideation/retrieval.py`
+- `essay_writer/drafting/__init__.py`
+- `essay_writer/drafting/storage.py`
+- `essay_writer/validation/__init__.py`
+- `essay_writer/validation/storage.py`
+- `essay_writer/workflow/__init__.py`
+- `essay_writer/workflow/mvp.py`
+- `tests/jobs/test_workflow.py`
+- `tests/topic_ideation/test_retrieval.py`
+- `tests/drafting/test_storage.py`
+- `tests/validation/test_storage.py`
+- `tests/workflow/__init__.py`
+- `tests/workflow/test_mvp.py`
+
+Verification:
+
+```powershell
+pytest tests\workflow tests\jobs tests\drafting tests\validation tests\topic_ideation
+python -m compileall essay_writer tests\workflow tests\jobs tests\drafting tests\validation tests\topic_ideation
+pytest tests\workflow tests\drafting tests\validation tests\research tests\jobs tests\topic_ideation tests\sources tests\task_spec
+python -m compileall essay_writer tests\workflow tests\drafting tests\validation tests\research tests\jobs tests\topic_ideation tests\sources
+```
+
+Results:
+
+- Workflow/draft/validation/topic focused suite: 66 passed.
+- MVP-adjacent task/source/topic/job/research/draft/validation suite: 91 passed.
+- Compile checks passed.
+
+Caveats:
+
+- `MvpWorkflowRunner` starts after topic selection. It does not yet create jobs from pasted assignment text or uploaded files.
+- Full web research, export, and UI-facing rejection/revision state remain out of scope.
+
+---
+
+## 2026-04-20 - Codex - MVP Bootstrap Flow
+
+Summary:
+
+- Added a pre-topic MVP bootstrapper that creates jobs from pasted assignment text or assignment PDF/DOCX input.
+- Wired bootstrap parsing to persist `TaskSpecification` artifacts and include uploaded source IDs on the task spec.
+- Wired uploaded source ingestion into job state, preserving source cards and complete index manifests for topic ideation.
+- Added topic-round generation from bootstrap results, including support for user instructions and previous-candidate context.
+- Added workflow helpers for attaching task specs and sources to an existing job.
+
+Files changed:
+
+- `essay_writer/jobs/workflow.py`
+- `essay_writer/workflow/__init__.py`
+- `essay_writer/workflow/bootstrap.py`
+- `tests/jobs/test_workflow.py`
+- `tests/workflow/test_bootstrap.py`
+- `session-log.md`
+
+Verification:
+
+```powershell
+pytest tests\workflow tests\jobs tests\sources tests\task_spec tests\topic_ideation
+python -m compileall essay_writer tests\workflow tests\jobs
+pytest tests\workflow tests\drafting tests\validation tests\research tests\jobs tests\topic_ideation tests\sources tests\task_spec
+```
+
+Results:
+
+- Focused bootstrap/task/source/topic/job suite: 36 passed.
+- MVP-adjacent task/source/topic/job/research/draft/validation suite: 95 passed.
+- Compile checks passed.
+
+Caveats:
+
+- Pytest still emits the known Windows `.pytest_cache` warning; no assertions failed.
+- The bootstrapper prepares job, task, source, and topic-selection artifacts. UI/session persistence remains outside this change.
+
+---
+
+## 2026-04-20 - Codex - Workflow Gaps Checklist
+
+Summary:
+
+- Added a dedicated workflow gaps checklist for the remaining end-to-end essay-writer pipeline gaps.
+- Organized gaps by priority and included concrete completion criteria for future checkoffs.
+- Noted that external research remains permission-gated and drafting prompt wording is product-owned separately.
+
+Files changed:
+
+- `docs/workflow-gaps.md`
+- `session-log.md`
+
+Verification:
+
+- Documentation-only change; no tests run.
+
+Caveats:
+
+- All gap items are intentionally unchecked until corresponding implementation and tests land.
+
+---
+
+## 2026-04-20 - Codex - Workflow Gap Fixes Batch 1
+
+Summary:
+
+- Added workflow helpers for blocked/error job states and persisted error details.
+- Added task-spec block resolution that writes a new task-spec version and clears the blocked state when clarification resolves blocking questions.
+- Added persisted `run_selected_job()` orchestration for resuming selected jobs from stored task, topic, source, research, draft, and validation artifacts.
+- Added preflight contract validation before retrieval/research/drafting/validation work.
+- Added evidence sufficiency gating so no-evidence topics block before drafting.
+- Added version-aware research, draft, and validation writes for resume/retry paths.
+- Improved source ingestion for partial PDFs and empty indexes.
+- Checked off completed items in `docs/workflow-gaps.md`.
+
+Files changed:
+
+- `docs/workflow-gaps.md`
+- `essay_writer/jobs/workflow.py`
+- `essay_writer/workflow/__init__.py`
+- `essay_writer/workflow/bootstrap.py`
+- `essay_writer/workflow/mvp.py`
+- `essay_writer/sources/ingestion.py`
+- `essay_writer/research/service.py`
+- `essay_writer/research/storage.py`
+- `essay_writer/drafting/service.py`
+- `essay_writer/drafting/storage.py`
+- `essay_writer/validation/storage.py`
+- `tests/jobs/test_workflow.py`
+- `tests/workflow/test_bootstrap.py`
+- `tests/workflow/test_mvp.py`
+- `tests/sources/test_ingestion.py`
+- `session-log.md`
+
+Verification:
+
+```powershell
+pytest tests\workflow\test_mvp.py tests\workflow\test_bootstrap.py tests\sources\test_ingestion.py tests\jobs\test_workflow.py
+pytest tests\sources\test_ingestion.py
+pytest tests\workflow\test_bootstrap.py tests\jobs\test_workflow.py
+pytest tests\workflow\test_mvp.py
+pytest tests\workflow tests\jobs tests\sources tests\task_spec tests\topic_ideation tests\research tests\drafting tests\validation
+python -m compileall essay_writer tests\workflow tests\jobs tests\sources tests\research tests\drafting tests\validation
+```
+
+Results:
+
+- Focused gap-fix suite: 23 passed.
+- Source ingestion focused suite: 7 passed.
+- Bootstrap/job focused suite: 13 passed.
+- MVP workflow focused suite: 6 passed.
+- MVP-adjacent task/source/topic/job/research/draft/validation suite: 106 passed.
+- Compile checks passed.
+
+Caveats:
+
+- Pytest still emits the known Windows `.pytest_cache` warning; no assertions failed.
+- Research planning and outline/thesis artifacts remain unchecked in `docs/workflow-gaps.md` and are the next high-priority workflow gaps.
+
+---
+
+## 2026-04-20 - Codex - Research Plan and Outline Artifacts
+
+Summary:
+
+- Added persisted `ResearchPlan` artifacts with uploaded-source priorities, source requirements, expected evidence categories, and external-search queries gated by permission.
+- Added persisted `ThesisOutline` artifacts with working thesis, section plan, note IDs, and target-word guidance.
+- Extended `EssayJob` to track `research_plan_id` and `outline_id`.
+- Wired the MVP runner to execute topic selection -> research plan -> final topic research -> thesis outline -> draft -> validation.
+- Updated draft generation to receive outline context and record `outline_id` on drafts without modifying the drafting system prompt.
+- Checked off the research planning and thesis/outline high-priority items in `docs/workflow-gaps.md`.
+
+Files changed:
+
+- `docs/workflow-gaps.md`
+- `essay_writer/jobs/schema.py`
+- `essay_writer/jobs/workflow.py`
+- `essay_writer/workflow/mvp.py`
+- `essay_writer/drafting/schema.py`
+- `essay_writer/drafting/service.py`
+- `essay_writer/research_planning/__init__.py`
+- `essay_writer/research_planning/schema.py`
+- `essay_writer/research_planning/service.py`
+- `essay_writer/research_planning/storage.py`
+- `essay_writer/outlining/__init__.py`
+- `essay_writer/outlining/schema.py`
+- `essay_writer/outlining/service.py`
+- `essay_writer/outlining/storage.py`
+- `tests/workflow/test_mvp.py`
+- `tests/drafting/test_service.py`
+- `tests/research_planning/__init__.py`
+- `tests/research_planning/test_service.py`
+- `tests/research_planning/test_storage.py`
+- `tests/outlining/__init__.py`
+- `tests/outlining/test_service.py`
+- `tests/outlining/test_storage.py`
+- `session-log.md`
+
+Verification:
+
+```powershell
+pytest tests\research_planning
+pytest tests\outlining
+pytest tests\drafting tests\workflow\test_mvp.py tests\research_planning tests\outlining tests\jobs
+pytest tests\workflow tests\jobs tests\sources tests\task_spec tests\topic_ideation tests\research tests\research_planning tests\outlining tests\drafting tests\validation
+python -m compileall essay_writer tests\workflow tests\jobs tests\sources tests\research tests\research_planning tests\outlining tests\drafting tests\validation
+```
+
+Results:
+
+- Research planning focused suite: 5 passed.
+- Outlining focused suite: 3 passed.
+- Integration-focused planning/outline/drafting/workflow/jobs suite: 43 passed.
+- MVP-adjacent task/source/topic/job/research/planning/outline/draft/validation suite: 115 passed.
+- Compile checks passed.
+
+Caveats:
+
+- Research planning and outlining are deterministic structured services for now; richer LLM-backed versions can be added behind the same artifact schemas later.
+- Medium-priority gaps in `docs/workflow-gaps.md` remain open.
+
+---
+
+## 2026-04-20 - Codex - Medium Workflow Gap Completion
+
+Summary:
+
+- Added rejected-topic persistence, including rejection reasons, workflow APIs, and later topic-ideation context so "more choices" can avoid rejected directions.
+- Added source manifest context budgeting while preserving complete index context for small manifests and index handles for deeper lookup.
+- Expanded plain-text source reading to `.txt`, `.md`, `.markdown`, and `.notes`.
+- Added final Markdown export artifacts with source maps and validation summary, plus workflow completion linkage through `final_export_id`.
+- Added deterministic citation metadata warnings that compare bibliography candidates against ingested source-card metadata and pass known source metadata into validation context.
+- Added a failed-validation revision loop that creates draft v2, reruns validation, and exports only after a passing revision.
+- Checked off all remaining items in `docs/workflow-gaps.md`.
+
+Files changed:
+
+- `docs/workflow-gaps.md`
+- `pdf_pipeline/document_reader.py`
+- `essay_writer/sources/schema.py`
+- `essay_writer/topic_ideation/__init__.py`
+- `essay_writer/topic_ideation/context.py`
+- `essay_writer/topic_ideation/schema.py`
+- `essay_writer/topic_ideation/service.py`
+- `essay_writer/topic_ideation/storage.py`
+- `essay_writer/jobs/schema.py`
+- `essay_writer/jobs/workflow.py`
+- `essay_writer/workflow/bootstrap.py`
+- `essay_writer/workflow/mvp.py`
+- `essay_writer/drafting/__init__.py`
+- `essay_writer/drafting/revision.py`
+- `essay_writer/exporting/__init__.py`
+- `essay_writer/exporting/schema.py`
+- `essay_writer/exporting/service.py`
+- `essay_writer/exporting/storage.py`
+- `essay_writer/validation/__init__.py`
+- `essay_writer/validation/citations.py`
+- `essay_writer/validation/schema.py`
+- `essay_writer/validation/service.py`
+- `essay_writer/validation/storage.py`
+- `tests/test_document_reader_text.py`
+- `tests/topic_ideation/test_context.py`
+- `tests/topic_ideation/test_service.py`
+- `tests/topic_ideation/test_storage.py`
+- `tests/jobs/test_workflow.py`
+- `tests/workflow/test_mvp.py`
+- `tests/exporting/test_service_storage.py`
+- `tests/validation/test_service.py`
+- `tests/validation/test_storage.py`
+- `session-log.md`
+
+Verification:
+
+```powershell
+pytest tests\topic_ideation tests\jobs\test_workflow.py tests\test_document_reader_text.py
+pytest tests\exporting tests\workflow\test_mvp.py
+pytest tests\validation tests\workflow\test_mvp.py tests\exporting
+pytest tests\workflow tests\jobs tests\sources tests\task_spec tests\topic_ideation tests\research tests\research_planning tests\outlining tests\drafting tests\validation tests\exporting tests\test_document_reader_text.py
+python -m compileall essay_writer pdf_pipeline tests\workflow tests\jobs tests\sources tests\research tests\research_planning tests\outlining tests\drafting tests\validation tests\exporting tests\test_document_reader_text.py
+```
+
+Results:
+
+- Topic/job/text-reader focused suite: 19 passed.
+- Export/workflow focused suite: 8 passed.
+- Validation/workflow/export focused suite: 44 passed.
+- Broad MVP-adjacent suite: 127 passed.
+- Compile checks passed.
+
+Caveats:
+
+- Pytest still emits the known Windows `.pytest_cache` warning; no assertions failed.
+- DOCX/PDF final exports, live web/database research, and richer UI/session storage are still future product work rather than open workflow gaps in this file.
