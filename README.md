@@ -33,6 +33,39 @@ pip install -e ".[ocr-high]"    # PaddleOCR tier
 pip install -e ".[ocr-small,ocr-scheduler]"  # Tesseract + parallel scheduler
 ```
 
+Install the web API dependencies when running the local app:
+
+```bash
+pip install -e ".[web]"
+```
+
+Install the Vite frontend dependencies:
+
+```bash
+cd frontend
+npm install
+```
+
+## Web App Usage
+
+Run the API from the repository root:
+
+```bash
+uvicorn backend.app:app --reload
+```
+
+Run the frontend in another terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+The frontend dev server proxies `/api` requests to `http://localhost:8000`.
+The app supports source uploads for `.pdf`, `.docx`, `.txt`, `.md`,
+`.markdown`, and `.notes` files. Assignment text can be pasted or extracted
+from the same document types.
+
 ## CLI Usage
 
 ```bash

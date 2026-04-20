@@ -1243,3 +1243,56 @@ Caveats:
 
 - Pytest still emits the known Windows `.pytest_cache` warning; no assertions failed.
 - DOCX/PDF final exports, live web/database research, and richer UI/session storage are still future product work rather than open workflow gaps in this file.
+
+---
+
+## 2026-04-20 - Codex - Basic Web App Continuation
+
+Summary:
+
+- Inspected Claude's unfinished web work and continued it into a buildable Vite/FastAPI app.
+- Added backend support for source uploads across `DocumentReader` file types, assignment-file text extraction, topic rejection, external-search gating, persisted workflow runner execution, SSE stage events, and frontend static serving/env loading.
+- Extended `MvpWorkflowRunner` with per-stage model config, external search propagation, and optional stage callbacks for the web pipeline.
+- Updated the frontend for source/assignment setup, topic selection/rejection, pipeline start controls, validation/export viewing, and Markdown download.
+- Added web install/run docs and ignored generated frontend artifacts.
+
+Files changed:
+
+- `.gitignore`
+- `README.md`
+- `pyproject.toml`
+- `backend/*`
+- `frontend/*`
+- `essay_writer/workflow/mvp.py`
+- previously-started LLM model/logging/web-search files and tests under `llm/` and `tests/llm/`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+npm install
+npm run build
+python -m compileall backend llm essay_writer
+pytest tests\llm tests\workflow\test_mvp.py tests\jobs\test_workflow.py
+pytest tests\llm tests\workflow\test_mvp.py tests\jobs\test_workflow.py tests\sources tests\task_spec tests\topic_ideation tests\research tests\research_planning tests\outlining tests\drafting tests\validation tests\exporting
+python -c "from backend.app import app; print(app.title)"
+rg -n "[^\x00-\x7F]" backend frontend\src frontend\index.html frontend\package.json frontend\vite.config.ts frontend\tsconfig.json
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+Results:
+
+- Frontend production build passed.
+- Compile checks passed.
+- Focused LLM/workflow/job suite: 56 passed.
+- Broad MVP-adjacent suite: 159 passed.
+- FastAPI app imports and reports `EssayWriter API`.
+- Edited backend/frontend source files are ASCII-clean.
+- Local API and frontend dev servers responded with HTTP 200 at `http://127.0.0.1:8000/docs` and `http://127.0.0.1:5173`.
+
+Caveats:
+
+- `npm install` reported 2 moderate npm audit findings in Vite-era dependencies; no automatic upgrade was applied.
+- The first sandboxed Vite dev-server attempt hit an esbuild `spawn EPERM`; rerunning with approved escalation started the server.
+- Pytest still emits the known Windows `.pytest_cache` warning and a Gemini SDK deprecation warning.
+- Live LLM/OCR behavior was not exercised; tests used existing mocks/deterministic services.

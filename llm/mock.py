@@ -20,6 +20,7 @@ class MockLLMClient:
         json_schema: dict[str, Any],
         max_tokens: int = DEFAULT_LLM_MAX_OUTPUT_TOKENS,
         model: str | None = None,
+        enable_web_search: bool = False,
     ) -> dict[str, Any]:
         self.calls.append(
             {
@@ -28,6 +29,7 @@ class MockLLMClient:
                 "json_schema": json_schema,
                 "max_tokens": max_tokens,
                 "model": model,
+                "enable_web_search": enable_web_search,
             }
         )
         if not self._responses:

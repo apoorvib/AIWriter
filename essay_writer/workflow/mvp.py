@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
+from llm.config import StageModelConfig
 from essay_writer.drafting.schema import EssayDraft
 from essay_writer.drafting.revision import DraftRevisionService
 from essay_writer.drafting.service import DraftService
@@ -44,6 +46,9 @@ class WorkflowNotRunnableError(RuntimeError):
     """Raised when a job is already blocked or failed and should not be resumed."""
 
 
+StageCallback = Callable[[str, str], None]
+
+
 @dataclass(frozen=True)
 class MvpWorkflowResult:
     job: EssayJob
@@ -80,6 +85,7 @@ class MvpWorkflowRunner:
         task_store: TaskSpecStore | None = None,
         topic_store: TopicRoundStore | None = None,
         source_store: SourceStore | None = None,
+        model_config: StageModelConfig | None = None,
     ) -> None:
         self._workflow = workflow
         self._retriever = retriever
@@ -99,6 +105,7 @@ class MvpWorkflowRunner:
         self._task_store = task_store
         self._topic_store = topic_store
         self._source_store = source_store
+        self._model_config = model_config or StageModelConfig()
 
     def run_after_topic_selection(
         self,
@@ -108,6 +115,8 @@ class MvpWorkflowRunner:
         selected_topic: SelectedTopic,
         index_manifests: list[SourceIndexManifest],
         model: str | None = None,
+        external_search_allowed: bool = False,
+        on_stage: StageCallback | None = None,
     ) -> MvpWorkflowResult:
         try:
             job = self._workflow.ensure_research_planning_ready(job_id)
@@ -123,6 +132,8 @@ class MvpWorkflowRunner:
                 index_manifests=index_manifests,
                 retrieved=retrieved,
                 model=model,
+                external_search_allowed=external_search_allowed,
+                on_stage=on_stage,
             )
         except InsufficientEvidenceError:
             raise
@@ -130,7 +141,14 @@ class MvpWorkflowRunner:
             self._mark_error_if_possible(job_id, stage="workflow", message=str(exc))
             raise
 
-    def run_selected_job(self, job_id: str, *, model: str | None = None) -> MvpWorkflowResult:
+    def run_selected_job(
+        self,
+        job_id: str,
+        *,
+        model: str | None = None,
+        external_search_allowed: bool = False,
+        on_stage: StageCallback | None = None,
+    ) -> MvpWorkflowResult:
         """Resume or complete a selected uploaded-source MVP job from persisted artifacts."""
         try:
             task_store, topic_store, source_store = self._require_persisted_stores()
@@ -158,6 +176,8 @@ class MvpWorkflowRunner:
                     index_manifests=index_manifests,
                     retrieved=retrieved,
                     model=model,
+                    external_search_allowed=external_search_allowed,
+                    on_stage=on_stage,
                 )
             if job.status == "drafting_ready":
                 research_plan = self._research_plan_store.load_latest(job_id)
@@ -172,6 +192,7 @@ class MvpWorkflowRunner:
                     research_plan=research_plan,
                     research=research,
                     model=model,
+                    on_stage=on_stage,
                 )
             if job.status == "validation_ready":
                 research_plan = self._research_plan_store.load_latest(job_id)
@@ -190,9 +211,10 @@ class MvpWorkflowRunner:
                     outline=outline,
                     draft=draft,
                     model=model,
+                    on_stage=on_stage,
                 )
             if job.status == "validation_complete" and job.current_stage == "revision":
-                return self.run_revision_for_job(job_id, model=model)
+                return self.run_revision_for_job(job_id, model=model, on_stage=on_stage)
             if job.status == "validation_complete":
                 research_plan = self._research_plan_store.load_latest(job_id)
                 research = self._research_store.load_latest(job_id)
@@ -223,7 +245,13 @@ class MvpWorkflowRunner:
             self._mark_error_if_possible(job_id, stage="workflow", message=str(exc))
             raise
 
-    def run_revision_for_job(self, job_id: str, *, model: str | None = None) -> MvpWorkflowResult:
+    def run_revision_for_job(
+        self,
+        job_id: str,
+        *,
+        model: str | None = None,
+        on_stage: StageCallback | None = None,
+    ) -> MvpWorkflowResult:
         """Create the next draft version from failed validation feedback and rerun validation."""
         if self._revision_service is None:
             raise ValueError("revision_service is required for revision jobs.")
@@ -258,6 +286,7 @@ class MvpWorkflowRunner:
             if validation.passes:
                 raise WorkflowContractError("Revision requires a failed validation report.")
 
+            _emit_stage(on_stage, "revision", "start")
             revision_version = self._draft_store.next_version(job_id)
             revised_draft = self._revision_service.revise(
                 job,
@@ -268,10 +297,11 @@ class MvpWorkflowRunner:
                 previous_draft=previous_draft,
                 validation=validation,
                 version=revision_version,
-                model=model,
+                model=model or self._model_config.drafting_revision,
             )
             self._draft_store.save(revised_draft)
             self._workflow.record_draft_ready(job_id=job_id, draft=revised_draft)
+            _emit_stage(on_stage, "revision", "done")
             return self._run_validation_only(
                 task_spec=task_spec,
                 retrieved=retrieved,
@@ -280,6 +310,7 @@ class MvpWorkflowRunner:
                 outline=outline,
                 draft=revised_draft,
                 model=model,
+                on_stage=on_stage,
             )
         except (WorkflowNotRunnableError, WorkflowContractError):
             raise
@@ -296,8 +327,11 @@ class MvpWorkflowRunner:
         index_manifests: list[SourceIndexManifest],
         retrieved: RetrievedTopicEvidence,
         model: str | None,
+        external_search_allowed: bool = False,
+        on_stage: StageCallback | None = None,
     ) -> MvpWorkflowResult:
         try:
+            _emit_stage(on_stage, "research_planning", "start")
             research_plan_version = self._research_plan_store.next_version(job.id)
             research_plan = self._research_planning_service.create_plan(
                 job=job,
@@ -305,11 +339,13 @@ class MvpWorkflowRunner:
                 selected_topic=selected_topic,
                 index_manifests=index_manifests,
                 version=research_plan_version,
-                external_search_allowed=False,
+                external_search_allowed=external_search_allowed,
             )
             self._research_plan_store.save(research_plan)
             job = self._workflow.record_research_plan_complete(job_id=job.id, research_plan=research_plan)
+            _emit_stage(on_stage, "research_planning", "done")
 
+            _emit_stage(on_stage, "research", "start")
             research_version = self._research_store.next_version(job.id)
             research = self._research_service.extract(
                 job=job,
@@ -317,7 +353,8 @@ class MvpWorkflowRunner:
                 selected_topic=selected_topic,
                 retrieved_evidence=[retrieved],
                 evidence_map_version=research_version,
-                model=model,
+                model=model or self._model_config.research,
+                enable_web_search=research_plan.external_search_allowed,
             )
             self._research_store.save_result(research, version=research_version)
             if not research.evidence_map.notes:
@@ -328,6 +365,7 @@ class MvpWorkflowRunner:
                 )
                 raise InsufficientEvidenceError("Selected topic does not have enough retrieved evidence to draft safely.")
             job = self._workflow.record_research_complete(job_id=job.id, research_result=research)
+            _emit_stage(on_stage, "research", "done")
         except InsufficientEvidenceError:
             raise
         except Exception as exc:
@@ -341,6 +379,7 @@ class MvpWorkflowRunner:
             research_plan=research_plan,
             research=research,
             model=model,
+            on_stage=on_stage,
         )
 
     def _run_draft_to_validation(
@@ -353,9 +392,11 @@ class MvpWorkflowRunner:
         research_plan: ResearchPlan,
         research: FinalTopicResearchResult,
         model: str | None,
+        on_stage: StageCallback | None = None,
     ) -> MvpWorkflowResult:
         try:
             self._workflow.ensure_drafting_ready(job.id)
+            _emit_stage(on_stage, "outlining", "start")
             outline_version = self._outline_store.next_version(job.id)
             outline = self._outline_service.create_outline(
                 job=job,
@@ -367,7 +408,9 @@ class MvpWorkflowRunner:
             )
             self._outline_store.save(outline)
             job = self._workflow.record_outline_ready(job_id=job.id, outline=outline)
+            _emit_stage(on_stage, "outlining", "done")
 
+            _emit_stage(on_stage, "drafting", "start")
             draft_version = self._draft_store.next_version(job.id)
             draft = self._draft_service.generate(
                 job,
@@ -376,10 +419,11 @@ class MvpWorkflowRunner:
                 research.evidence_map,
                 outline=outline,
                 version=draft_version,
-                model=model,
+                model=model or self._model_config.drafting,
             )
             self._draft_store.save(draft)
             self._workflow.record_draft_ready(job_id=job.id, draft=draft)
+            _emit_stage(on_stage, "drafting", "done")
         except Exception as exc:
             self._mark_error_if_possible(job.id, stage="drafting", message=str(exc))
             raise
@@ -391,6 +435,7 @@ class MvpWorkflowRunner:
             outline=outline,
             draft=draft,
             model=model,
+            on_stage=on_stage,
         )
 
     def _run_validation_only(
@@ -403,9 +448,11 @@ class MvpWorkflowRunner:
         outline: ThesisOutline,
         draft: EssayDraft,
         model: str | None,
+        on_stage: StageCallback | None = None,
     ) -> MvpWorkflowResult:
         try:
             self._workflow.ensure_validation_ready(draft.job_id)
+            _emit_stage(on_stage, "validation", "start")
             job_for_validation = self._workflow.load_job(draft.job_id)
             source_cards = (
                 _load_source_cards(self._source_store, job_for_validation.source_ids)
@@ -420,7 +467,7 @@ class MvpWorkflowRunner:
                 evidence_map=research.evidence_map.notes,
                 bibliography_candidates=draft.bibliography_candidates,
                 source_cards=source_cards,
-                model=model,
+                model=model or self._model_config.validation,
             )
             self._validation_store.save(draft.job_id, validation, version=validation_version)
             job = self._workflow.record_validation_complete(
@@ -428,8 +475,10 @@ class MvpWorkflowRunner:
                 validation_report_id=f"{validation.draft_id}:v{validation_version:03d}",
                 passes=validation.passes,
             )
+            _emit_stage(on_stage, "validation", "done")
             final_export = None
             if validation.passes and self._export_service is not None and self._export_store is not None:
+                _emit_stage(on_stage, "export", "start")
                 final_export = self._export_service.create_markdown_export(
                     job=job,
                     task_spec=task_spec,
@@ -438,6 +487,7 @@ class MvpWorkflowRunner:
                 )
                 self._export_store.save(final_export)
                 job = self._workflow.record_final_export_ready(job_id=draft.job_id, export=final_export)
+                _emit_stage(on_stage, "export", "done")
         except Exception as exc:
             self._mark_error_if_possible(draft.job_id, stage="validation", message=str(exc))
             raise
@@ -466,6 +516,11 @@ class MvpWorkflowRunner:
             self._workflow.mark_error(job_id=job_id, stage=stage, message=message)
         except Exception:
             return
+
+
+def _emit_stage(callback: StageCallback | None, stage: str, status: str) -> None:
+    if callback is not None:
+        callback(stage, status)
 
 
 def _load_index_manifests(source_store: SourceStore, source_ids: list[str]) -> list[SourceIndexManifest]:

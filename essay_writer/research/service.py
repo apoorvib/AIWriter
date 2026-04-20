@@ -44,6 +44,7 @@ class FinalTopicResearchService:
         retrieved_evidence: list[RetrievedTopicEvidence],
         evidence_map_version: int = 1,
         model: str | None = None,
+        enable_web_search: bool = False,
     ) -> FinalTopicResearchResult:
         chunks = _flatten_chunks(selected_topic.topic_id, retrieved_evidence)
         if not chunks:
@@ -61,6 +62,7 @@ class FinalTopicResearchService:
             json_schema=FINAL_TOPIC_RESEARCH_SCHEMA,
             max_tokens=8000,
             model=model,
+            enable_web_search=enable_web_search,
         )
         return _result_from_payload(
             job=job,
