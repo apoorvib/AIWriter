@@ -65,6 +65,13 @@ export interface ValidationSummary {
   passes: boolean;
   overall_quality: number;
   unsupported_claim_count: number;
+  diagnostics: {
+    location: string;
+    issue_type: string;
+    evidence: string;
+    severity: string;
+    action: string;
+  }[];
   revision_suggestions: string[];
 }
 
@@ -84,6 +91,8 @@ export interface SSEEvent {
   draft_id?: string;
   final_export_id?: string | null;
   message?: string;
+  detail?: string;
+  error_type?: string;
 }
 
 export interface AppSettings {
@@ -92,9 +101,20 @@ export interface AppSettings {
   model_source_card: string;
   model_topic_ideation: string;
   model_research: string;
+  model_outlining: string;
   model_drafting: string;
   model_drafting_revision: string;
+  model_drafting_style: string;
   model_validation: string;
+  max_tokens_task_spec: number;
+  max_tokens_source_card: number;
+  max_tokens_topic_ideation: number;
+  max_tokens_research: number;
+  max_tokens_outlining: number;
+  max_tokens_drafting: number;
+  max_tokens_drafting_revision: number;
+  max_tokens_drafting_style: number;
+  max_tokens_validation: number;
   ocr_tier: "small" | "medium" | "high";
   chunk_target_chars: number;
   chunk_overlap_chars: number;

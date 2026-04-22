@@ -85,6 +85,33 @@ ESSAY_LAZY_OCR_DPI=300
 ESSAY_LAZY_OCR_LANGUAGES=en
 ```
 
+Per-stage model and token budgets can be configured through settings or env
+vars. The backend resolves models in this order: per-stage Settings override,
+per-stage env var, Settings default model, `LLM_MODEL`, then the adapter
+default.
+
+```bash
+ESSAY_MODEL_TASK_SPEC=
+ESSAY_MODEL_SOURCE_CARD=
+ESSAY_MODEL_TOPIC_IDEATION=
+ESSAY_MODEL_RESEARCH=
+ESSAY_MODEL_OUTLINING=
+ESSAY_MODEL_DRAFTING=
+ESSAY_MODEL_DRAFTING_REVISION=
+ESSAY_MODEL_DRAFTING_STYLE=
+ESSAY_MODEL_VALIDATION=
+
+ESSAY_MAX_TOKENS_TASK_SPEC=4096
+ESSAY_MAX_TOKENS_SOURCE_CARD=2500
+ESSAY_MAX_TOKENS_TOPIC_IDEATION=5000
+ESSAY_MAX_TOKENS_RESEARCH=8000
+ESSAY_MAX_TOKENS_OUTLINING=6000
+ESSAY_MAX_TOKENS_DRAFTING=8000
+ESSAY_MAX_TOKENS_DRAFTING_REVISION=8000
+ESSAY_MAX_TOKENS_DRAFTING_STYLE=8000
+ESSAY_MAX_TOKENS_VALIDATION=4000
+```
+
 PDF retrieval uses physical 1-based PDF page numbers for source access.
 Printed page labels are stored separately when PDF metadata exposes them, and
 are used for traceability rather than as the primary retrieval coordinate.
@@ -126,10 +153,11 @@ where a configured `LLMClient` is passed into the service.
 | Research planning | No today | `research-planning-v1` metadata only | The app deterministically validates selected-topic `source_requests`, source IDs, page ranges, sections, chunks, and budgets. No model call is made. |
 | Source resolution | No | None | The app resolves validated requests into `SourceTextPacket` objects and may run lazy per-page OCR locally. |
 | Final topic research | Yes | `final-topic-research-v1` / `FINAL_TOPIC_RESEARCH_SYSTEM_PROMPT` | Task spec, selected topic, resolved source packets, and legacy chunks when present. |
-| Outlining | Yes | `thesis-outline-v1` / `OUTLINE_SYSTEM_PROMPT` | Task spec, selected topic, research plan, evidence map, and source packets. Missing LLM configuration raises an error. |
+| Outlining | Yes | `thesis-outline-v1` / `OUTLINE_SYSTEM_PROMPT` | Task spec, selected topic, research plan, evidence map, and full source-packet text/metadata. Missing LLM configuration raises an error. |
 | Drafting | Yes | `drafting-v1` / `DRAFTING_SYSTEM_PROMPT` | Task spec, selected topic, evidence map, outline, and resolved source packets/excerpts. |
-| Validation | Yes | `validation-v1` / `VALIDATION_SYSTEM_PROMPT` | Draft, task spec, evidence notes, bibliography candidates, source-card metadata, metadata warnings, and deterministic style findings. |
-| Revision | Yes | `drafting-revision-v1` / `DRAFTING_SYSTEM_PROMPT` | Prior draft, validation feedback, task spec, selected topic, outline, evidence map, and resolved source packets/excerpts. |
+| Validation | Yes | `validation-v1` / `VALIDATION_SYSTEM_PROMPT` | Draft, task spec, evidence notes, bibliography candidates, source-card metadata, metadata warnings, and deterministic style findings. Returns structured diagnostics rather than prose rewrite advice. |
+| Revision | Yes | `drafting-revision-v1` / `DRAFTING_SYSTEM_PROMPT` | Prior draft, structured validation diagnostics, task spec, selected topic, outline, evidence map, and resolved source packets/excerpts. |
+| Final style pass | Yes | `drafting-style-revision-v1` / `STYLE_REVISION_SYSTEM_PROMPT` | Latest draft, task spec, outline, evidence map, deterministic style findings, anti-AI skill document, and source packets. Preserves facts/citations while revising prose shape. |
 | Export | No | None | The app writes final Markdown from stored draft and validation data. |
 
 ### Prompt Inventory
@@ -215,6 +243,12 @@ Purpose:
 - Carry the core argument through thesis, section purposes, claims, evidence
   placement, counterarguments, and word-budget priorities.
 - Preserve traceability through note IDs and source packet IDs.
+- Receive source-packet locator metadata, PDF page ranges, printed page labels,
+  heading paths, extraction methods, text quality, warnings, and text so the
+  outline can plan from concrete source information.
+- Apply structural humanization guidance: avoid uniform section weights,
+  three parallel body sections, and perfectly balanced source treatment unless
+  the assignment requires them.
 
 #### Drafting Prompt
 
@@ -230,8 +264,9 @@ Purpose:
 
 - Write an academic essay draft from task spec, selected topic, evidence map,
   outline, and resolved source packets.
-- Use only evidence-map notes, record section-to-note/source mappings, and
-  report weak spots instead of fabricating support.
+- Use only evidence-map notes and supplied source packets, record
+  section-to-note/source mappings, and report weak spots instead of fabricating
+  support.
 - Use source packet text for accurate source detail, quotes, and citations.
 - Include the full local `anti-ai-detection-SKILL.md` document directly in the
   system prompt and apply it during drafting, not as a cleanup pass.
@@ -251,8 +286,8 @@ Purpose:
 - Revise the prior draft using validation feedback while keeping every claim
   grounded in the supplied evidence.
 - Reuses the same drafting system prompt and schema, but the user payload adds
-  previous draft content, validation findings, weak spots, and revision
-  suggestions.
+  previous draft content, structured validation diagnostics, legacy revision
+  suggestions when present, and weak spots.
 - Receives the resolved source packets again, so revision can correct grounding
   issues against the actual excerpts instead of only the distilled evidence map.
 - Because it reuses `DRAFTING_SYSTEM_PROMPT`, it also includes the full
@@ -273,6 +308,26 @@ Purpose:
   higher-level style.
 - Deterministic style checks run before this call; the prompt tells the model
   not to re-check those findings and instead use them as supplied data.
+- Return structured diagnostics with location, issue type, evidence, severity,
+  and action category. The validator diagnoses; drafting/revision services
+  perform the rewrite.
+
+#### Final Style Pass Prompt
+
+- Files: `essay_writer/drafting/style_revision.py`,
+  `anti-ai-detection-SKILL.md`
+- System prompt: `STYLE_REVISION_SYSTEM_PROMPT`
+- User payload: `_build_user_message(...)` in `drafting/style_revision.py`
+- Output schema: `STYLE_REVISION_SCHEMA`
+- Stored version: `drafting-style-revision-v1`
+
+Purpose:
+
+- Run a constrained prose-only style pass before validation.
+- Preserve facts, citations, thesis meaning, source map, bibliography
+  candidates, and required source-backed claims.
+- Use deterministic style findings and the full anti-AI skill document to
+  reduce generic prose patterns without adding unsupported content.
 
 ### 1. Source Ingestion
 
@@ -546,7 +601,9 @@ receives:
 - selected topic
 - research plan
 - evidence map
-- resolved source packets
+- resolved source packets, including packet IDs, source IDs, locator type, PDF
+  page ranges, printed page labels when known, heading paths, extraction
+  method, text quality, warnings, and text
 
 It returns:
 
@@ -595,6 +652,11 @@ Deterministic checks look for style and structure issues such as:
 - participial phrase rate
 - repetitive signposting
 - sentence similarity runs
+- triplet plus contrastive-negation combos
+- clustered triplets
+- paragraph length variance
+- mechanical burstiness
+- concrete source engagement
 
 The LLM validation stage receives:
 
@@ -613,7 +675,8 @@ It returns:
 - assignment-fit judgment
 - length check
 - style issues
-- revision suggestions
+- structured diagnostics
+- legacy revision suggestions when present
 - overall quality score
 
 ### 13. Revision Loop
@@ -633,7 +696,18 @@ The revision service receives:
 It creates the next draft version, then validation runs again. If the revised
 draft passes, the workflow can export.
 
-### 14. Export
+### 14. Final Style Pass
+
+When configured, the workflow runs a final constrained style pass before
+validation. This pass receives the latest draft, task spec, outline, evidence
+map, deterministic style findings, anti-AI skill document, and source packets.
+
+The style pass may revise prose rhythm, paragraph movement, transitions, and
+generic phrasing. It must not add facts, citations, source names, quotes, page
+numbers, or statistics. The styled draft is stored as the next draft version,
+and validation runs against that styled draft.
+
+### 15. Export
 
 When validation passes, `FinalExportService` creates a Markdown export with:
 

@@ -53,6 +53,8 @@ def build_source_card(
     llm_client: LLMClient | None = None,
     input_char_budget: int = 16_000,
     summary_char_limit: int = 1_200,
+    max_tokens: int = 2500,
+    model: str | None = None,
 ) -> SourceCard:
     excerpts = select_source_card_excerpts(chunks, char_budget=input_char_budget)
     if llm_client is None:
@@ -61,7 +63,8 @@ def build_source_card(
         system=SOURCE_CARD_SYSTEM_PROMPT,
         user=_build_source_card_user_message(source, excerpts, summary_char_limit),
         json_schema=SOURCE_CARD_SCHEMA,
-        max_tokens=2500,
+        max_tokens=max_tokens,
+        model=model,
     )
     return _card_from_payload(source, payload, summary_char_limit)
 

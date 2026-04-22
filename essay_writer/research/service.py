@@ -29,12 +29,14 @@ class FinalTopicResearchService:
         *,
         prompt_version: str = "final-topic-research-v1",
         max_notes: int = 80,
+        max_tokens: int = 8000,
     ) -> None:
         if max_notes < 1:
             raise ValueError("max_notes must be >= 1")
         self._llm = llm_client
         self._prompt_version = prompt_version
         self._max_notes = max_notes
+        self._max_tokens = max_tokens
 
     def extract(
         self,
@@ -65,7 +67,7 @@ class FinalTopicResearchService:
             system=FINAL_TOPIC_RESEARCH_SYSTEM_PROMPT,
             user=_build_user_message(job, task_spec, selected_topic, chunks, self._max_notes),
             json_schema=FINAL_TOPIC_RESEARCH_SCHEMA,
-            max_tokens=8000,
+            max_tokens=self._max_tokens,
             model=model,
             enable_web_search=enable_web_search,
         )

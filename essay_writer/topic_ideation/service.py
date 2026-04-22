@@ -18,12 +18,16 @@ class TopicIdeationService:
         *,
         prompt_version: str = "topic-ideation-v1",
         max_candidates: int = 8,
+        max_tokens: int = 5000,
+        model: str | None = None,
     ) -> None:
         if max_candidates < 1:
             raise ValueError("max_candidates must be >= 1")
         self._llm = llm_client
         self._prompt_version = prompt_version
         self._max_candidates = max_candidates
+        self._max_tokens = max_tokens
+        self._model = model
 
     def generate(
         self,
@@ -51,8 +55,8 @@ class TopicIdeationService:
             system=TOPIC_IDEATION_SYSTEM_PROMPT,
             user=_build_user_message(context, self._max_candidates),
             json_schema=TOPIC_IDEATION_SCHEMA,
-            max_tokens=5000,
-            model=model,
+            max_tokens=self._max_tokens,
+            model=model or self._model,
         )
         return _result_from_payload(
             task_spec_id=task_spec.id,
@@ -64,8 +68,8 @@ class TopicIdeationService:
 
 def _build_user_message(context: str, max_candidates: int) -> str:
     return (
-        f"Generate up to {max_candidates} candidate essay topics.\n"
-        "Return only topics that fit the assignment and can plausibly be supported by the uploaded sources.\n"
+        f"Generate up to {max_candidates} candidate approaches for this assignment.\n"
+        "Each candidate must fit the assignment constraints and be plausibly supported by the uploaded sources.\n"
         "If previous_candidates are present, avoid duplicates and use parent_topic_id only when refining a prior topic.\n"
         "If rejected_topics are present, avoid repeating those directions and honor the rejection reasons.\n"
         "If user_instruction is present, treat it as direction for this new round without overriding assignment requirements.\n"

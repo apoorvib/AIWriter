@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from functools import lru_cache
 
-from llm.config import StageModelConfig
+from llm.config import StageMaxTokensConfig, StageModelConfig
 from llm.factory import make_client
 from llm.logging_client import LoggingLLMClient
 
@@ -31,6 +31,7 @@ from essay_writer.outlining.storage import ThesisOutlineStore
 from essay_writer.drafting.service import DraftService
 from essay_writer.drafting.storage import DraftStore
 from essay_writer.drafting.revision import DraftRevisionService
+from essay_writer.drafting.style_revision import FinalStyleRevisionService
 from essay_writer.validation.service import ValidationService
 from essay_writer.validation.storage import ValidationStore
 from essay_writer.exporting.service import FinalExportService
@@ -88,8 +89,28 @@ def get_workflow() -> EssayWorkflow:
     return EssayWorkflow(get_job_store(), get_topic_store())
 
 
+def _max_tokens_config_from_settings() -> StageMaxTokensConfig:
+    s = load_settings()
+    env = StageMaxTokensConfig.from_env()
+    def pick(settings_val: int, env_val: int) -> int:
+        return settings_val if settings_val > 0 else env_val
+    return StageMaxTokensConfig(
+        task_spec=pick(s.max_tokens_task_spec, env.task_spec),
+        source_card=pick(s.max_tokens_source_card, env.source_card),
+        topic_ideation=pick(s.max_tokens_topic_ideation, env.topic_ideation),
+        research=pick(s.max_tokens_research, env.research),
+        outlining=pick(s.max_tokens_outlining, env.outlining),
+        drafting=pick(s.max_tokens_drafting, env.drafting),
+        drafting_revision=pick(s.max_tokens_drafting_revision, env.drafting_revision),
+        drafting_style=pick(s.max_tokens_drafting_style, env.drafting_style),
+        validation=pick(s.max_tokens_validation, env.validation),
+    )
+
+
 def get_ingestion_service() -> SourceIngestionService:
     s = load_settings()
+    mc = _model_config_from_settings()
+    mt = _max_tokens_config_from_settings()
     config = SourceIngestionConfig(
         ocr_tier=OcrTier(s.ocr_tier),
         chunk_target_chars=s.chunk_target_chars,
@@ -101,12 +122,16 @@ def get_ingestion_service() -> SourceIngestionService:
         get_source_store(),
         config=config,
         llm_client=_logged("source_card"),
+        source_card_max_tokens=mt.source_card,
+        source_card_model=mc.source_card,
     )
 
 
 @lru_cache(maxsize=1)
 def get_task_spec_parser() -> TaskSpecParser:
-    return TaskSpecParser(llm_client=_logged("task_spec"))
+    mc = _model_config_from_settings()
+    mt = _max_tokens_config_from_settings()
+    return TaskSpecParser(llm_client=_logged("task_spec"), max_tokens=mt.task_spec, model=mc.task_spec)
 
 
 @lru_cache(maxsize=1)
@@ -116,7 +141,9 @@ def get_task_spec_store() -> TaskSpecStore:
 
 @lru_cache(maxsize=1)
 def get_topic_ideation_service() -> TopicIdeationService:
-    return TopicIdeationService(_logged("topic_ideation"))
+    mc = _model_config_from_settings()
+    mt = _max_tokens_config_from_settings()
+    return TopicIdeationService(_logged("topic_ideation"), max_tokens=mt.topic_ideation, model=mc.topic_ideation)
 
 
 @lru_cache(maxsize=1)
@@ -131,37 +158,44 @@ def get_source_access_service() -> SourceAccessService:
 
 def _model_config_from_settings() -> StageModelConfig:
     s = load_settings()
-    env = StageModelConfig.from_env()
-    def pick(settings_val: str, env_val: str | None) -> str | None:
-        return settings_val.strip() or env_val or None
+    settings_default = s.llm_model.strip() or None
+    env_default = os.environ.get("LLM_MODEL") or None
+
+    def pick(settings_val: str, env_key: str) -> str | None:
+        return settings_val.strip() or os.environ.get(env_key) or settings_default or env_default or None
+
     return StageModelConfig(
-        task_spec=pick(s.model_task_spec, env.task_spec),
-        source_card=pick(s.model_source_card, env.source_card),
-        topic_ideation=pick(s.model_topic_ideation, env.topic_ideation),
-        research=pick(s.model_research, env.research),
-        drafting=pick(s.model_drafting, env.drafting),
-        drafting_revision=pick(s.model_drafting_revision, env.drafting_revision),
-        validation=pick(s.model_validation, env.validation),
+        task_spec=pick(s.model_task_spec, "ESSAY_MODEL_TASK_SPEC"),
+        source_card=pick(s.model_source_card, "ESSAY_MODEL_SOURCE_CARD"),
+        topic_ideation=pick(s.model_topic_ideation, "ESSAY_MODEL_TOPIC_IDEATION"),
+        research=pick(s.model_research, "ESSAY_MODEL_RESEARCH"),
+        outlining=pick(s.model_outlining, "ESSAY_MODEL_OUTLINING"),
+        drafting=pick(s.model_drafting, "ESSAY_MODEL_DRAFTING"),
+        drafting_revision=pick(s.model_drafting_revision, "ESSAY_MODEL_DRAFTING_REVISION"),
+        drafting_style=pick(s.model_drafting_style, "ESSAY_MODEL_DRAFTING_STYLE"),
+        validation=pick(s.model_validation, "ESSAY_MODEL_VALIDATION"),
     )
 
 
 @lru_cache(maxsize=1)
 def get_workflow_runner() -> MvpWorkflowRunner:
     model_config = _model_config_from_settings()
+    mt = _max_tokens_config_from_settings()
     return MvpWorkflowRunner(
         workflow=get_workflow(),
         retriever=get_retriever(),
         research_planning_service=ResearchPlanningService(),
         research_plan_store=ResearchPlanStore(DATA_DIR / "research_plans"),
-        research_service=FinalTopicResearchService(_logged("research")),
+        research_service=FinalTopicResearchService(_logged("research"), max_tokens=mt.research),
         research_store=ResearchStore(DATA_DIR / "research"),
-        outline_service=ThesisOutlineService(llm_client=_logged("outlining")),
+        outline_service=ThesisOutlineService(llm_client=_logged("outlining"), max_tokens=mt.outlining),
         outline_store=ThesisOutlineStore(DATA_DIR / "outlines"),
-        draft_service=DraftService(_logged("drafting")),
+        draft_service=DraftService(_logged("drafting"), max_tokens=mt.drafting),
         draft_store=DraftStore(DATA_DIR / "drafts"),
-        validation_service=ValidationService(_logged("validation")),
+        validation_service=ValidationService(_logged("validation"), max_tokens=mt.validation),
         validation_store=ValidationStore(DATA_DIR / "validations"),
-        revision_service=DraftRevisionService(_logged("drafting_revision")),
+        revision_service=DraftRevisionService(_logged("drafting_revision"), max_tokens=mt.drafting_revision),
+        style_revision_service=FinalStyleRevisionService(_logged("drafting_style"), max_tokens=mt.drafting_style),
         export_service=FinalExportService(),
         export_store=FinalExportStore(DATA_DIR / "exports"),
         task_store=get_task_spec_store(),

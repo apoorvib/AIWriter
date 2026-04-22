@@ -32,8 +32,8 @@ def create_job(req: CreateJobRequest):
     return CreateJobResponse(
         job_id=job.id,
         task_spec_id=task_spec.id,
-        blocking_questions=[q.text for q in task_spec.blocking_questions],
-        warnings=[w.text for w in task_spec.nonblocking_warnings],
+        blocking_questions=list(task_spec.blocking_questions),
+        warnings=list(task_spec.nonblocking_warnings),
     )
 
 

@@ -13,10 +13,12 @@ from essay_writer.validation.schema import (
     DeterministicCheckResult,
     LLMJudgmentResult,
     LengthCheck,
+    ParagraphLengthProfile,
     RubricScore,
     SentenceRun,
     StyleIssue,
     UnsupportedClaim,
+    ValidationDiagnostic,
     ValidationReport,
     VocabHit,
 )
@@ -82,6 +84,8 @@ def _deterministic_from_payload(payload: dict) -> DeterministicCheckResult:
     payload["consecutive_similar_sentence_runs"] = [
         SentenceRun(**item) for item in payload.get("consecutive_similar_sentence_runs", [])
     ]
+    if payload.get("paragraph_length_profile") is not None:
+        payload["paragraph_length_profile"] = ParagraphLengthProfile(**payload["paragraph_length_profile"])
     return DeterministicCheckResult(**payload)
 
 
@@ -101,6 +105,10 @@ def _judgment_from_payload(payload: dict) -> LLMJudgmentResult:
     payload["style_issues"] = [
         StyleIssue(**item) for item in payload.get("style_issues", [])
     ]
+    payload["diagnostics"] = [
+        ValidationDiagnostic(**item) for item in payload.get("diagnostics", [])
+    ]
+    payload.setdefault("revision_suggestions", [])
     return LLMJudgmentResult(**payload)
 
 

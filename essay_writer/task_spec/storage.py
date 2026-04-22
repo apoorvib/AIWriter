@@ -21,15 +21,15 @@ class TaskSpecStore:
         payload = asdict(task_spec)
         serialized = json.dumps(payload, ensure_ascii=True, indent=2)
 
+        if path.exists() and path.read_text(encoding="utf-8") == serialized:
+            return
+
         fd, tmp_name = tempfile.mkstemp(prefix=f".v{task_spec.version}.", suffix=".tmp", dir=str(dir_))
         tmp_path = Path(tmp_name)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(serialized)
-            try:
-                os.link(tmp_path, path)
-            except FileExistsError:
-                raise FileExistsError(f"task spec version already exists: {path}")
+            os.replace(tmp_path, path)
         finally:
             tmp_path.unlink(missing_ok=True)
 

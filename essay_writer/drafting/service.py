@@ -21,9 +21,11 @@ class DraftService:
         llm_client: LLMClient,
         *,
         prompt_version: str = "drafting-v1",
+        max_tokens: int = 8000,
     ) -> None:
         self._llm = llm_client
         self._prompt_version = prompt_version
+        self._max_tokens = max_tokens
 
     def generate(
         self,
@@ -47,7 +49,7 @@ class DraftService:
                 source_packets or [],
             ),
             json_schema=DRAFTING_SCHEMA,
-            max_tokens=8000,
+            max_tokens=self._max_tokens,
             model=model,
         )
         return _draft_from_payload(

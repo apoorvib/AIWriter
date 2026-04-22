@@ -25,9 +25,22 @@ export default function EssayViewer({ data }: Props) {
         Download Markdown
       </a>
 
+      {!validation.passes && validation.diagnostics.length > 0 && (
+        <div className="revision-box">
+          <strong>Validation diagnostics:</strong>
+          <ul>
+            {validation.diagnostics.map((d, i) => (
+              <li key={i}>
+                {d.location}: {d.issue_type} ({d.severity}) - {d.evidence}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {!validation.passes && validation.revision_suggestions.length > 0 && (
         <div className="revision-box">
-          <strong>Revision suggestions:</strong>
+          <strong>Legacy revision suggestions:</strong>
           <ul>
             {validation.revision_suggestions.map((s, i) => (
               <li key={i}>{s}</li>

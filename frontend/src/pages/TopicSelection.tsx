@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import TopicCard from "../components/TopicCard";
 import { generateTopics, rejectTopic, selectTopic } from "../api";
@@ -15,6 +15,7 @@ export default function TopicSelection() {
   const [rejectReason, setRejectReason] = useState("");
   const [instruction, setInstruction] = useState("");
   const [loading, setLoading] = useState(true);
+  const fetchStarted = useRef(false);
   const [selecting, setSelecting] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +39,8 @@ export default function TopicSelection() {
   }
 
   useEffect(() => {
+    if (fetchStarted.current) return;
+    fetchStarted.current = true;
     fetchTopics();
   }, [jobId]);
 

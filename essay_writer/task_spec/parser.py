@@ -18,9 +18,11 @@ from essay_writer.task_spec.security import scan_adversarial_text
 
 
 class TaskSpecParser:
-    def __init__(self, llm_client: LLMClient | None = None, parser_version: str = "task-spec-v1") -> None:
+    def __init__(self, llm_client: LLMClient | None = None, parser_version: str = "task-spec-v1", max_tokens: int = 4096, model: str | None = None) -> None:
         self._llm = llm_client
         self._parser_version = parser_version
+        self._max_tokens = max_tokens
+        self._model = model
 
     def parse(
         self,
@@ -39,7 +41,8 @@ class TaskSpecParser:
             system=TASK_SPEC_SYSTEM_PROMPT,
             user=build_task_spec_user_message(raw_text),
             json_schema=TASK_SPEC_SCHEMA,
-            max_tokens=4096,
+            max_tokens=self._max_tokens,
+            model=self._model,
         )
         return self._from_llm_payload(
             payload,

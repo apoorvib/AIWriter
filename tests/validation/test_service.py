@@ -17,6 +17,7 @@ _MINIMAL_LLM_RESPONSE = {
     "assignment_fit": {"passes": True, "explanation": "Essay addresses the prompt."},
     "length_check": {"actual_words": 50, "target_words": None, "passes": True},
     "style_issues": [],
+    "diagnostics": [],
     "revision_suggestions": [],
     "overall_quality": 0.75,
 }
@@ -186,6 +187,15 @@ def test_service_returns_structured_report_with_llm_judgment():
         "assignment_fit": {"passes": True, "explanation": "Addresses the prompt well."},
         "length_check": {"actual_words": 800, "target_words": 1000, "passes": False},
         "style_issues": [{"issue_type": "argument_flat", "description": "Middle paragraphs restate thesis."}],
+        "diagnostics": [
+            {
+                "location": "paragraph 3",
+                "issue_type": "argument_flat",
+                "evidence": "Middle paragraphs restate thesis.",
+                "severity": "medium",
+                "action": "cut_repetition",
+            }
+        ],
         "revision_suggestions": ["Expand evidence in paragraph 3."],
         "overall_quality": 0.7,
     }
@@ -205,8 +215,25 @@ def test_service_returns_structured_report_with_llm_judgment():
     assert report.llm_judgment.length_check.passes is False
     assert report.llm_judgment.length_check.actual_words == 800
     assert report.llm_judgment.style_issues[0].issue_type == "argument_flat"
+    assert report.llm_judgment.diagnostics[0].location == "paragraph 3"
+    assert report.llm_judgment.diagnostics[0].action == "cut_repetition"
     assert report.llm_judgment.revision_suggestions == ["Expand evidence in paragraph 3."]
     assert report.llm_judgment.overall_quality == 0.7
+
+
+def test_service_derives_diagnostics_from_legacy_revision_suggestions():
+    llm_response = {
+        **_MINIMAL_LLM_RESPONSE,
+        "diagnostics": [],
+        "unsupported_claims": [{"claim": "Unsupported claim.", "paragraph": 2}],
+        "revision_suggestions": ["Ground the unsupported claim."],
+    }
+    client = MockLLMClient(responses=[llm_response])
+
+    report = ValidationService(client).validate("Some draft.", draft_id="d1", task_spec=_TASK_SPEC, evidence_map=[])
+
+    assert report.llm_judgment.diagnostics[0].issue_type == "unsupported_claim"
+    assert report.llm_judgment.diagnostics[0].action == "strengthen_grounding"
 
 
 def test_service_report_passes_when_no_issues():

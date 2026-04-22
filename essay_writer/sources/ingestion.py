@@ -46,18 +46,26 @@ class SourceIngestionService:
         document_reader: Extractor | None = None,
         ocr_extractor: Extractor | None = None,
         llm_client: LLMClient | None = None,
+        source_card_max_tokens: int = 2500,
+        source_card_model: str | None = None,
     ) -> None:
         self._store = store
         self._config = config or SourceIngestionConfig()
         self._document_reader = document_reader or DocumentReader()
         self._ocr_extractor = ocr_extractor
         self._llm_client = llm_client
+        self._source_card_max_tokens = source_card_max_tokens
+        self._source_card_model = source_card_model
 
     def ingest(self, document_path: str | Path, *, source_id: str | None = None) -> SourceIngestionResult:
         path = Path(document_path)
         if not path.exists():
             raise FileNotFoundError(f"source document not found: {path}")
         resolved_id = source_id or _source_id(path)
+
+        if source_id is None and self._store.is_ingested(resolved_id):
+            return self._store.load_result(resolved_id)
+
         warnings: list[str] = []
 
         text_result = self._document_reader.extract(path)
@@ -137,6 +145,8 @@ class SourceIngestionService:
             llm_client=self._llm_client,
             input_char_budget=self._config.source_card_input_char_budget,
             summary_char_limit=self._config.source_card_summary_char_limit,
+            max_tokens=self._source_card_max_tokens,
+            model=self._source_card_model,
         )
         result = SourceIngestionResult(
             source=source,

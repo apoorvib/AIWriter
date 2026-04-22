@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable
+
+logger = logging.getLogger("essay_writer.workflow")
 
 from llm.config import StageModelConfig
 from essay_writer.drafting.schema import EssayDraft
 from essay_writer.drafting.revision import DraftRevisionService
 from essay_writer.drafting.service import DraftService
+from essay_writer.drafting.style_revision import FinalStyleRevisionService
 from essay_writer.drafting.storage import DraftStore
 from essay_writer.exporting.schema import FinalEssayExport
 from essay_writer.exporting.service import FinalExportService
@@ -49,6 +53,7 @@ class WorkflowNotRunnableError(RuntimeError):
 
 
 StageCallback = Callable[[str, str], None]
+ProgressCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,7 @@ class MvpWorkflowRunner:
         validation_service: ValidationService,
         validation_store: ValidationStore,
         revision_service: DraftRevisionService | None = None,
+        style_revision_service: FinalStyleRevisionService | None = None,
         export_service: FinalExportService | None = None,
         export_store: FinalExportStore | None = None,
         task_store: TaskSpecStore | None = None,
@@ -101,6 +107,7 @@ class MvpWorkflowRunner:
         self._draft_service = draft_service
         self._draft_store = draft_store
         self._revision_service = revision_service
+        self._style_revision_service = style_revision_service
         self._validation_service = validation_service
         self._validation_store = validation_store
         self._export_service = export_service
@@ -144,6 +151,7 @@ class MvpWorkflowRunner:
         except InsufficientEvidenceError:
             raise
         except Exception as exc:
+            logger.exception("workflow.run_after_topic_selection failed job_id=%s", job_id)
             self._mark_error_if_possible(job_id, stage="workflow", message=str(exc))
             raise
 
@@ -154,6 +162,7 @@ class MvpWorkflowRunner:
         model: str | None = None,
         external_search_allowed: bool = False,
         on_stage: StageCallback | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> MvpWorkflowResult:
         """Resume or complete a selected uploaded-source MVP job from persisted artifacts."""
         try:
@@ -186,6 +195,7 @@ class MvpWorkflowRunner:
                     model=model,
                     external_search_allowed=external_search_allowed,
                     on_stage=on_stage,
+                    on_progress=on_progress,
                 )
             if job.status == "drafting_ready":
                 research_plan = self._research_plan_store.load_latest(job_id)
@@ -203,6 +213,7 @@ class MvpWorkflowRunner:
                     source_packets=source_packets,
                     model=model,
                     on_stage=on_stage,
+                    on_progress=on_progress,
                 )
             if job.status == "validation_ready":
                 research_plan = self._research_plan_store.load_latest(job_id)
@@ -222,9 +233,10 @@ class MvpWorkflowRunner:
                     draft=draft,
                     model=model,
                     on_stage=on_stage,
+                    on_progress=on_progress,
                 )
             if job.status == "validation_complete" and job.current_stage == "revision":
-                return self.run_revision_for_job(job_id, model=model, on_stage=on_stage)
+                return self.run_revision_for_job(job_id, model=model, on_stage=on_stage, on_progress=on_progress)
             if job.status == "validation_complete":
                 research_plan = self._research_plan_store.load_latest(job_id)
                 research = self._research_store.load_latest(job_id)
@@ -252,6 +264,7 @@ class MvpWorkflowRunner:
         except (InsufficientEvidenceError, WorkflowNotRunnableError):
             raise
         except Exception as exc:
+            logger.exception("workflow.run_selected_job failed job_id=%s", job_id)
             self._mark_error_if_possible(job_id, stage="workflow", message=str(exc))
             raise
 
@@ -261,6 +274,7 @@ class MvpWorkflowRunner:
         *,
         model: str | None = None,
         on_stage: StageCallback | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> MvpWorkflowResult:
         """Create the next draft version from failed validation feedback and rerun validation."""
         if self._revision_service is None:
@@ -298,6 +312,7 @@ class MvpWorkflowRunner:
 
             source_packets = self._resolve_source_packets(research_plan)
             _emit_stage(on_stage, "revision", "start")
+            _emit_progress(on_progress, "Incorporating validation feedback and revising draft...")
             revision_version = self._draft_store.next_version(job_id)
             revised_draft = self._revision_service.revise(
                 job,
@@ -312,7 +327,18 @@ class MvpWorkflowRunner:
                 model=model or self._model_config.drafting_revision,
             )
             self._draft_store.save(revised_draft)
-            self._workflow.record_draft_ready(job_id=job_id, draft=revised_draft)
+            job = self._workflow.record_draft_ready(job_id=job_id, draft=revised_draft)
+            revised_draft = self._run_style_revision_if_configured(
+                job=job,
+                task_spec=task_spec,
+                outline=outline,
+                research=research,
+                draft=revised_draft,
+                source_packets=source_packets,
+                model=model,
+                on_stage=on_stage,
+                on_progress=on_progress,
+            )
             _emit_stage(on_stage, "revision", "done")
             return self._run_validation_only(
                 task_spec=task_spec,
@@ -323,10 +349,12 @@ class MvpWorkflowRunner:
                 draft=revised_draft,
                 model=model,
                 on_stage=on_stage,
+                on_progress=on_progress,
             )
         except (WorkflowNotRunnableError, WorkflowContractError):
             raise
         except Exception as exc:
+            logger.exception("workflow.run_revision_for_job failed job_id=%s", job_id)
             self._mark_error_if_possible(job_id, stage="revision", message=str(exc))
             raise
 
@@ -342,9 +370,11 @@ class MvpWorkflowRunner:
         model: str | None,
         external_search_allowed: bool = False,
         on_stage: StageCallback | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> MvpWorkflowResult:
         try:
             _emit_stage(on_stage, "research_planning", "start")
+            _emit_progress(on_progress, "Building research plan...")
             research_plan_version = self._research_plan_store.next_version(job.id)
             research_plan = self._research_planning_service.create_plan(
                 job=job,
@@ -363,7 +393,13 @@ class MvpWorkflowRunner:
             _emit_stage(on_stage, "research_planning", "done")
 
             _emit_stage(on_stage, "research", "start")
+            if research_plan.source_requests:
+                _emit_progress(on_progress, f"Resolving {len(research_plan.source_requests)} source locator(s)...")
             source_packets = self._resolve_source_packets(research_plan)
+            if source_packets:
+                _emit_progress(on_progress, f"Analysing evidence from {len(source_packets)} source packet(s)...")
+            else:
+                _emit_progress(on_progress, "Extracting evidence from indexed chunks...")
             research_version = self._research_store.next_version(job.id)
             research = self._research_service.extract(
                 job=job,
@@ -388,6 +424,7 @@ class MvpWorkflowRunner:
         except InsufficientEvidenceError:
             raise
         except Exception as exc:
+            logger.exception("workflow._run_research_to_validation failed job_id=%s", job.id)
             self._mark_error_if_possible(job.id, stage="research", message=str(exc))
             raise
         return self._run_draft_to_validation(
@@ -400,6 +437,7 @@ class MvpWorkflowRunner:
             source_packets=source_packets,
             model=model,
             on_stage=on_stage,
+            on_progress=on_progress,
         )
 
     def _run_draft_to_validation(
@@ -414,10 +452,12 @@ class MvpWorkflowRunner:
         source_packets: list[SourceTextPacket] | None = None,
         model: str | None,
         on_stage: StageCallback | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> MvpWorkflowResult:
         try:
             self._workflow.ensure_drafting_ready(job.id)
             _emit_stage(on_stage, "outlining", "start")
+            _emit_progress(on_progress, "Generating essay structure...")
             outline_version = self._outline_store.next_version(job.id)
             outline = self._outline_service.create_outline(
                 job=job,
@@ -427,12 +467,14 @@ class MvpWorkflowRunner:
                 evidence_map=research.evidence_map,
                 source_packets=source_packets or [],
                 version=outline_version,
+                model=self._model_config.outlining,
             )
             self._outline_store.save(outline)
             job = self._workflow.record_outline_ready(job_id=job.id, outline=outline)
             _emit_stage(on_stage, "outlining", "done")
 
             _emit_stage(on_stage, "drafting", "start")
+            _emit_progress(on_progress, "Writing essay draft...")
             draft_version = self._draft_store.next_version(job.id)
             draft = self._draft_service.generate(
                 job,
@@ -445,9 +487,21 @@ class MvpWorkflowRunner:
                 model=model or self._model_config.drafting,
             )
             self._draft_store.save(draft)
-            self._workflow.record_draft_ready(job_id=job.id, draft=draft)
+            job = self._workflow.record_draft_ready(job_id=job.id, draft=draft)
+            draft = self._run_style_revision_if_configured(
+                job=job,
+                task_spec=task_spec,
+                outline=outline,
+                research=research,
+                draft=draft,
+                source_packets=source_packets or [],
+                model=model,
+                on_stage=on_stage,
+                on_progress=on_progress,
+            )
             _emit_stage(on_stage, "drafting", "done")
         except Exception as exc:
+            logger.exception("workflow._run_draft_to_validation failed job_id=%s", job.id)
             self._mark_error_if_possible(job.id, stage="drafting", message=str(exc))
             raise
         return self._run_validation_only(
@@ -459,6 +513,7 @@ class MvpWorkflowRunner:
             draft=draft,
             model=model,
             on_stage=on_stage,
+            on_progress=on_progress,
         )
 
     def _run_validation_only(
@@ -472,10 +527,12 @@ class MvpWorkflowRunner:
         draft: EssayDraft,
         model: str | None,
         on_stage: StageCallback | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> MvpWorkflowResult:
         try:
             self._workflow.ensure_validation_ready(draft.job_id)
             _emit_stage(on_stage, "validation", "start")
+            _emit_progress(on_progress, "Checking claims and quality...")
             job_for_validation = self._workflow.load_job(draft.job_id)
             source_cards = (
                 _load_source_cards(self._source_store, job_for_validation.source_ids)
@@ -502,6 +559,7 @@ class MvpWorkflowRunner:
             final_export = None
             if validation.passes and self._export_service is not None and self._export_store is not None:
                 _emit_stage(on_stage, "export", "start")
+                _emit_progress(on_progress, "Exporting final essay...")
                 final_export = self._export_service.create_markdown_export(
                     job=job,
                     task_spec=task_spec,
@@ -512,6 +570,7 @@ class MvpWorkflowRunner:
                 job = self._workflow.record_final_export_ready(job_id=draft.job_id, export=final_export)
                 _emit_stage(on_stage, "export", "done")
         except Exception as exc:
+            logger.exception("workflow._run_validation_only failed job_id=%s", draft.job_id)
             self._mark_error_if_possible(draft.job_id, stage="validation", message=str(exc))
             raise
 
@@ -526,12 +585,46 @@ class MvpWorkflowRunner:
             final_export=final_export,
         )
 
+    def _run_style_revision_if_configured(
+        self,
+        *,
+        job: EssayJob,
+        task_spec: TaskSpecification,
+        outline: ThesisOutline,
+        research: FinalTopicResearchResult,
+        draft: EssayDraft,
+        source_packets: list[SourceTextPacket],
+        model: str | None,
+        on_stage: StageCallback | None,
+        on_progress: ProgressCallback | None,
+    ) -> EssayDraft:
+        if self._style_revision_service is None:
+            return draft
+        _emit_stage(on_stage, "style_revision", "start")
+        _emit_progress(on_progress, "Running final style pass before validation...")
+        style_version = self._draft_store.next_version(draft.job_id)
+        styled_draft = self._style_revision_service.revise_style(
+            job=job,
+            task_spec=task_spec,
+            draft=draft,
+            outline=outline,
+            evidence_map=research.evidence_map,
+            source_packets=source_packets,
+            version=style_version,
+            model=model or self._model_config.drafting_style,
+        )
+        self._draft_store.save(styled_draft)
+        self._workflow.record_draft_ready(job_id=job.id, draft=styled_draft)
+        _emit_stage(on_stage, "style_revision", "done")
+        return styled_draft
+
     def _require_persisted_stores(self) -> tuple[TaskSpecStore, TopicRoundStore, SourceStore]:
         if self._task_store is None or self._topic_store is None or self._source_store is None:
             raise ValueError("task_store, topic_store, and source_store are required for run_selected_job().")
         return self._task_store, self._topic_store, self._source_store
 
     def _mark_error_if_possible(self, job_id: str, *, stage: str, message: str) -> None:
+        logger.error("workflow.error job_id=%s stage=%s message=%r", job_id, stage, message)
         try:
             job = self._workflow.load_job(job_id)
             if job.status in {"blocked", "error"}:
@@ -548,6 +641,14 @@ class MvpWorkflowRunner:
             for packet in self._source_access_service.resolve_locators(research_plan.source_requests)
             if packet.text.strip()
         ]
+
+
+def _emit_progress(callback: ProgressCallback | None, message: str) -> None:
+    if callback is not None:
+        try:
+            callback(message)
+        except Exception:
+            return
 
 
 def _emit_stage(callback: StageCallback | None, stage: str, status: str) -> None:

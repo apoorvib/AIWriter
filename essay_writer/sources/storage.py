@@ -107,6 +107,29 @@ class SourceStore:
         payload["entries"] = entries
         return SourceIndexManifest(**payload)
 
+    def is_ingested(self, source_id: str) -> bool:
+        return (self.source_dir(source_id) / "source_card.json").exists()
+
+    def load_result(self, source_id: str) -> SourceIngestionResult:
+        dir_ = self.source_dir(source_id)
+        source = self.load_source(source_id)
+        pages = self.load_pages(source_id)
+        chunks = self.load_chunks(source_id)
+        source_card = self.load_source_card(source_id)
+        index_manifest = self.load_index_manifest(source_id) if (dir_ / "index_manifest.json").exists() else None
+        source_map = self.load_source_map(source_id) if (dir_ / "source_map.json").exists() else None
+        return SourceIngestionResult(
+            source=source,
+            pages=pages,
+            chunks=chunks,
+            source_card=source_card,
+            indexed=source.indexed,
+            full_text_available=source.full_text_available,
+            index_manifest=index_manifest,
+            source_map=source_map,
+            warnings=[],
+        )
+
     def load_source_map(self, source_id: str) -> SourceMap:
         payload = _read_json(self.source_dir(source_id) / "source_map.json")
         payload = dict(payload)

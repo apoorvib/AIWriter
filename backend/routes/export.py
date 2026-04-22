@@ -53,6 +53,16 @@ def get_export(job_id: str):
             passes=validation.passes,
             overall_quality=validation.llm_judgment.overall_quality,
             unsupported_claim_count=len(validation.llm_judgment.unsupported_claims),
+            diagnostics=[
+                {
+                    "location": item.location,
+                    "issue_type": item.issue_type,
+                    "evidence": item.evidence,
+                    "severity": item.severity,
+                    "action": item.action,
+                }
+                for item in validation.llm_judgment.diagnostics
+            ],
             revision_suggestions=validation.llm_judgment.revision_suggestions,
         ),
     )

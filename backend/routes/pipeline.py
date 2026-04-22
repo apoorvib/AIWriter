@@ -37,8 +37,15 @@ def _run_pipeline_sync(
         payload = {"event": event, **kwargs}
         loop.call_soon_threadsafe(queue.put_nowait, payload)
 
+    current_stage: list[str] = ["starting"]
+
     def on_stage(stage: str, status: str) -> None:
+        if status == "start":
+            current_stage[0] = stage
         emit(f"stage_{status}", stage=stage)
+
+    def on_progress(message: str) -> None:
+        emit("progress", message=message)
 
     try:
         runner = get_workflow_runner()
@@ -46,9 +53,10 @@ def _run_pipeline_sync(
             job_id,
             external_search_allowed=external_search_allowed,
             on_stage=on_stage,
+            on_progress=on_progress,
         )
         if not result.validation.passes and result.job.current_stage == "revision":
-            result = runner.run_selected_job(job_id, on_stage=on_stage)
+            result = runner.run_selected_job(job_id, on_stage=on_stage, on_progress=on_progress)
 
         emit(
             "complete",
@@ -57,8 +65,14 @@ def _run_pipeline_sync(
             final_export_id=result.final_export.id if result.final_export else None,
         )
     except Exception as exc:
-        logger.exception("Pipeline error for job %s", job_id)
-        emit("error", message=str(exc))
+        logger.exception("Pipeline error for job %s at stage %s", job_id, current_stage[0])
+        emit(
+            "error",
+            message=_user_facing_message(exc),
+            detail=str(exc),
+            stage=current_stage[0],
+            error_type=type(exc).__name__,
+        )
 
 
 @router.post("/{job_id}/run", response_model=RunPipelineResponse)
@@ -102,3 +116,24 @@ async def job_events(job_id: str):
                 yield {"data": json.dumps({"event": "ping"})}
 
     return EventSourceResponse(event_generator())
+
+
+def _user_facing_message(exc: Exception) -> str:
+    name = type(exc).__name__
+    if name == "InsufficientEvidenceError":
+        return "The selected topic doesn't have enough source coverage to draft safely. Go back and choose a different topic or add more source files."
+    if name == "WorkflowNotRunnableError":
+        return f"Job cannot be run in its current state: {exc}"
+    if name == "WorkflowContractError":
+        return f"Internal workflow state error — this is likely a bug. Detail: {exc}"
+    if name in ("LLMError", "LLMConfigurationError"):
+        return f"AI model error: {exc}"
+    if name == "APIStatusError":
+        return f"AI API returned an error (check your API key and usage limits): {exc}"
+    if name == "APIConnectionError":
+        return "Could not reach the AI API. Check your network connection and try again."
+    if name == "RateLimitError":
+        return "AI API rate limit reached. Wait a moment and try again."
+    if name == "AuthenticationError":
+        return "AI API authentication failed. Check your API key in Settings or environment variables."
+    return str(exc)

@@ -21,6 +21,14 @@ class SentenceRun:
 
 
 @dataclass(frozen=True)
+class ParagraphLengthProfile:
+    paragraph_count: int
+    shortest_word_count: int
+    longest_word_count: int
+    longest_to_shortest_ratio: float
+
+
+@dataclass(frozen=True)
 class DeterministicCheckResult:
     word_count: int
     em_dash_count: int
@@ -31,6 +39,12 @@ class DeterministicCheckResult:
     participial_phrase_rate: float
     contrastive_negation_count: int
     signposting_hits: list[str]
+    triplet_contrastive_combo_count: int = 0
+    clustered_triplet_count: int = 0
+    paragraph_length_profile: ParagraphLengthProfile | None = None
+    paragraph_length_variance_warning: bool = False
+    mechanical_burstiness_count: int = 0
+    concrete_engagement_present: bool = False
 
     @property
     def has_issues(self) -> bool:
@@ -42,6 +56,10 @@ class DeterministicCheckResult:
             or self.participial_phrase_rate > 1.0
             or self.contrastive_negation_count > 0
             or len(self.signposting_hits) > 0
+            or self.triplet_contrastive_combo_count > 0
+            or self.clustered_triplet_count > 0
+            or self.paragraph_length_variance_warning
+            or self.mechanical_burstiness_count > 0
         )
 
 
@@ -96,6 +114,15 @@ class StyleIssue:
 
 
 @dataclass(frozen=True)
+class ValidationDiagnostic:
+    location: str
+    issue_type: str
+    evidence: str
+    severity: str
+    action: str
+
+
+@dataclass(frozen=True)
 class LLMJudgmentResult:
     unsupported_claims: list[UnsupportedClaim]
     citation_issues: list[CitationIssue]
@@ -103,8 +130,9 @@ class LLMJudgmentResult:
     assignment_fit: AssignmentFit
     length_check: LengthCheck
     style_issues: list[StyleIssue]
-    revision_suggestions: list[str]
     overall_quality: float
+    diagnostics: list[ValidationDiagnostic] = field(default_factory=list)
+    revision_suggestions: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.overall_quality <= 1.0:

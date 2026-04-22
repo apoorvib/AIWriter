@@ -1653,3 +1653,234 @@ Caveats:
 
 - Validation still does not receive full source packet text by design; it validates against evidence notes and source-card metadata.
 - Pytest still emits the known Windows `.pytest_cache` warning.
+
+---
+
+## 2026-04-21 - Codex - Humanized Writing Pipeline Plan
+
+Summary:
+
+- Added a formal implementation plan for making human-sounding academic prose a pipeline-level constraint.
+- Captured planned updates for the anti-AI skill document, style-aware outlining, drafting evidence scope, diagnostic-only validation, revision diagnostics, a final constrained style pass, deterministic style checks, workflow orchestration, and README updates.
+- Explicitly excluded default model changes and section-by-section drafting from this plan.
+
+Files changed:
+
+- `docs/superpowers/plans/2026-04-21-humanized-writing-pipeline.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+Get-ChildItem docs\superpowers\plans | Select-Object -ExpandProperty Name
+Get-Content -Tail 60 session-log.md
+rg -n "Humanized Writing Pipeline|Phase 1|Phase 4|Acceptance Criteria|Open Questions" docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md
+rg -n "[^\x00-\x7F]" docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md
+```
+
+Results:
+
+- Plan file added under active implementation plans.
+- ASCII scan passed for the new plan file.
+
+Caveats:
+
+- Documentation-only change; no code tests were run.
+
+---
+
+## 2026-04-21 - Codex - Detailed Anti-AI Plan Revision
+
+Summary:
+
+- Revised the humanized writing pipeline plan to include exact annotated-review deltas for the anti-AI skill rewrite.
+- Added explicit add/replace/move instructions for front matter, top framing, detector reality check, em dash clarification, vocabulary, sentence rhythm guardrails, paragraph pattern ordering, Rule of Three, register bleed-through, academic concrete engagement, and the seven-item self-check.
+- Reviewed `updated-anti-ai-detection-SKILL.md` and recorded production concerns in the plan.
+
+Files changed:
+
+- `docs/superpowers/plans/2026-04-21-humanized-writing-pipeline.md`
+- `session-log.md`
+
+Files reviewed:
+
+- `updated-anti-ai-detection-SKILL.md`
+- `anti-ai-detection-SKILL.md`
+
+Commands run:
+
+```powershell
+Get-Item updated-anti-ai-detection-SKILL.md | Format-List FullName,Length,LastWriteTime
+Get-Content -Raw updated-anti-ai-detection-SKILL.md
+Get-Content -Raw updated-anti-ai-detection-SKILL.md -Encoding UTF8
+Get-Content -Raw docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md
+rg -n "Phase 1\.1|Phase 1\.13|Front Matter|Self-Check Replacement|Review Of `updated-anti-ai-detection-SKILL.md`|reader quality is secondary|U\+2014" docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md
+rg -n "[^\x00-\x7F]" docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md
+git status --short docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md updated-anti-ai-detection-SKILL.md session-log.md
+```
+
+Results:
+
+- Plan now contains exact implementation instructions instead of broad summary bullets.
+- `updated-anti-ai-detection-SKILL.md` is populated and broadly matches Claude's annotated review.
+- ASCII scan passed for the plan file.
+
+Caveats:
+
+- Documentation-only change; no code tests were run.
+- The updated skill rewrite was reviewed but not adopted over `anti-ai-detection-SKILL.md`.
+- Production concerns remain around blunt detector-evasion wording, unsourced detector accuracy numbers, and literal em dash glyphs inside the prompt text.
+
+---
+
+## 2026-04-21 - Codex - Anti-AI Candidate Cleanup
+
+Summary:
+
+- Patched `updated-anti-ai-detection-SKILL.md` to resolve the review concerns from the previous session.
+- Replaced blunt detector-evasion/secondary-reader-quality wording with detector-risk reduction language that still requires readable, submittable prose.
+- Removed exact unsourced detector accuracy numbers from the candidate skill.
+- Replaced literal em dash glyphs in the candidate skill with `U+2014` references and added an explicit UTF-8 maintainer note.
+- Updated the implementation plan to reflect the resolved concerns.
+
+Files changed:
+
+- `updated-anti-ai-detection-SKILL.md`
+- `docs/superpowers/plans/2026-04-21-humanized-writing-pipeline.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+rg -n "reader quality|detector evasion|No detector|80%|70%|—|U\+2014|UTF-8|Encoding" updated-anti-ai-detection-SKILL.md docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md
+Get-Content -Raw updated-anti-ai-detection-SKILL.md -Encoding UTF8
+python -c "from pathlib import Path; p=Path('updated-anti-ai-detection-SKILL.md'); text=p.read_text(encoding='utf-8'); print(len(text)); print('em_dash_present=', '\u2014' in text)"
+rg -n "—|~80|70%|reader quality as a secondary goal|detector evasion first|Optimized primarily" updated-anti-ai-detection-SKILL.md docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md
+rg -n "[^\x00-\x7F]" docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md
+python -c "from pathlib import Path; text=Path('updated-anti-ai-detection-SKILL.md').read_text(encoding='utf-8'); print('chars=', len(text)); print('em_dash_present=', '\u2014' in text); print('has_exact_accuracy_numbers=', any(s in text for s in ['~80%', '70%']))"
+```
+
+Results:
+
+- Candidate skill UTF-8 read passed.
+- Candidate skill contains no literal em dash glyphs.
+- Candidate skill no longer contains the exact `~80%` or `70%` detector-accuracy claims.
+- Plan ASCII scan passed.
+
+Caveats:
+
+- Documentation-only change; no code tests were run.
+- `updated-anti-ai-detection-SKILL.md` remains a candidate file and has not been copied over `anti-ai-detection-SKILL.md`.
+
+---
+
+## 2026-04-22 - Codex - Humanized Writing Pipeline Implementation
+
+Summary:
+
+- Promoted the cleaned `updated-anti-ai-detection-SKILL.md` into the active `anti-ai-detection-SKILL.md`.
+- Made outlining style-aware and passed full resolved source packet text plus locator metadata, PDF page ranges, printed page labels, headings, extraction method, text quality, and warnings into the outline prompt.
+- Updated drafting and revision so source packets are first-class evidence alongside the evidence map.
+- Added structured validation diagnostics and expanded deterministic style checks for triplet/contrastive combos, clustered triplets, paragraph length variance, mechanical burstiness, and concrete source engagement.
+- Added a constrained final style pass before validation, wired through backend dependency setup and per-stage model/token configuration.
+- Updated frontend settings/types and export display for diagnostics and final style pass configuration.
+- Updated README workflow and prompt documentation with the new source packet, validation, revision, style pass, and per-stage config details.
+
+Files changed:
+
+- `anti-ai-detection-SKILL.md`
+- `README.md`
+- `backend/deps.py`
+- `backend/routes/export.py`
+- `backend/schemas.py`
+- `essay_writer/drafting/prompts.py`
+- `essay_writer/drafting/revision.py`
+- `essay_writer/drafting/style_revision.py`
+- `essay_writer/outlining/service.py`
+- `essay_writer/validation/checks.py`
+- `essay_writer/validation/prompts.py`
+- `essay_writer/validation/schema.py`
+- `essay_writer/validation/service.py`
+- `essay_writer/validation/storage.py`
+- `essay_writer/workflow/mvp.py`
+- `frontend/src/components/EssayViewer.tsx`
+- `frontend/src/pages/Settings.tsx`
+- `frontend/src/types.ts`
+- `llm/config.py`
+- `tests/drafting/test_revision.py`
+- `tests/drafting/test_style_revision.py`
+- `tests/llm/test_config.py`
+- `tests/outlining/test_service.py`
+- `tests/validation/test_checks.py`
+- `tests/validation/test_service.py`
+
+Commands run:
+
+```powershell
+rg -n "Who This Skill Is For|Detector Reality Check|detector-risk|U\+2014|reader quality as a secondary|~80|70%|--" anti-ai-detection-SKILL.md updated-anti-ai-detection-SKILL.md
+Get-Content -Raw essay_writer\drafting\anti_ai_skill.py
+Copy-Item -LiteralPath updated-anti-ai-detection-SKILL.md -Destination anti-ai-detection-SKILL.md
+pytest tests\validation tests\drafting tests\outlining
+pytest tests\workflow\test_mvp.py
+python -m compileall essay_writer backend tests\validation tests\drafting tests\outlining tests\workflow
+pytest tests\validation tests\drafting tests\outlining tests\workflow tests\llm\test_config.py
+python -m compileall essay_writer backend llm tests\validation tests\drafting tests\outlining tests\workflow tests\llm
+npm run build
+git status --short
+git diff --check
+rg -n "reader quality as a secondary|detector evasion first|~80|70%|--" anti-ai-detection-SKILL.md updated-anti-ai-detection-SKILL.md
+rg -n "Who This Skill Is For|Detector Reality Check|U\+2014|UTF-8" anti-ai-detection-SKILL.md updated-anti-ai-detection-SKILL.md
+```
+
+Results:
+
+- `pytest tests\validation tests\drafting tests\outlining tests\workflow tests\llm\test_config.py`: 87 passed, 1 known pytest cache warning.
+- `python -m compileall essay_writer backend llm tests\validation tests\drafting tests\outlining tests\workflow tests\llm`: passed.
+- `npm run build` in `frontend`: passed.
+- `git diff --check`: no whitespace errors, only CRLF normalization warnings.
+- Active and candidate anti-AI skill files contain the new framing, U+2014 wording, and UTF-8 note, with no old detector-evasion wording or exact detector accuracy numbers found.
+- Fixed an intermediate circular import from exporting `FinalStyleRevisionService` in `essay_writer/drafting/__init__.py`.
+- Fixed an intermediate workflow failure by adding the missing outlining model override to `StageModelConfig`, backend settings, frontend types/settings, and config tests.
+
+Caveats:
+
+- The final style pass is wired by the backend but remains optional at the runner level for tests and alternate wiring.
+- The style pass runs before validation so validation and export refer to the same stored draft version.
+- Pytest still emits the known Windows `.pytest_cache` warning in this environment.
+
+---
+
+## 2026-04-22 - Codex - Default Model Setting Fix
+
+Summary:
+
+- Fixed backend model resolution so the Settings page `llm_model` default is actually used for every LLM stage when no per-stage override is set.
+- Preserved the intended priority order: per-stage Settings override, per-stage env var, Settings default model, `LLM_MODEL`, adapter default.
+- Added regression tests for default-model and per-stage model priority.
+- Updated README model configuration docs to match the resolver order.
+
+Files changed:
+
+- `backend/deps.py`
+- `README.md`
+- `tests/llm/test_backend_model_config.py`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+rg -n "llm_model|LLM_MODEL|ESSAY_MODEL_|_model_config_from_settings|StageModelConfig" backend llm frontend tests README.md
+pytest tests\llm\test_config.py tests\llm\test_backend_model_config.py
+pytest tests\workflow\test_mvp.py
+python -m compileall backend llm tests\llm tests\workflow
+```
+
+Results:
+
+- Model config tests: 9 passed, 1 known pytest cache warning.
+- Workflow MVP tests: 7 passed, 1 known pytest cache warning.
+- Compile check passed.
+
+Caveats:
+
+- No frontend rebuild was run because this follow-up only changed backend model resolution, README, and Python tests.

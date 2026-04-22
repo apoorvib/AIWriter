@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SourceUploadResponse(BaseModel):
@@ -113,6 +113,7 @@ class ValidationSummary(BaseModel):
     passes: bool
     overall_quality: float
     unsupported_claim_count: int
+    diagnostics: list[dict[str, str]] = Field(default_factory=list)
     revision_suggestions: list[str]
 
 
@@ -131,9 +132,20 @@ class AppSettings(BaseModel):
     model_source_card: str = ""
     model_topic_ideation: str = ""
     model_research: str = ""
+    model_outlining: str = ""
     model_drafting: str = ""
     model_drafting_revision: str = ""
+    model_drafting_style: str = ""
     model_validation: str = ""
+    max_tokens_task_spec: int = 0
+    max_tokens_source_card: int = 0
+    max_tokens_topic_ideation: int = 0
+    max_tokens_research: int = 0
+    max_tokens_outlining: int = 0
+    max_tokens_drafting: int = 0
+    max_tokens_drafting_revision: int = 0
+    max_tokens_drafting_style: int = 0
+    max_tokens_validation: int = 0
     ocr_tier: Literal["small", "medium", "high"] = "small"
     chunk_target_chars: int = 3000
     chunk_overlap_chars: int = 300

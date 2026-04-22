@@ -17,6 +17,7 @@ from essay_writer.validation.schema import (
     LLMJudgmentResult,
     LengthCheck,
     UnsupportedClaim,
+    ValidationDiagnostic,
     ValidationReport,
 )
 
@@ -58,6 +59,8 @@ def test_revision_service_passes_source_packets_to_llm() -> None:
     assert context["source_packets"][0]["source_id"] == "src1"
     assert context["source_packets"][0]["pdf_page_start"] == 2
     assert context["source_packets"][0]["text"] == "Source excerpt used for revision."
+    assert context["revision_task"]["diagnostics"][0]["issue_type"] == "unsupported_claim"
+    assert context["revision_task"]["diagnostics"][0]["action"] == "strengthen_grounding"
 
 
 def _task_spec() -> TaskSpecification:
@@ -159,6 +162,15 @@ def _validation() -> ValidationReport:
             assignment_fit=AssignmentFit(passes=True, explanation="Fits."),
             length_check=LengthCheck(actual_words=2, target_words=None, passes=True),
             style_issues=[],
+            diagnostics=[
+                ValidationDiagnostic(
+                    location="paragraph 1",
+                    issue_type="unsupported_claim",
+                    evidence="Unsupported.",
+                    severity="high",
+                    action="strengthen_grounding",
+                )
+            ],
             revision_suggestions=["Ground the claim."],
             overall_quality=0.5,
         ),

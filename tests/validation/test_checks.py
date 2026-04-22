@@ -157,3 +157,47 @@ def test_has_issues_false_for_clean_text():
     )
     result = run_deterministic_checks(text)
     assert result.has_issues is False
+
+
+def test_triplet_contrastive_combo_detected():
+    text = "It is not about speed, scale, or polish. It is about source-specific work."
+    result = run_deterministic_checks(text)
+    assert result.triplet_contrastive_combo_count == 1
+    assert result.has_issues is True
+
+
+def test_clustered_triplets_detected():
+    text = (
+        "The policy affects renters, landlords, and inspectors. "
+        "The response needs shade, repairs, and enforcement."
+    )
+    result = run_deterministic_checks(text)
+    assert result.clustered_triplet_count == 1
+
+
+def test_paragraph_length_variance_warning_detected():
+    text = (
+        "First paragraph has exactly five words.\n\n"
+        "Second paragraph also has five.\n\n"
+        "Third paragraph also has five."
+    )
+    result = run_deterministic_checks(text)
+    assert result.paragraph_length_variance_warning is True
+    assert result.paragraph_length_profile is not None
+    assert result.paragraph_length_profile.paragraph_count == 3
+
+
+def test_mechanical_burstiness_detected():
+    text = (
+        "This sentence has enough words to count as a deliberately long sentence for the detector heuristic. "
+        "This matters. "
+        "This sentence also has enough words to make the short sentence feel mechanically inserted."
+    )
+    result = run_deterministic_checks(text)
+    assert result.mechanical_burstiness_count == 1
+
+
+def test_concrete_engagement_detected():
+    text = 'The source says "renters face higher heat exposure" on page 12.'
+    result = run_deterministic_checks(text)
+    assert result.concrete_engagement_present is True

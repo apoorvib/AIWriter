@@ -7,8 +7,10 @@ const STAGE_FIELDS: { key: keyof AppSettings; label: string }[] = [
   { key: "model_source_card", label: "Source card generation" },
   { key: "model_topic_ideation", label: "Topic ideation" },
   { key: "model_research", label: "Research" },
+  { key: "model_outlining", label: "Outlining" },
   { key: "model_drafting", label: "Drafting" },
   { key: "model_drafting_revision", label: "Draft revision" },
+  { key: "model_drafting_style", label: "Final style pass" },
   { key: "model_validation", label: "Validation" },
 ];
 
@@ -18,9 +20,20 @@ const EMPTY: AppSettings = {
   model_source_card: "",
   model_topic_ideation: "",
   model_research: "",
+  model_outlining: "",
   model_drafting: "",
   model_drafting_revision: "",
+  model_drafting_style: "",
   model_validation: "",
+  max_tokens_task_spec: 0,
+  max_tokens_source_card: 0,
+  max_tokens_topic_ideation: 0,
+  max_tokens_research: 0,
+  max_tokens_outlining: 0,
+  max_tokens_drafting: 0,
+  max_tokens_drafting_revision: 0,
+  max_tokens_drafting_style: 0,
+  max_tokens_validation: 0,
   ocr_tier: "small",
   chunk_target_chars: 3000,
   chunk_overlap_chars: 300,
@@ -102,7 +115,7 @@ export default function Settings() {
           <span className="settings-env-row">
             <span className="settings-env-label">API key</span>
             <span className={`settings-env-value ${info.api_key_configured ? "settings-ok" : "settings-warn"}`}>
-              {info.api_key_configured ? "Configured" : "Not set — set the env var before running"}
+              {info.api_key_configured ? "Configured" : "Not set - set the env var before running"}
             </span>
           </span>
         </div>

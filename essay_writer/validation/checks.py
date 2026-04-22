@@ -7,7 +7,12 @@ from essay_writer.drafting.anti_ai_rules import (
     SIGNPOSTING_PHRASES,
     TIER1_FLAGGED_VOCAB,
 )
-from essay_writer.validation.schema import DeterministicCheckResult, SentenceRun, VocabHit
+from essay_writer.validation.schema import (
+    DeterministicCheckResult,
+    ParagraphLengthProfile,
+    SentenceRun,
+    VocabHit,
+)
 
 _CONTRASTIVE_NEGATION_PATTERNS: list[str] = [
     r"\bnot just\b",
@@ -21,6 +26,13 @@ _CONTRASTIVE_NEGATION_PATTERNS: list[str] = [
 
 _PARTICIPIAL_RE = re.compile(r",\s+\w+ing\b", re.IGNORECASE)
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_TRIPLET_RE = re.compile(
+    r"\b[\w'-]+(?:\s+[\w'-]+)?\s*,\s*[\w'-]+(?:\s+[\w'-]+)?\s*,\s*(?:and|or)\s+[\w'-]+",
+    re.IGNORECASE,
+)
+_CONCRETE_ENGAGEMENT_RE = re.compile(
+    r"(\bpp?\.\s*\d+|\bpages?\s+\d+|\([A-Z][A-Za-z'-]+(?:\s+\d+|,\s*\d{4})\)|\"[^\"]{8,}\")"
+)
 
 
 def run_deterministic_checks(text: str) -> DeterministicCheckResult:
@@ -45,6 +57,16 @@ def run_deterministic_checks(text: str) -> DeterministicCheckResult:
     )
 
     signposting_hits = [p for p in SIGNPOSTING_PHRASES if p in lower]
+    triplet_combo_count = _count_triplet_contrastive_combos(sentences)
+    clustered_triplet_count = _count_clustered_triplets(sentences)
+    paragraph_profile = _paragraph_length_profile(text)
+    paragraph_variance_warning = (
+        paragraph_profile is not None
+        and paragraph_profile.paragraph_count >= 3
+        and paragraph_profile.longest_to_shortest_ratio <= 1.3
+    )
+    mechanical_burstiness_count = _count_mechanical_burstiness(sentences)
+    concrete_engagement_present = bool(_CONCRETE_ENGAGEMENT_RE.search(text))
 
     return DeterministicCheckResult(
         word_count=word_count,
@@ -56,6 +78,12 @@ def run_deterministic_checks(text: str) -> DeterministicCheckResult:
         participial_phrase_rate=participial_rate,
         contrastive_negation_count=contrastive_count,
         signposting_hits=signposting_hits,
+        triplet_contrastive_combo_count=triplet_combo_count,
+        clustered_triplet_count=clustered_triplet_count,
+        paragraph_length_profile=paragraph_profile,
+        paragraph_length_variance_warning=paragraph_variance_warning,
+        mechanical_burstiness_count=mechanical_burstiness_count,
+        concrete_engagement_present=concrete_engagement_present,
     )
 
 
@@ -111,3 +139,56 @@ def _find_similar_length_runs(
             i += 1
 
     return runs
+
+
+def _count_triplet_contrastive_combos(sentences: list[str]) -> int:
+    count = 0
+    lowered = [sentence.lower() for sentence in sentences]
+    for idx, sentence in enumerate(lowered):
+        if not any(re.search(pattern, sentence) for pattern in _CONTRASTIVE_NEGATION_PATTERNS):
+            continue
+        window = " ".join(lowered[max(0, idx - 2) : idx + 3])
+        if _TRIPLET_RE.search(window):
+            count += 1
+    return count
+
+
+def _count_clustered_triplets(sentences: list[str]) -> int:
+    triplet_positions = [
+        idx for idx, sentence in enumerate(sentences) if _TRIPLET_RE.search(sentence)
+    ]
+    if len(triplet_positions) < 2:
+        return 0
+    clusters = 0
+    for idx, position in enumerate(triplet_positions[:-1]):
+        if triplet_positions[idx + 1] - position <= 3:
+            clusters += 1
+    return clusters
+
+
+def _paragraph_length_profile(text: str) -> ParagraphLengthProfile | None:
+    counts = [
+        len(paragraph.split())
+        for paragraph in text.strip().split("\n\n")
+        if paragraph.strip()
+    ]
+    if not counts:
+        return None
+    shortest = min(counts)
+    longest = max(counts)
+    ratio = (longest / shortest) if shortest else float("inf")
+    return ParagraphLengthProfile(
+        paragraph_count=len(counts),
+        shortest_word_count=shortest,
+        longest_word_count=longest,
+        longest_to_shortest_ratio=ratio,
+    )
+
+
+def _count_mechanical_burstiness(sentences: list[str]) -> int:
+    counts = [len(sentence.split()) for sentence in sentences]
+    total = 0
+    for idx in range(1, len(counts) - 1):
+        if counts[idx] < 8 and counts[idx - 1] >= 12 and counts[idx + 1] >= 12:
+            total += 1
+    return total

@@ -22,9 +22,11 @@ class DraftRevisionService:
         llm_client: LLMClient,
         *,
         prompt_version: str = "drafting-revision-v1",
+        max_tokens: int = 8000,
     ) -> None:
         self._llm = llm_client
         self._prompt_version = prompt_version
+        self._max_tokens = max_tokens
 
     def revise(
         self,
@@ -52,7 +54,7 @@ class DraftRevisionService:
                 source_packets=source_packets or [],
             ),
             json_schema=DRAFTING_SCHEMA,
-            max_tokens=8000,
+            max_tokens=self._max_tokens,
             model=model,
         )
         return _draft_from_payload(
@@ -100,6 +102,16 @@ def _build_revision_message(
             "style_issues": [
                 {"issue_type": item.issue_type, "description": item.description}
                 for item in validation.llm_judgment.style_issues
+            ],
+            "diagnostics": [
+                {
+                    "location": item.location,
+                    "issue_type": item.issue_type,
+                    "evidence": item.evidence,
+                    "severity": item.severity,
+                    "action": item.action,
+                }
+                for item in validation.llm_judgment.diagnostics
             ],
             "revision_suggestions": validation.llm_judgment.revision_suggestions,
             "known_weak_spots": previous_draft.known_weak_spots,
@@ -180,8 +192,10 @@ def _build_revision_message(
         "source_packets": _source_packets_payload(source_packets),
     }
     return (
-        "Revise the previous draft using the validation feedback while keeping every claim grounded "
-        "in the supplied evidence.\n\n"
+        "Revise the previous draft using the structured validation diagnostics while keeping every "
+        "claim grounded in the supplied evidence. Fix diagnosed locations without copying validator "
+        "wording. Do not add unsupported facts, unsupported citations, or short filler sentences just "
+        "to vary rhythm.\n\n"
         f"{json.dumps(context, ensure_ascii=False)}"
     )
 
