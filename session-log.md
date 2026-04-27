@@ -2039,3 +2039,47 @@ Caveats:
 
 - This change only reorganized the draft `updated-anti-ai-detection-SKILL.md`; it did not sync the live `anti-ai-detection-SKILL.md`.
 - No automated tests were needed or run for this wording-only update.
+
+---
+
+## 2026-04-27 - Codex - Added Standalone Writing Style Sample Subsystem
+
+Summary:
+
+- Added a new standalone `essay_writer.writing_style` package for optional human writing samples, without wiring it into the essay workflow yet.
+- Implemented sample metadata schemas, deterministic sample-text normalization, sample/content stores, a sample ingestion service, and an LLM-backed `WritingStyleContentService`.
+- Added prompt helpers for both style-content generation and future drafting-stage injection, including a prompt block that passes the distilled style guidance and the full cleaned sample texts while explicitly marking them as tone/style exemplars only.
+- Added focused tests for normalization and prompt-block behavior.
+
+Files changed:
+
+- `essay_writer/writing_style/__init__.py`
+- `essay_writer/writing_style/schema.py`
+- `essay_writer/writing_style/normalizer.py`
+- `essay_writer/writing_style/storage.py`
+- `essay_writer/writing_style/ingestion.py`
+- `essay_writer/writing_style/prompts.py`
+- `essay_writer/writing_style/service.py`
+- `tests/writing_style/test_normalizer.py`
+- `tests/writing_style/test_prompts.py`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+pytest tests\writing_style
+python -m compileall essay_writer\writing_style tests\writing_style
+git diff --check
+git status --short
+```
+
+Results:
+
+- `tests\writing_style`: 5 passed.
+- Compile check passed for the new writing-style package and tests.
+- `git diff --check` passed.
+
+Caveats:
+
+- The new writing-style subsystem is intentionally not connected to the current workflow, API routes, or UI selection flow yet.
+- Model selection for style-content generation is currently handled via `ESSAY_MODEL_WRITING_STYLE` and `ESSAY_MAX_TOKENS_WRITING_STYLE` in the standalone service layer rather than the app-wide settings UI.
