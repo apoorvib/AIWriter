@@ -26,6 +26,8 @@ _CONTRASTIVE_NEGATION_PATTERNS: list[str] = [
 
 _PARTICIPIAL_RE = re.compile(r",\s+\w+ing\b", re.IGNORECASE)
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_DECORATIVE_HYPHEN_PAUSE_RE = re.compile(r"\s-{1,2}\s")
+_COLON_EXPLANATION_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9' ]{0,60}:\s+[A-Za-z\"]")
 _TRIPLET_RE = re.compile(
     r"\b[\w'-]+(?:\s+[\w'-]+)?\s*,\s*[\w'-]+(?:\s+[\w'-]+)?\s*,\s*(?:and|or)\s+[\w'-]+",
     re.IGNORECASE,
@@ -40,6 +42,9 @@ def run_deterministic_checks(text: str) -> DeterministicCheckResult:
     word_count = len(text.split())
 
     em_dash_count = text.count("\u2014")
+    en_dash_count = text.count("\u2013")
+    decorative_hyphen_pause_count = len(_DECORATIVE_HYPHEN_PAUSE_RE.findall(text))
+    colon_explanation_pattern_count = len(_COLON_EXPLANATION_RE.findall(text))
 
     tier1_hits = _check_tier1_vocab(lower)
 
@@ -71,6 +76,9 @@ def run_deterministic_checks(text: str) -> DeterministicCheckResult:
     return DeterministicCheckResult(
         word_count=word_count,
         em_dash_count=em_dash_count,
+        en_dash_count=en_dash_count,
+        decorative_hyphen_pause_count=decorative_hyphen_pause_count,
+        colon_explanation_pattern_count=colon_explanation_pattern_count,
         tier1_vocab_hits=tier1_hits,
         bad_conclusion_opener=bad_conclusion_opener,
         consecutive_similar_sentence_runs=similar_runs,
@@ -191,4 +199,28 @@ def _count_mechanical_burstiness(sentences: list[str]) -> int:
     for idx in range(1, len(counts) - 1):
         if counts[idx] < 8 and counts[idx - 1] >= 12 and counts[idx + 1] >= 12:
             total += 1
+    total += _count_clipped_fragment_runs(sentences, counts)
     return total
+
+
+def _count_clipped_fragment_runs(sentences: list[str], counts: list[int]) -> int:
+    total = 0
+    idx = 0
+    while idx < len(sentences):
+        if not _is_clipped_fragment_sentence(sentences[idx], counts[idx]):
+            idx += 1
+            continue
+        end = idx + 1
+        while end < len(sentences) and _is_clipped_fragment_sentence(sentences[end], counts[end]):
+            end += 1
+        run_len = end - idx
+        run_avg = sum(counts[idx:end]) / run_len
+        if run_len >= 2 and run_avg <= 4.5:
+            total += 1
+        idx = end
+    return total
+
+
+def _is_clipped_fragment_sentence(sentence: str, word_count: int) -> bool:
+    stripped = sentence.strip()
+    return stripped.endswith(".") and word_count <= 6

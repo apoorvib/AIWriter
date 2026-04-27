@@ -132,6 +132,9 @@ def _build_user_message(
         ],
         "deterministic_issues": {
             "em_dash_count": det.em_dash_count,
+            "en_dash_count": det.en_dash_count,
+            "decorative_hyphen_pause_count": det.decorative_hyphen_pause_count,
+            "colon_explanation_pattern_count": det.colon_explanation_pattern_count,
             "tier1_vocab_hits": [{"word": h.word, "count": h.count} for h in det.tier1_vocab_hits],
             "bad_conclusion_opener": det.bad_conclusion_opener,
             "participial_phrase_count": det.participial_phrase_count,

@@ -14,6 +14,34 @@ def test_em_dash_clean():
     assert result.em_dash_count == 0
 
 
+def test_en_dash_detected():
+    result = run_deterministic_checks("The dates run from 1920\u20131930 in the source.")
+    assert result.en_dash_count == 1
+    assert result.has_issues is True
+
+
+def test_decorative_hyphen_pause_detected():
+    result = run_deterministic_checks("The evidence is thin - and the paragraph tries to hide it.")
+    assert result.decorative_hyphen_pause_count == 1
+    assert result.has_issues is True
+
+
+def test_standard_hyphenated_word_is_allowed():
+    result = run_deterministic_checks("The source-specific point matters here.")
+    assert result.decorative_hyphen_pause_count == 0
+
+
+def test_colon_explanation_pattern_detected():
+    result = run_deterministic_checks("The problem is simple: the paragraph sounds too organized.")
+    assert result.colon_explanation_pattern_count == 1
+    assert result.has_issues is True
+
+
+def test_required_colon_shapes_are_not_counted():
+    result = run_deterministic_checks("The meeting starts at 12:30 and the source is https://example.com.")
+    assert result.colon_explanation_pattern_count == 0
+
+
 def test_tier1_vocab_detected():
     text = "We should delve into the tapestry of evidence and leverage our tools to foster growth."
     result = run_deterministic_checks(text)
@@ -148,7 +176,7 @@ def test_has_issues_false_for_clean_text():
     text = (
         "Stop.\n\n"
         "Arctic temperatures have risen four times faster than the global average over the last fifty years. "
-        "This acceleration is not uniform: some regions have warmed at twice that rate. "
+        "This acceleration is not uniform. Some regions have warmed at twice that rate. "
         "The permafrost holds an estimated 1.5 trillion tons of carbon.\n\n"
         "That number should give us pause.\n\n"
         "If even a fraction of that carbon is released into the atmosphere, "
@@ -195,6 +223,26 @@ def test_mechanical_burstiness_detected():
     )
     result = run_deterministic_checks(text)
     assert result.mechanical_burstiness_count == 1
+
+
+def test_mechanical_burstiness_detects_clipped_fragment_chain():
+    text = (
+        "The board's role is advisory. "
+        "It can recommend. "
+        "It cannot compel."
+    )
+    result = run_deterministic_checks(text)
+    assert result.mechanical_burstiness_count == 1
+    assert result.has_issues is True
+
+
+def test_mechanical_burstiness_allows_normal_short_pair():
+    text = (
+        "The claim stays narrower in practice. "
+        "The statute only guides agencies here."
+    )
+    result = run_deterministic_checks(text)
+    assert result.mechanical_burstiness_count == 0
 
 
 def test_concrete_engagement_detected():

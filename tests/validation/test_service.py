@@ -38,7 +38,7 @@ def test_service_runs_deterministic_checks_and_includes_in_report():
 
 
 def test_service_passes_deterministic_findings_to_llm():
-    draft = "This is important \u2014 noted."
+    draft = "This is important \u2014 noted. The range is 1920\u20131930. The issue is simple: it sounds managed. This - noted."
     client = MockLLMClient(responses=[_MINIMAL_LLM_RESPONSE])
 
     ValidationService(client).validate(draft, draft_id="d1", task_spec=_TASK_SPEC, evidence_map=[])
@@ -46,6 +46,9 @@ def test_service_passes_deterministic_findings_to_llm():
     user_msg = client.calls[0]["user"]
     context = json.loads(user_msg.split("\n\n", 1)[1].split("<essay_draft>")[0].strip())
     assert context["deterministic_issues"]["em_dash_count"] == 1
+    assert context["deterministic_issues"]["en_dash_count"] == 1
+    assert context["deterministic_issues"]["decorative_hyphen_pause_count"] == 1
+    assert context["deterministic_issues"]["colon_explanation_pattern_count"] == 1
 
 
 def test_service_passes_evidence_map_to_llm():
@@ -254,6 +257,19 @@ def test_service_report_fails_when_unsupported_claims():
     client = MockLLMClient(responses=[llm_response])
 
     report = ValidationService(client).validate("Some draft.", draft_id="d1", task_spec=_TASK_SPEC, evidence_map=[])
+
+    assert report.passes is False
+
+
+def test_service_report_fails_when_disallowed_punctuation_patterns():
+    client = MockLLMClient(responses=[_MINIMAL_LLM_RESPONSE])
+
+    report = ValidationService(client).validate(
+        "The issue is simple: it sounds too managed.",
+        draft_id="d1",
+        task_spec=_TASK_SPEC,
+        evidence_map=[],
+    )
 
     assert report.passes is False
 

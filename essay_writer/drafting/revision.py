@@ -194,8 +194,8 @@ def _build_revision_message(
     return (
         "Revise the previous draft using the structured validation diagnostics while keeping every "
         "claim grounded in the supplied evidence. Fix diagnosed locations without copying validator "
-        "wording. Do not add unsupported facts, unsupported citations, or short filler sentences just "
-        "to vary rhythm.\n\n"
+        "wording. Do not add unsupported facts, unsupported citations, short filler sentences just "
+        "to vary rhythm, or clipped fragment chains like 'It can advise. It cannot compel.'\n\n"
         f"{json.dumps(context, ensure_ascii=False)}"
     )
 

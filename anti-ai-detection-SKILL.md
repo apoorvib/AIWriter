@@ -17,20 +17,38 @@ AI-detection tools are unreliable and can produce false positives, especially on
 
 Apply these rules during drafting, not as a post-processing step. AI prose regresses to the mean: it is correct, balanced, and predictable. Detection tools exploit this by measuring perplexity (word predictability) and burstiness (sentence length variation). The goal is to break the patterns that make text statistically machine-like, not to introduce errors. The deeper goal is to sound like a specific person thinking through a specific source, not a machine producing balanced coverage.
 
+## Core Prose Standard
+
+Write in plain, specific academic prose.
+Do not simulate emphasis with stacked mini-sentences.
+If a point can be said in one normal sentence, say it once.
+Prefer concrete source detail over rhetorical rhythm.
+Each sentence should add meaning, not just cadence.
+
+What helps most:
+
+- Prefer common verbs and nouns over inflated substitutes.
+- Do not manufacture short sentences just to vary rhythm.
+- Avoid staged rhetorical templates unless they are genuinely needed.
+- If a sentence sounds odd when read aloud, rewrite it as normal prose.
+
 ---
 
-## HARD BAN: EM DASHES
+## HARD BAN: DASH AND COLON HABITS
 
-The em dash is the single most cited indicator of AI text. LLMs use it at 3 to 10 times the rate of human writers.
+The em dash is the single most cited indicator of AI text. LLMs use it at 3 to 10 times the rate of human writers. En dashes and colon-heavy explanation patterns have also become common model habits. Colons are especially suspicious when they create a neat "claim: explanation" rhythm, introduce tidy lists, or turn a sentence into a labeled summary.
 
 **Rule: Never use em dashes. Zero. Not one.**
 
-En dashes (–) and hyphens (-) are fine. The ban is specifically on em dashes (U+2014).
+Also avoid en dashes and decorative hyphen breaks in generated prose. Use hyphens only when they are part of a standard spelling, source title, file name, citation detail, URL, or required technical term. Do not use hyphens as a substitute for a pause.
 
-- Parenthetical aside → use commas or parentheses
-- Introducing an explanation → use a colon
-- Dramatic pause → use a period and start a new sentence
-- Setting off a list → restructure the sentence
+Avoid colons as a default explanation tool. A colon is allowed only when the assignment, citation style, source title, URL, time stamp, ratio, or quoted source requires it. Do not use colon-led structures to sound organized.
+
+- Parenthetical aside: use commas or parentheses
+- Introducing an explanation: use a full sentence
+- Dramatic pause: use a period and start a new sentence
+- Setting off a list: restructure the sentence
+- Label plus explanation pattern: rewrite as a normal sentence
 
 ---
 
@@ -103,6 +121,8 @@ AI sentences cluster around 15–20 words. Detection tools measure this as "burs
 - Alternate long and short. The rhythm should feel uneven.
 
 **Anti-mechanical guard:** Short sentences must earn their brevity: end on a point, not a filler. "This matters." earns it. "It was good." doesn't. If you can't find a real reason for a short sentence, rewrite a long one to be longer instead of padding with a short filler. Burstiness from forced filler reads as a different AI tell ("chopped" prose) and some detectors now flag it.
+
+**No fake emphasis chains:** Do not stack clipped mini-sentences to simulate human rhythm. "The board's role is advisory. It can recommend. It cannot compel." sounds synthetic, not natural. If two or three ultra-short declarative sentences appear in a row, combine them into normal prose unless you are quoting speech or source language.
 
 ### Semantic Repetition
 
@@ -259,7 +279,7 @@ AI defaults to grouping things in threes because it has learned this is "good wr
 
 Run these in order. Stop at the first one you fail and fix before continuing.
 
-1. **Em dashes.** Search for em dash U+2014. Must return zero. If any exist, remove them all.
+1. **Dash and colon habits.** Search for em dash U+2014, en dash U+2013, decorative hyphen pauses, and colon-heavy "label: explanation" patterns. Remove all non-required hits.
 2. **High-risk vocabulary.** Search for the high-risk word list. Replace every hit.
 3. **Contrastive-negation + triplet combo.** Search for "not just," "not only," "it's not about," "isn't about." If any of these appears within two sentences of a three-item list, rewrite.
 4. **Paragraph length variance.** If the longest and shortest paragraphs are within 30% of each other, add a very short paragraph (2 sentences) and expand one that deserves more room.

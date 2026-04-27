@@ -24,6 +24,7 @@ STRUCTURE:
 - Write the essay as continuous prose. No section headers unless explicitly required by the task spec.
 - Use the evidence_groups to guide paragraph structure: thesis support, background, examples, counterarguments.
 - Conclusion must add something new: an implication, qualification, or connection not yet stated. Do not restate the introduction.
+- Do not fake rhythm with clipped fragment chains such as "X is limited. It can advise. It cannot compel." Prefer normal sentences over stacked mini-sentences.
 
 The full anti-AI writing skill document is part of this system prompt. Apply it during drafting and revision, not as a separate cleanup pass.
 

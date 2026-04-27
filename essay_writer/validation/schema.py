@@ -39,6 +39,9 @@ class DeterministicCheckResult:
     participial_phrase_rate: float
     contrastive_negation_count: int
     signposting_hits: list[str]
+    en_dash_count: int = 0
+    decorative_hyphen_pause_count: int = 0
+    colon_explanation_pattern_count: int = 0
     triplet_contrastive_combo_count: int = 0
     clustered_triplet_count: int = 0
     paragraph_length_profile: ParagraphLengthProfile | None = None
@@ -50,6 +53,9 @@ class DeterministicCheckResult:
     def has_issues(self) -> bool:
         return (
             self.em_dash_count > 0
+            or self.en_dash_count > 0
+            or self.decorative_hyphen_pause_count > 0
+            or self.colon_explanation_pattern_count > 0
             or len(self.tier1_vocab_hits) > 0
             or self.bad_conclusion_opener
             or len(self.consecutive_similar_sentence_runs) > 0
@@ -156,4 +162,7 @@ class ValidationReport:
             and self.llm_judgment.length_check.passes
             and not self.llm_judgment.unsupported_claims
             and not self.deterministic.em_dash_count
+            and not self.deterministic.en_dash_count
+            and not self.deterministic.decorative_hyphen_pause_count
+            and not self.deterministic.colon_explanation_pattern_count
         )

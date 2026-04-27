@@ -1884,3 +1884,158 @@ Results:
 Caveats:
 
 - No frontend rebuild was run because this follow-up only changed backend model resolution, README, and Python tests.
+
+---
+
+## 2026-04-22 - Codex - Dash And Colon Punctuation Checks
+
+Summary:
+
+- Updated active and candidate anti-AI skill files to avoid en dashes, decorative hyphen pauses, and colon-heavy explanation patterns in generated prose.
+- Replaced the prior guidance that allowed en dashes, hyphens, and colons with stricter generated-prose rules and narrow exceptions for required spellings, source titles, URLs, citations, time stamps, ratios, and technical terms.
+- Added deterministic validation checks for en dash count, decorative hyphen pause count, and colon explanation pattern count.
+- Passed the new punctuation findings into validation and the final style pass payloads.
+- Made validation fail when these disallowed punctuation patterns are present.
+- Updated README deterministic check documentation and validation tests.
+
+Files changed:
+
+- `anti-ai-detection-SKILL.md`
+- `updated-anti-ai-detection-SKILL.md`
+- `essay_writer/validation/checks.py`
+- `essay_writer/validation/schema.py`
+- `essay_writer/validation/service.py`
+- `essay_writer/validation/prompts.py`
+- `essay_writer/drafting/style_revision.py`
+- `tests/validation/test_checks.py`
+- `tests/validation/test_service.py`
+- `README.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+rg -n "Em dashes|En dashes|hyphens|colon|Dramatic pause|Parenthetical aside|Setting off a list|SELF-CHECK" anti-ai-detection-SKILL.md updated-anti-ai-detection-SKILL.md
+pytest tests\validation
+python -m compileall essay_writer\validation essay_writer\drafting tests\validation
+rg -n "DASH AND COLON|colon-heavy|decorative hyphen|label: explanation|Introducing an explanation" anti-ai-detection-SKILL.md updated-anti-ai-detection-SKILL.md essay_writer\validation tests\validation README.md
+git diff --check
+git status --short anti-ai-detection-SKILL.md updated-anti-ai-detection-SKILL.md essay_writer\validation\checks.py essay_writer\validation\schema.py essay_writer\validation\service.py essay_writer\validation\prompts.py essay_writer\drafting\style_revision.py tests\validation\test_checks.py tests\validation\test_service.py README.md session-log.md
+```
+
+Results:
+
+- Validation tests: 48 passed, 1 known pytest cache warning.
+- Compile check passed.
+- `git diff --check`: no whitespace errors, only CRLF normalization warnings.
+
+Caveats:
+
+- Hyphenated standard words and required source or citation text are not blocked. Only decorative hyphen pauses are counted.
+
+---
+
+## 2026-04-26 - Codex - Anti-AI Fragment Chain Guard
+
+Summary:
+
+- Tightened the anti-AI skill so it explicitly bans stacked clipped mini-sentences used as fake emphasis.
+- Added matching drafting and style-revision prompt instructions so the model prefers normal prose over "X. It can Y. It cannot Z." chains.
+- Extended the deterministic mechanical-burstiness check to catch consecutive ultra-short declarative runs, not just a single short sentence between long ones.
+- Added focused validation tests for the new clipped-fragment heuristic and a clean short-pair case.
+- Updated README validation notes to document that mechanical burstiness now includes clipped fragment chains.
+
+Files changed:
+
+- `anti-ai-detection-SKILL.md`
+- `updated-anti-ai-detection-SKILL.md`
+- `essay_writer/drafting/prompts.py`
+- `essay_writer/drafting/revision.py`
+- `essay_writer/drafting/style_revision.py`
+- `essay_writer/validation/checks.py`
+- `tests/validation/test_checks.py`
+- `README.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+pytest tests\validation\test_checks.py
+python -m compileall essay_writer\validation essay_writer\drafting tests\validation
+@'
+from essay_writer.drafting.anti_ai_skill import ANTI_AI_SKILL_DOCUMENT
+print(len(ANTI_AI_SKILL_DOCUMENT))
+'@ | python -
+git diff -- anti-ai-detection-SKILL.md updated-anti-ai-detection-SKILL.md essay_writer/drafting/prompts.py essay_writer/drafting/style_revision.py essay_writer/drafting/revision.py essay_writer/validation/checks.py tests/validation/test_checks.py README.md
+git status --short
+```
+
+Results:
+
+- `tests\validation\test_checks.py`: 33 passed, 1 known pytest cache warning.
+- Compile check passed.
+- Anti-AI skill document loaded successfully through `essay_writer.drafting.anti_ai_skill`.
+
+Caveats:
+
+- The new clipped-fragment heuristic is intentionally narrow: it targets consecutive ultra-short declarative runs and still allows isolated short landing sentences that are not chained together.
+
+---
+
+## 2026-04-26 - Codex - Direct Core Prose Standard Added
+
+Summary:
+
+- Added the requested plain-prose guidance directly near the top of both anti-AI skill files.
+- Kept the live and candidate skill files in sync so the active drafting prompt and the updated reference file carry the same wording.
+
+Files changed:
+
+- `anti-ai-detection-SKILL.md`
+- `updated-anti-ai-detection-SKILL.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+rg -n "Core Prose Standard|Write in plain, specific academic prose|What helps most|Avoid staged rhetorical templates" anti-ai-detection-SKILL.md updated-anti-ai-detection-SKILL.md
+Get-Content anti-ai-detection-SKILL.md | Select-Object -First 40
+```
+
+Results:
+
+- Verified the new `Core Prose Standard` block appears near the top of both skill files.
+
+Caveats:
+
+- No automated tests were needed or run for this wording-only update.
+
+---
+
+## 2026-04-26 - Codex - Reordered Additional Anti-AI Skill Points
+
+Summary:
+
+- Reordered the loose `updated-anti-ai-detection-SKILL.md` tail notes into a deliberate sequence: voice calibration first, then wording-level edits, then sentence-pattern tells, then source specificity, then conclusion checks.
+- Replaced the temporary `NEW POINTS: NEED TO REORDER` marker with a titled section and normalized the subsection headings for readability.
+
+Files changed:
+
+- `updated-anti-ai-detection-SKILL.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+rg -n "NEW POINTS|NEED TO REORDER|^#|^##|^- " updated-anti-ai-detection-SKILL.md
+Get-Content updated-anti-ai-detection-SKILL.md -Tail 70
+```
+
+Results:
+
+- The appended anti-AI guidance now reads as an ordered editing pass instead of an unordered note dump.
+
+Caveats:
+
+- This change only reorganized the draft `updated-anti-ai-detection-SKILL.md`; it did not sync the live `anti-ai-detection-SKILL.md`.
+- No automated tests were needed or run for this wording-only update.

@@ -17,20 +17,38 @@ AI-detection tools are unreliable and can produce false positives, especially on
 
 Apply these rules during drafting, not as a post-processing step. AI prose regresses to the mean: it is correct, balanced, and predictable. Detection tools exploit this by measuring perplexity (word predictability) and burstiness (sentence length variation). The goal is to break the patterns that make text statistically machine-like, not to introduce errors. The deeper goal is to sound like a specific person thinking through a specific source, not a machine producing balanced coverage.
 
+## Core Prose Standard
+
+Write in plain, specific academic prose.
+Do not simulate emphasis with stacked mini-sentences.
+If a point can be said in one normal sentence, say it once.
+Prefer concrete source detail over rhetorical rhythm.
+Each sentence should add meaning, not just cadence.
+
+What helps most:
+
+- Prefer common verbs and nouns over inflated substitutes.
+- Do not manufacture short sentences just to vary rhythm.
+- Avoid staged rhetorical templates unless they are genuinely needed.
+- If a sentence sounds odd when read aloud, rewrite it as normal prose.
+
 ---
 
-## HARD BAN: EM DASHES
+## HARD BAN: DASH AND COLON HABITS
 
-The em dash is the single most cited indicator of AI text. LLMs use it at 3 to 10 times the rate of human writers.
+The em dash is the single most cited indicator of AI text. LLMs use it at 3 to 10 times the rate of human writers. En dashes and colon-heavy explanation patterns have also become common model habits. Colons are especially suspicious when they create a neat "claim: explanation" rhythm, introduce tidy lists, or turn a sentence into a labeled summary.
 
 **Rule: Never use em dashes. Zero. Not one.**
 
-En dashes (–) and hyphens (-) are fine. The ban is specifically on em dashes (U+2014).
+Also avoid en dashes and decorative hyphen breaks in generated prose. Use hyphens only when they are part of a standard spelling, source title, file name, citation detail, URL, or required technical term. Do not use hyphens as a substitute for a pause.
 
-- Parenthetical aside → use commas or parentheses
-- Introducing an explanation → use a colon
-- Dramatic pause → use a period and start a new sentence
-- Setting off a list → restructure the sentence
+Avoid colons as a default explanation tool. A colon is allowed only when the assignment, citation style, source title, URL, time stamp, ratio, or quoted source requires it. Do not use colon-led structures to sound organized.
+
+- Parenthetical aside: use commas or parentheses
+- Introducing an explanation: use a full sentence
+- Dramatic pause: use a period and start a new sentence
+- Setting off a list: restructure the sentence
+- Label plus explanation pattern: rewrite as a normal sentence
 
 ---
 
@@ -103,6 +121,8 @@ AI sentences cluster around 15–20 words. Detection tools measure this as "burs
 - Alternate long and short. The rhythm should feel uneven.
 
 **Anti-mechanical guard:** Short sentences must earn their brevity: end on a point, not a filler. "This matters." earns it. "It was good." doesn't. If you can't find a real reason for a short sentence, rewrite a long one to be longer instead of padding with a short filler. Burstiness from forced filler reads as a different AI tell ("chopped" prose) and some detectors now flag it.
+
+**No fake emphasis chains:** Do not stack clipped mini-sentences to simulate human rhythm. "The board's role is advisory. It can recommend. It cannot compel." sounds synthetic, not natural. If two or three ultra-short declarative sentences appear in a row, combine them into normal prose unless you are quoting speech or source language.
 
 ### Semantic Repetition
 
@@ -259,10 +279,81 @@ AI defaults to grouping things in threes because it has learned this is "good wr
 
 Run these in order. Stop at the first one you fail and fix before continuing.
 
-1. **Em dashes.** Search for em dash U+2014. Must return zero. If any exist, remove them all.
+1. **Dash and colon habits.** Search for em dash U+2014, en dash U+2013, decorative hyphen pauses, and colon-heavy "label: explanation" patterns. Remove all non-required hits.
 2. **High-risk vocabulary.** Search for the high-risk word list. Replace every hit.
 3. **Contrastive-negation + triplet combo.** Search for "not just," "not only," "it's not about," "isn't about." If any of these appears within two sentences of a three-item list, rewrite.
 4. **Paragraph length variance.** If the longest and shortest paragraphs are within 30% of each other, add a very short paragraph (2 sentences) and expand one that deserves more room.
 5. **Argument advancement.** Read only the first sentence of each paragraph in order. If the essay still makes sense and nothing feels missed, the paragraphs aren't advancing the argument; they're restating it. Fix the middle paragraphs.
 6. **Concrete engagement.** Is there at least one specific piece of evidence (named source, exact phrase, page number, concrete example) that would require real reading? If not, add one.
 7. **Read three random paragraphs aloud.** If any sentence sounds like corporate prose or a textbook summary, rewrite it.
+
+## Additional High-Risk Patterns
+
+Apply these in order: first calibrate to the user's actual voice, then remove inflated wording, then fix sentence-pattern tells, then force source specificity, then check the ending.
+
+### Voice Calibration
+
+Detection tools measure how much your text resembles the average output of an LLM. The best defense is text that resembles you specifically, not "human writing in general." Generic "human-sounding" output produced by following anti-AI rules still comes from the same underlying probability distribution as the AI text it is replacing, and detectors can pick that up.
+
+**Rule:** Before rewriting any submitted academic work, the user should provide 2 to 3 paragraphs of their own writing from another context (a different class, a personal email, a journal entry). The rewrite should match the user's actual sentence rhythm, word choices, hedging habits, and structural quirks rather than producing generic clean prose. If no sample is provided, ask for one before doing a heavy rewrite.
+
+### Copula Avoidance
+
+LLMs systematically avoid plain "is," "are," "was," and "has." They reach for inflated substitutes that gesture at function or role: "serves as," "functions as," "acts as," "stands as," "represents," "constitutes," "embodies," "operates as." Detectors notice this because human writers default to plain copulas and only reach for the inflated version when the meaning genuinely requires it.
+
+**Rule:** Default to "is," "are," "was," "has." Use "serves as," "functions as," "acts as," "represents," and similar only when the inflated verb carries meaning the plain copula would lose. If "is" works, use "is."
+Examples:
+
+"The board acts as an arbiter" → "The board is an arbiter"
+"The resolution functions as a counter-plan" → "The resolution is a counter-plan"
+"Village Preservation served as an advocate" → "Village Preservation was the advocate"
+
+### Filler Phrases
+
+LLMs use multi-word phrases where a single word works. "In order to" instead of "to." "Due to the fact that" instead of "because." "At this point in time" instead of "now." "In the event that" instead of "if." "For the purpose of" instead of "for." "With regard to" instead of "about."
+
+**Rule:** Replace multi-word filler with the shortest equivalent. "To," "because," "now," "if," "for," "about." This single substitution tightens prose more than almost any other edit.
+
+### Significance Inflation
+
+LLMs frame their own observations as important rather than letting the content demonstrate importance. Tells include: "the most important," "the key issue," "deserves attention," "worth noting," "the crucial point," "matters here," "the heart of the matter," "what is striking," "what is notable."
+
+**Rule:** Cut self-importance framing. State the observation directly without telling the reader it is significant. If the point is significant, the prose will show it. If the prose does not show it, adding "this is important" will not fix the prose.
+Examples:
+
+"The most important policy finding is that the project produces fewer units" → "The project produces fewer units"
+"What deserves attention here is the two-building design" → "The two-building design splits..."
+
+### Synonym Cycling
+
+LLMs avoid repeating the same noun and reach for variants: protagonist becomes "main character" becomes "central figure" becomes "hero." This is taught as good style in school but is actually a strong AI tell, because real writers repeat the clearest word. The variants often introduce small meaning shifts the writer didn't intend.
+
+**Rule:** Repeat the clearest noun rather than cycling through synonyms. "Building" stays "building." "Developer" stays "developer." "Board" stays "board." Vary only when the alternate word carries meaningfully different information (e.g., "the building" vs. "the proposal" vs. "the project" if those genuinely refer to different things).
+
+### False Ranges
+
+LLMs love "from X to Y" constructions to suggest comprehensive coverage. "From bustling cities to serene landscapes," "from solo developers to enterprise teams," "from a member of Congress to city council members." The pattern signals comprehensiveness without actually establishing it, and detectors flag it.
+
+**Rule:** Use "from X to Y" only when describing a literal range with a clear axis (years, distances, dollar amounts, temperatures). For lists of items, just list the items. "Representatives from a congressional office and several council offices" is better than "spanning every level from a member of Congress to council members."
+
+### Superficial -ing Analyses
+
+LLMs string together present participles to fake analytical depth: "showcasing," "highlighting," "reflecting," "symbolizing," "underscoring," "demonstrating," "illustrating," "embodying." These verbs claim that something means something without doing the work of showing how.
+
+**Rule:** Cut "showcasing," "highlighting," "reflecting," "symbolizing," "underscoring," "demonstrating," "illustrating," "embodying" when used as present participles attached to a main clause. Either delete the participle phrase entirely or rewrite as a separate sentence that actually argues for the connection.
+Example:
+
+"The two-building design splits the project, reflecting the developer's wage strategy" → "The two-building design splits the project. The reason is wages."
+
+### Vague Attributions
+
+LLMs cite generic authorities to add weight without committing to a source. "Experts believe," "studies show," "industry observers note," "scholars argue," "many have suggested," "it is widely understood." Real academic writing names the specific source.
+
+**Rule:** Either name the specific source ("Arnstein argues," "the board's resolution states," "Davidoff writes in his 1965 article") or remove the attribution and state the claim directly. Never use "experts," "scholars," "observers," or "many" as the subject of a sentence.
+
+### Generic Conclusions
+
+LLMs end with vague forward-looking statements: "The future looks bright," "exciting times lie ahead," "much remains to be seen," "only time will tell," "the implications will continue to unfold." These are filler that sounds like a conclusion without making any actual claim.
+
+**Rule:** End on a specific claim or a specific question, never on a forward-looking generality. If the essay has nothing specific to say at the end, the essay is not done. "Whether the LPC acts on the recommendation remains to be seen" is borderline acceptable only because the LPC is named and the action is concrete. "Time will tell whether community participation matters" would not be acceptable.
+

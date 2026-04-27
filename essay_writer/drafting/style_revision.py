@@ -27,6 +27,7 @@ Hard constraints:
 - Do not change the thesis meaning.
 - Do not copy validator-style language into the essay.
 - Do not add short filler sentences just to vary rhythm.
+- Do not create clipped fragment chains like "X is limited. It can advise. It cannot compel."
 - Only revise prose shape, rhythm, transitions, generic phrasing, paragraph movement, and source engagement phrasing.
 
 Apply the anti-AI writing skill during this pass.
@@ -125,6 +126,9 @@ def _build_user_message(
         },
         "deterministic_style_issues": {
             "em_dash_count": det.em_dash_count,
+            "en_dash_count": det.en_dash_count,
+            "decorative_hyphen_pause_count": det.decorative_hyphen_pause_count,
+            "colon_explanation_pattern_count": det.colon_explanation_pattern_count,
             "tier1_vocab_hits": [{"word": hit.word, "count": hit.count} for hit in det.tier1_vocab_hits],
             "bad_conclusion_opener": det.bad_conclusion_opener,
             "consecutive_similar_sentence_runs": len(det.consecutive_similar_sentence_runs),

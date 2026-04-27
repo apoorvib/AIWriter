@@ -647,6 +647,9 @@ Validation combines deterministic checks and an LLM judgment.
 Deterministic checks look for style and structure issues such as:
 
 - em dash count
+- en dash count
+- decorative hyphen pause count
+- colon explanation pattern count
 - overused high-level vocabulary
 - conclusion opener problems
 - participial phrase rate
@@ -655,7 +658,7 @@ Deterministic checks look for style and structure issues such as:
 - triplet plus contrastive-negation combos
 - clustered triplets
 - paragraph length variance
-- mechanical burstiness
+- mechanical burstiness, including clipped fragment chains
 - concrete source engagement
 
 The LLM validation stage receives:
