@@ -11,6 +11,7 @@ from essay_writer.research.schema import EvidenceGroup, EvidenceMap, ResearchNot
 from essay_writer.sources.access_schema import SourceLocator, SourceTextPacket
 from essay_writer.drafting.prompts import DRAFTING_SYSTEM_PROMPT
 from essay_writer.drafting.service import DraftService
+from essay_writer.writing_style.schema import PromptSampleText, StyleAnchorExcerpt, WritingStyleContent, WritingStylePayload
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +224,26 @@ def test_draft_service_passes_source_packets_to_llm():
     assert ctx["source_packets"][0]["extraction_method"] == "pypdf"
 
 
+def test_draft_service_appends_writing_style_samples_when_provided():
+    service, client = _service()
+
+    service.generate(
+        _JOB,
+        _TASK_SPEC,
+        _TOPIC,
+        _EVIDENCE_MAP,
+        writing_style_payload=_writing_style_payload(),
+    )
+    user_msg = client.calls[0]["user"]
+    context_json, style_block = user_msg.split("\n\n<writing_style_samples>", 1)
+    ctx = json.loads(context_json)
+
+    assert ctx["selected_topic"]["topic_id"] == "topic_001"
+    assert "style exemplars only" in style_block.lower()
+    assert "Lets paragraphs run long when developing an idea." in style_block
+    assert "The prose tends to move in long sentences before tightening around the claim." in style_block
+
+
 def test_draft_service_does_not_expose_index_paths():
     service, client = _service()
     service.generate(_JOB, _TASK_SPEC, _TOPIC, _EVIDENCE_MAP)
@@ -323,3 +344,35 @@ def test_draft_service_draft_id_is_unique():
 
 def _parse_context(client: MockLLMClient) -> dict:
     return json.loads(client.calls[0]["user"])
+
+
+def _writing_style_payload() -> WritingStylePayload:
+    return WritingStylePayload(
+        style_content=WritingStyleContent(
+            id="style_001",
+            version=1,
+            sample_ids=["sample_001"],
+            sample_fingerprint="fingerprint-001",
+            guidance=["Uses formal academic prose with long-medium sentence movement."],
+            preferred_moves=["Lets paragraphs run long when developing an idea."],
+            lexical_habits=["Repeats core nouns naturally instead of forcing synonyms."],
+            structural_habits=["Defines a concept before widening to implications."],
+            anchor_excerpts=[
+                StyleAnchorExcerpt(
+                    sample_id="sample_001",
+                    excerpt_id="excerpt_001",
+                    text="The prose tends to move in long sentences before tightening around the claim.",
+                    role="body_rhythm",
+                    reason="Representative sentence movement.",
+                )
+            ],
+        ),
+        samples=[
+            PromptSampleText(
+                sample_id="sample_001",
+                title="Sample One",
+                cleaned_text="The prose tends to move in long sentences before tightening around the claim.",
+                cleaned_text_hash="hash-001",
+            )
+        ],
+    )

@@ -6,6 +6,7 @@ import type {
   CreateJobResponse,
   TopicsGenerateResponse,
   ExportResponse,
+  WritingSample,
 } from "./types";
 
 const BASE = "/api";
@@ -39,12 +40,17 @@ export function extractAssignment(file: File): Promise<AssignmentExtractResponse
 
 export function createJob(
   assignmentText: string,
-  sourceIds: string[]
+  sourceIds: string[],
+  writingStyleSampleIds: string[] = [],
 ): Promise<CreateJobResponse> {
   return request<CreateJobResponse>("/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ assignment_text: assignmentText, source_ids: sourceIds }),
+    body: JSON.stringify({
+      assignment_text: assignmentText,
+      source_ids: sourceIds,
+      writing_style_sample_ids: writingStyleSampleIds,
+    }),
   });
 }
 
@@ -98,6 +104,19 @@ export function getExport(jobId: string): Promise<ExportResponse> {
 
 export function openJobEvents(jobId: string): EventSource {
   return new EventSource(`${BASE}/jobs/${jobId}/events`);
+}
+
+export function listWritingSamples(): Promise<WritingSample[]> {
+  return request<WritingSample[]>("/writing-style/samples");
+}
+
+export function uploadWritingSample(file: File): Promise<WritingSample> {
+  const form = new FormData();
+  form.append("file", file);
+  return request<WritingSample>("/writing-style/samples/upload", {
+    method: "POST",
+    body: form,
+  });
 }
 
 export function getSettings(): Promise<AppSettingsResponse> {

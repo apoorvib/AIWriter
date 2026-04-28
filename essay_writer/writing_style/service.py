@@ -37,6 +37,10 @@ class WritingStyleContentService:
         self._max_tokens = max_tokens or writing_style_max_tokens_from_env()
         self._model = model or writing_style_model_from_env()
 
+    @property
+    def generator_version(self) -> str:
+        return self._generator_version
+
     def generate(
         self,
         samples: list[PromptSampleText],
@@ -161,4 +165,3 @@ def _payload_list(payload: dict[str, Any], key: str, *, max_items: int) -> list[
     if not isinstance(value, list):
         value = [value]
     return [str(item).strip() for item in value[:max_items] if str(item).strip()]
-

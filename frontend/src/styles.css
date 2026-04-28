@@ -204,6 +204,64 @@ a:focus-visible {
   gap: 8px;
 }
 
+.writing-style-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.writing-style-upload {
+  min-height: 132px;
+}
+
+.writing-sample-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.writing-sample-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.writing-sample-row:hover {
+  border-color: var(--accent);
+}
+
+.writing-sample-row.selected {
+  border-color: var(--accent);
+  background: #eef7f5;
+}
+
+.writing-sample-row input {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.writing-sample-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.writing-sample-file {
+  color: var(--muted);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
 .source-chip-row {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) auto auto;

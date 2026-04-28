@@ -11,6 +11,7 @@ const INITIAL_STAGES: PipelineStage[] = [
   { key: "outlining", label: "Outline", status: "pending" },
   { key: "drafting", label: "Draft", status: "pending" },
   { key: "validation", label: "Validate", status: "pending" },
+  { key: "tone_alignment", label: "Tone", status: "pending" },
   { key: "revision", label: "Revise", status: "pending" },
   { key: "export", label: "Export", status: "pending" },
 ];
@@ -21,6 +22,7 @@ const STAGE_LABELS: Record<string, string> = {
   outlining: "Outlining",
   drafting: "Drafting",
   validation: "Validation",
+  tone_alignment: "Tone Alignment",
   revision: "Revision",
   export: "Export",
   workflow: "Workflow",
@@ -108,28 +110,39 @@ export default function PipelineView() {
         } else if (payload.event === "complete") {
           es.close();
           setProgressMsg(null);
+          setStarted(false);
           if (payload.passes) {
             setStages((prev) =>
               prev.map((stage) =>
-                stage.key === "revision" && stage.status === "pending"
+                (stage.key === "revision" || stage.key === "tone_alignment") && stage.status === "pending"
                   ? { ...stage, status: "skipped" }
                   : stage
               )
             );
           }
-          try {
-            const data = await getExport(jobId);
-            setEssay(data);
-          } catch {
+          if (payload.final_export_id) {
+            try {
+              const data = await getExport(jobId);
+              setEssay(data);
+            } catch {
+              setPipelineError({
+                message: "Pipeline finished but the export could not be loaded.",
+                detail: null,
+                stage: "export",
+                errorType: null,
+              });
+            }
+          } else if (!payload.passes) {
             setPipelineError({
-              message: "Pipeline finished but the export could not be loaded.",
+              message: "This pipeline pass finished, but another revision is still required. Start the pipeline again to continue.",
               detail: null,
-              stage: "export",
+              stage: "revision",
               errorType: null,
             });
           }
         } else if (payload.event === "error") {
           setProgressMsg(null);
+          setStarted(false);
           es.close();
           setStages((prev) => prev.map((s) => (s.status === "running" ? { ...s, status: "error" } : s)));
           setPipelineError({
@@ -142,6 +155,7 @@ export default function PipelineView() {
       };
 
       es.onerror = () => {
+        setStarted(false);
         setPipelineError({
           message: "Lost connection to pipeline events. The pipeline may still be running — refresh to check.",
           detail: null,

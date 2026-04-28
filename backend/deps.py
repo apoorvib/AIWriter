@@ -32,8 +32,13 @@ from essay_writer.drafting.service import DraftService
 from essay_writer.drafting.storage import DraftStore
 from essay_writer.drafting.revision import DraftRevisionService
 from essay_writer.drafting.style_revision import FinalStyleRevisionService
+from essay_writer.tone_alignment.service import ToneAlignmentService
+from essay_writer.tone_alignment.storage import ToneAlignmentStore
 from essay_writer.validation.service import ValidationService
 from essay_writer.validation.storage import ValidationStore
+from essay_writer.writing_style.ingestion import HumanWritingSampleIngestionService
+from essay_writer.writing_style.service import WritingStyleContentService
+from essay_writer.writing_style.storage import HumanWritingSampleStore, WritingStyleContentStore
 from essay_writer.exporting.service import FinalExportService
 from essay_writer.exporting.storage import FinalExportStore
 from essay_writer.workflow.mvp import MvpWorkflowRunner
@@ -156,6 +161,31 @@ def get_source_access_service() -> SourceAccessService:
     return SourceAccessService(get_source_store(), config=SourceAccessConfig.from_env())
 
 
+@lru_cache(maxsize=1)
+def get_writing_style_sample_store() -> HumanWritingSampleStore:
+    return HumanWritingSampleStore(DATA_DIR / "writing_style" / "samples")
+
+
+@lru_cache(maxsize=1)
+def get_writing_style_content_store() -> WritingStyleContentStore:
+    return WritingStyleContentStore(DATA_DIR / "writing_style" / "content")
+
+
+@lru_cache(maxsize=1)
+def get_tone_alignment_store() -> ToneAlignmentStore:
+    return ToneAlignmentStore(DATA_DIR / "tone_alignment")
+
+
+@lru_cache(maxsize=1)
+def get_writing_style_ingestion_service() -> HumanWritingSampleIngestionService:
+    return HumanWritingSampleIngestionService(get_writing_style_sample_store())
+
+
+@lru_cache(maxsize=1)
+def get_writing_style_content_service() -> WritingStyleContentService:
+    return WritingStyleContentService(_logged("writing_style"))
+
+
 def _model_config_from_settings() -> StageModelConfig:
     s = load_settings()
     settings_default = s.llm_model.strip() or None
@@ -194,6 +224,8 @@ def get_workflow_runner() -> MvpWorkflowRunner:
         draft_store=DraftStore(DATA_DIR / "drafts"),
         validation_service=ValidationService(_logged("validation"), max_tokens=mt.validation),
         validation_store=ValidationStore(DATA_DIR / "validations"),
+        tone_alignment_service=ToneAlignmentService(_logged("tone_alignment")),
+        tone_alignment_store=get_tone_alignment_store(),
         revision_service=DraftRevisionService(_logged("drafting_revision"), max_tokens=mt.drafting_revision),
         style_revision_service=FinalStyleRevisionService(_logged("drafting_style"), max_tokens=mt.drafting_style),
         export_service=FinalExportService(),
@@ -202,5 +234,7 @@ def get_workflow_runner() -> MvpWorkflowRunner:
         topic_store=get_topic_store(),
         source_store=get_source_store(),
         source_access_service=get_source_access_service(),
+        writing_style_sample_store=get_writing_style_sample_store(),
+        writing_style_content_store=get_writing_style_content_store(),
         model_config=model_config,
     )

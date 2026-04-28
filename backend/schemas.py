@@ -24,6 +24,7 @@ class AssignmentExtractResponse(BaseModel):
 class CreateJobRequest(BaseModel):
     assignment_text: str
     source_ids: list[str]
+    writing_style_sample_ids: list[str] = Field(default_factory=list)
 
 
 class CreateJobResponse(BaseModel):
@@ -39,7 +40,18 @@ class JobStatusResponse(BaseModel):
     current_stage: str
     selected_topic_id: str | None
     draft_id: str | None
+    writing_style_sample_ids: list[str] = Field(default_factory=list)
     error: str | None
+
+
+class WritingSampleResponse(BaseModel):
+    sample_id: str
+    title: str
+    source_filename: str
+    source_type: str
+    page_count: int
+    word_count: int
+    warnings: list[str] = Field(default_factory=list)
 
 
 class TopicSourceLead(BaseModel):

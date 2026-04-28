@@ -37,6 +37,8 @@ class EssayJob:
     current_stage: str = "created"
     task_spec_id: str | None = None
     source_ids: list[str] = field(default_factory=list)
+    writing_style_sample_ids: list[str] = field(default_factory=list)
+    writing_style_content_id: str | None = None
     topic_round_ids: list[str] = field(default_factory=list)
     selected_topic_id: str | None = None
     selected_topic_round_id: str | None = None
@@ -45,6 +47,7 @@ class EssayJob:
     outline_id: str | None = None
     draft_id: str | None = None
     validation_report_id: str | None = None
+    tone_alignment_report_id: str | None = None
     final_export_id: str | None = None
     cost_so_far: float = 0.0
     error_state: EssayJobErrorState | None = None

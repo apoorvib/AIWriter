@@ -21,12 +21,23 @@ export interface CreateJobResponse {
   warnings: string[];
 }
 
+export interface WritingSample {
+  sample_id: string;
+  title: string;
+  source_filename: string;
+  source_type: string;
+  page_count: number;
+  word_count: number;
+  warnings: string[];
+}
+
 export interface JobStatusResponse {
   job_id: string;
   status: string;
   current_stage: string;
   selected_topic_id: string | null;
   draft_id: string | null;
+  writing_style_sample_ids: string[];
   error: string | null;
 }
 

@@ -10,6 +10,7 @@ from essay_writer.outlining.schema import OutlineSection, ThesisOutline
 from essay_writer.research.schema import EvidenceMap, ResearchNote
 from essay_writer.sources.access_schema import SourceLocator, SourceTextPacket
 from essay_writer.task_spec.schema import TaskSpecification
+from essay_writer.writing_style.schema import PromptSampleText, StyleAnchorExcerpt, WritingStyleContent, WritingStylePayload
 
 
 def test_style_revision_preserves_metadata_and_passes_source_packets() -> None:
@@ -45,6 +46,37 @@ def test_style_revision_preserves_metadata_and_passes_source_packets() -> None:
     assert context["source_packets"][0]["packet_id"] == "src1-pdf-pages-0002-0002"
     assert context["source_packets"][0]["text"] == "Source excerpt."
     assert "deterministic_style_issues" in context
+
+
+def test_style_revision_appends_writing_style_samples() -> None:
+    client = MockLLMClient(
+        responses=[
+            {
+                "content": "Styled draft with the same supported claim.",
+                "style_changes": [],
+                "preservation_notes": [],
+                "known_risks": [],
+            }
+        ]
+    )
+    service = FinalStyleRevisionService(client)
+
+    service.revise_style(
+        job=EssayJob(id="job1", task_spec_id="task1", selected_topic_id="topic_001"),
+        task_spec=TaskSpecification(id="task1", version=1, raw_text="Write an essay."),
+        draft=_draft(),
+        outline=_outline(),
+        evidence_map=_evidence_map(),
+        source_packets=[],
+        writing_style_payload=_writing_style_payload(),
+        version=2,
+    )
+    context_json, style_block = client.calls[0]["user"].split("\n\n<writing_style_samples>", 1)
+    context = json.loads(context_json)
+
+    assert context["draft"]["draft_id"] == "draft1"
+    assert "style exemplars only" in style_block.lower()
+    assert "The body tends to stay with one technical claim until it has been fully developed." in style_block
 
 
 def _draft() -> EssayDraft:
@@ -114,4 +146,33 @@ def _source_packet() -> SourceTextPacket:
         pdf_page_end=2,
         extraction_method="pypdf",
         text_quality="readable",
+    )
+
+
+def _writing_style_payload() -> WritingStylePayload:
+    return WritingStylePayload(
+        style_content=WritingStyleContent(
+            id="style_001",
+            version=1,
+            sample_ids=["sample_001"],
+            sample_fingerprint="fingerprint-001",
+            guidance=["Sustains technical explanation before turning to implications."],
+            anchor_excerpts=[
+                StyleAnchorExcerpt(
+                    sample_id="sample_001",
+                    excerpt_id="excerpt_001",
+                    text="The body tends to stay with one technical claim until it has been fully developed.",
+                    role="body_rhythm",
+                    reason="Representative paragraph movement.",
+                )
+            ],
+        ),
+        samples=[
+            PromptSampleText(
+                sample_id="sample_001",
+                title="Sample One",
+                cleaned_text="The body tends to stay with one technical claim until it has been fully developed.",
+                cleaned_text_hash="hash-001",
+            )
+        ],
     )

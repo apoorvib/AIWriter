@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from threading import Event
+
 import pytest
 
 from llm.mock import MockLLMClient
@@ -20,12 +23,17 @@ from essay_writer.sources.schema import SourceCard, SourceChunk, SourceDocument,
 from essay_writer.sources.storage import SourceStore
 from essay_writer.task_spec.schema import ChecklistItem, TaskSpecification
 from essay_writer.task_spec.storage import TaskSpecStore
+from essay_writer.tone_alignment.schema import ToneAlignmentConflict, ToneAlignmentReport
+from essay_writer.tone_alignment.storage import ToneAlignmentStore
 from essay_writer.topic_ideation.retrieval import TopicEvidenceRetriever
 from essay_writer.topic_ideation.schema import CandidateTopic, SelectedTopic, TopicIdeationResult, TopicSourceLead
 from essay_writer.topic_ideation.storage import TopicRoundStore
 from essay_writer.validation.service import ValidationService
 from essay_writer.validation.storage import ValidationStore
 from essay_writer.workflow.mvp import InsufficientEvidenceError, MvpWorkflowRunner, WorkflowContractError
+from essay_writer.writing_style.schema import StyleAnchorExcerpt, WritingStyleContent, WritingStylePayload
+from essay_writer.writing_style.service import build_writing_style_payload
+from essay_writer.writing_style.storage import HumanWritingSampleStore, WritingStyleContentStore
 from tests.task_spec._tmp import LocalTempDir
 
 
@@ -536,6 +544,98 @@ def test_revision_loop_writes_draft_v2_reruns_validation_and_exports() -> None:
     assert loaded_export.draft_id == draft_v2.id
 
 
+def test_tone_alignment_runs_alongside_validation_and_can_force_revision() -> None:
+    with LocalTempDir() as tmp_path:
+        job_store = EssayJobStore(tmp_path / "essay_store")
+        topic_store = TopicRoundStore(tmp_path / "topic_store")
+        workflow = EssayWorkflow(job_store, topic_store)
+        source_store = SourceStore(tmp_path / "source_store")
+        task_store = TaskSpecStore(tmp_path / "task_store")
+        research_plan_store = ResearchPlanStore(tmp_path / "research_plan_store")
+        research_store = ResearchStore(tmp_path / "research_store")
+        outline_store = ThesisOutlineStore(tmp_path / "outline_store")
+        draft_store = DraftStore(tmp_path / "draft_store")
+        validation_store = ValidationStore(tmp_path / "validation_store")
+        tone_store = ToneAlignmentStore(tmp_path / "tone_store")
+        sample_store = HumanWritingSampleStore(tmp_path / "writing_style_samples")
+        content_store = WritingStyleContentStore(tmp_path / "writing_style_content")
+        export_store = FinalExportStore(tmp_path / "export_store")
+
+        task_spec = _task_spec()
+        task_store.save(task_spec)
+        job = workflow.create_job(job_id="job1", task_spec_id=task_spec.id, source_ids=["src1"])
+        round_ = workflow.record_topic_round(
+            job_id=job.id,
+            topic_result=TopicIdeationResult(task_spec_id=task_spec.id, candidates=[_candidate()]),
+        )
+        selected = workflow.select_topic(job_id=job.id, round_number=round_.round_number, topic_id="topic_001")
+        manifest = _save_source(source_store)
+        validation_started = Event()
+        tone_started = Event()
+        validation_service = CoordinatedValidationService(
+            [_validation_response(), _validation_response()],
+            started=validation_started,
+            other_started=tone_started,
+        )
+        tone_service = CoordinatedToneAlignmentService(
+            [_tone_report(requires_revision=True), _tone_report(requires_revision=False)],
+            started=tone_started,
+            other_started=validation_started,
+        )
+        revision_client = MockLLMClient(responses=[_revision_draft_response()])
+        writing_style_payload = _save_writing_style_payload(tmp_path, sample_store, content_store)
+        runner = MvpWorkflowRunner(
+            workflow=workflow,
+            retriever=TopicEvidenceRetriever(source_store),
+            research_planning_service=ResearchPlanningService(),
+            research_plan_store=research_plan_store,
+            research_service=FinalTopicResearchService(MockLLMClient(responses=[_research_response()])),
+            research_store=research_store,
+            outline_service=_outline_service(),
+            outline_store=outline_store,
+            draft_service=DraftService(MockLLMClient(responses=[_draft_response()])),
+            draft_store=draft_store,
+            validation_service=validation_service,
+            validation_store=validation_store,
+            tone_alignment_service=tone_service,
+            tone_alignment_store=tone_store,
+            revision_service=DraftRevisionService(revision_client),
+            export_service=FinalExportService(),
+            export_store=export_store,
+            task_store=task_store,
+            topic_store=topic_store,
+            source_store=source_store,
+            writing_style_sample_store=sample_store,
+            writing_style_content_store=content_store,
+        )
+
+        first_result = runner.run_after_topic_selection(
+            job_id=job.id,
+            task_spec=task_spec,
+            selected_topic=selected,
+            index_manifests=[manifest],
+            writing_style_payload=writing_style_payload,
+        )
+        revised_result = runner.run_revision_for_job(job.id)
+        final_job = job_store.load(job.id)
+        latest_tone = tone_store.load_latest(job.id)
+
+    assert first_result.validation.passes is True
+    assert first_result.tone_alignment is not None
+    assert first_result.tone_alignment.requires_revision is True
+    assert first_result.job.current_stage == "revision"
+    assert validation_service.saw_parallel_start is True
+    assert tone_service.saw_parallel_start is True
+    assert revision_client.calls
+    assert "\"tone_alignment\"" in revision_client.calls[0]["user"]
+    assert "<writing_style_samples>" in revision_client.calls[0]["user"]
+    assert "prefer_tone" in revision_client.calls[0]["user"]
+    assert revised_result.tone_alignment is not None
+    assert revised_result.tone_alignment.requires_revision is False
+    assert final_job.current_stage == "complete"
+    assert latest_tone.requires_revision is False
+
+
 def _task_spec() -> TaskSpecification:
     return TaskSpecification(
         id="task1",
@@ -741,3 +841,102 @@ def _outline_response() -> dict:
             },
         ],
     }
+
+
+class CoordinatedValidationService:
+    def __init__(self, responses: list[dict], *, started: Event, other_started: Event) -> None:
+        self._service = ValidationService(MockLLMClient(responses=responses))
+        self._started = started
+        self._other_started = other_started
+        self.saw_parallel_start = False
+
+    def validate(self, *args, **kwargs):
+        self._started.set()
+        self.saw_parallel_start = self._other_started.wait(0.5)
+        return self._service.validate(*args, **kwargs)
+
+
+class CoordinatedToneAlignmentService:
+    def __init__(self, reports: list[ToneAlignmentReport], *, started: Event, other_started: Event) -> None:
+        self._reports = list(reports)
+        self._started = started
+        self._other_started = other_started
+        self.saw_parallel_start = False
+
+    def evaluate(self, draft_text: str, *, draft_id: str, task_spec: TaskSpecification, writing_style_payload, model=None):
+        del draft_text, task_spec, model
+        self._started.set()
+        self.saw_parallel_start = self._other_started.wait(0.5)
+        report = self._reports.pop(0)
+        return replace(
+            report,
+            draft_id=draft_id,
+            writing_style_content_id=writing_style_payload.style_content.id,
+        )
+
+
+def _save_writing_style_payload(
+    tmp_path,
+    sample_store: HumanWritingSampleStore,
+    content_store: WritingStyleContentStore,
+) -> WritingStylePayload:
+    source_path = tmp_path / "sample-one.txt"
+    cleaned_text = "The sample sustains technical explanation for several sentences before narrowing to the claim."
+    source_path.write_text(cleaned_text, encoding="utf-8")
+    sample_store.save(
+        sample_id="sample_001",
+        title="Sample One",
+        source_path=source_path,
+        source_type="txt",
+        extracted_text=cleaned_text,
+        cleaned_text=cleaned_text,
+        cleaned_text_hash="hash-001",
+        page_count=1,
+        extraction_method="plain_text",
+        word_count=len(cleaned_text.split()),
+        warnings=[],
+        normalizer_version="human-sample-normalizer-v1",
+    )
+    content = WritingStyleContent(
+        id="style_001",
+        version=1,
+        sample_ids=["sample_001"],
+        sample_fingerprint="fingerprint-001",
+        guidance=["Uses formal academic prose with sustained paragraph development."],
+        preferred_moves=["Lets a technical point develop before turning to implication."],
+        anchor_excerpts=[
+            StyleAnchorExcerpt(
+                sample_id="sample_001",
+                excerpt_id="excerpt_001",
+                text=cleaned_text,
+                role="body_rhythm",
+                reason="Representative paragraph cadence.",
+            )
+        ],
+    )
+    content_store.save(content)
+    return build_writing_style_payload(content, sample_store.load_prompt_samples(["sample_001"]))
+
+
+def _tone_report(*, requires_revision: bool) -> ToneAlignmentReport:
+    return ToneAlignmentReport(
+        draft_id="pending",
+        writing_style_content_id="pending-style",
+        overall_alignment=0.42 if requires_revision else 0.88,
+        requires_revision=requires_revision,
+        matched_habits=["Maintains a formal academic register."],
+        mismatched_habits=["Paragraphs turn too quickly away from technical development."] if requires_revision else [],
+        preserve_points=["Keep the current direct statement of the thesis."],
+        revision_targets=["Let the body paragraph stay with one claim longer before pivoting."] if requires_revision else [],
+        anti_ai_conflicts=[
+            ToneAlignmentConflict(
+                issue_type="paragraph_shape",
+                anti_ai_signal="Long, even body paragraph shape.",
+                tone_signal="The writer's real samples often sustain long technical paragraphs.",
+                resolution="prefer_tone",
+                rationale="The longer paragraph shape is authentic and should be preserved.",
+            )
+        ]
+        if requires_revision
+        else [],
+    )

@@ -13,6 +13,8 @@ from essay_writer.research.schema import EvidenceMap
 from essay_writer.sources.access_schema import SourceTextPacket
 from essay_writer.drafting.prompts import DRAFTING_SCHEMA, DRAFTING_SYSTEM_PROMPT
 from essay_writer.drafting.schema import EssayDraft, SectionSourceMap
+from essay_writer.writing_style.prompts import build_writing_style_prompt_block
+from essay_writer.writing_style.schema import WritingStylePayload
 
 
 class DraftService:
@@ -36,6 +38,7 @@ class DraftService:
         *,
         outline: ThesisOutline | None = None,
         source_packets: list[SourceTextPacket] | None = None,
+        writing_style_payload: WritingStylePayload | None = None,
         version: int = 1,
         model: str | None = None,
     ) -> EssayDraft:
@@ -47,6 +50,7 @@ class DraftService:
                 evidence_map,
                 outline,
                 source_packets or [],
+                writing_style_payload,
             ),
             json_schema=DRAFTING_SCHEMA,
             max_tokens=self._max_tokens,
@@ -69,6 +73,7 @@ def _build_user_message(
     evidence_map: EvidenceMap,
     outline: ThesisOutline | None,
     source_packets: list[SourceTextPacket],
+    writing_style_payload: WritingStylePayload | None,
 ) -> str:
     context = {
         "task_spec": {
@@ -138,7 +143,10 @@ def _build_user_message(
             ],
         }
     context["source_packets"] = _source_packets_payload(source_packets)
-    return json.dumps(context, ensure_ascii=False)
+    context_json = json.dumps(context, ensure_ascii=False)
+    if writing_style_payload is None:
+        return context_json
+    return f"{context_json}\n\n{build_writing_style_prompt_block(writing_style_payload)}"
 
 
 def _source_packets_payload(source_packets: list[SourceTextPacket]) -> list[dict[str, Any]]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable
 
@@ -32,12 +33,18 @@ from essay_writer.sources.access_schema import SourceMap, SourceTextPacket
 from essay_writer.sources.storage import SourceStore
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.task_spec.storage import TaskSpecStore
+from essay_writer.tone_alignment.schema import ToneAlignmentReport
+from essay_writer.tone_alignment.service import ToneAlignmentService
+from essay_writer.tone_alignment.storage import ToneAlignmentStore
 from essay_writer.topic_ideation.retrieval import TopicEvidenceRetriever
 from essay_writer.topic_ideation.schema import RetrievedTopicEvidence, SelectedTopic
 from essay_writer.topic_ideation.storage import TopicRoundStore
 from essay_writer.validation.schema import ValidationReport
 from essay_writer.validation.service import ValidationService
 from essay_writer.validation.storage import ValidationStore
+from essay_writer.writing_style.schema import WritingStylePayload
+from essay_writer.writing_style.service import build_writing_style_payload
+from essay_writer.writing_style.storage import HumanWritingSampleStore, WritingStyleContentStore
 
 
 class WorkflowContractError(RuntimeError):
@@ -65,6 +72,7 @@ class MvpWorkflowResult:
     outline: ThesisOutline
     draft: EssayDraft
     validation: ValidationReport
+    tone_alignment: ToneAlignmentReport | None = None
     final_export: FinalEssayExport | None = None
 
 
@@ -86,6 +94,8 @@ class MvpWorkflowRunner:
         draft_store: DraftStore,
         validation_service: ValidationService,
         validation_store: ValidationStore,
+        tone_alignment_service: ToneAlignmentService | None = None,
+        tone_alignment_store: ToneAlignmentStore | None = None,
         revision_service: DraftRevisionService | None = None,
         style_revision_service: FinalStyleRevisionService | None = None,
         export_service: FinalExportService | None = None,
@@ -94,6 +104,8 @@ class MvpWorkflowRunner:
         topic_store: TopicRoundStore | None = None,
         source_store: SourceStore | None = None,
         source_access_service: SourceAccessService | None = None,
+        writing_style_sample_store: HumanWritingSampleStore | None = None,
+        writing_style_content_store: WritingStyleContentStore | None = None,
         model_config: StageModelConfig | None = None,
     ) -> None:
         self._workflow = workflow
@@ -110,12 +122,16 @@ class MvpWorkflowRunner:
         self._style_revision_service = style_revision_service
         self._validation_service = validation_service
         self._validation_store = validation_store
+        self._tone_alignment_service = tone_alignment_service
+        self._tone_alignment_store = tone_alignment_store
         self._export_service = export_service
         self._export_store = export_store
         self._task_store = task_store
         self._topic_store = topic_store
         self._source_store = source_store
         self._source_access_service = source_access_service
+        self._writing_style_sample_store = writing_style_sample_store
+        self._writing_style_content_store = writing_style_content_store
         self._model_config = model_config or StageModelConfig()
 
     def run_after_topic_selection(
@@ -126,12 +142,15 @@ class MvpWorkflowRunner:
         selected_topic: SelectedTopic,
         index_manifests: list[SourceIndexManifest],
         source_maps: list[SourceMap] | None = None,
+        writing_style_payload: WritingStylePayload | None = None,
         model: str | None = None,
         external_search_allowed: bool = False,
         on_stage: StageCallback | None = None,
     ) -> MvpWorkflowResult:
         try:
             job = self._workflow.ensure_research_planning_ready(job_id)
+            job = self._attach_writing_style_if_provided(job, writing_style_payload)
+            writing_style_payload = writing_style_payload or self._load_writing_style_payload(job)
             _validate_contract(job, task_spec, selected_topic, index_manifests)
             retrieved = self._retriever.retrieve_for_selected_topic(
                 selected_topic,
@@ -144,6 +163,7 @@ class MvpWorkflowRunner:
                 index_manifests=index_manifests,
                 source_maps=source_maps or [],
                 retrieved=retrieved,
+                writing_style_payload=writing_style_payload,
                 model=model,
                 external_search_allowed=external_search_allowed,
                 on_stage=on_stage,
@@ -159,6 +179,7 @@ class MvpWorkflowRunner:
         self,
         job_id: str,
         *,
+        writing_style_payload: WritingStylePayload | None = None,
         model: str | None = None,
         external_search_allowed: bool = False,
         on_stage: StageCallback | None = None,
@@ -171,6 +192,8 @@ class MvpWorkflowRunner:
             if job.status in {"blocked", "error"}:
                 message = job.error_state.message if job.error_state else f"Job is {job.status}."
                 raise WorkflowNotRunnableError(message)
+            job = self._attach_writing_style_if_provided(job, writing_style_payload)
+            writing_style_payload = writing_style_payload or self._load_writing_style_payload(job)
             if job.task_spec_id is None:
                 raise WorkflowContractError("Job has no task_spec_id.")
 
@@ -192,6 +215,7 @@ class MvpWorkflowRunner:
                     index_manifests=index_manifests,
                     source_maps=source_maps,
                     retrieved=retrieved,
+                    writing_style_payload=writing_style_payload,
                     model=model,
                     external_search_allowed=external_search_allowed,
                     on_stage=on_stage,
@@ -211,6 +235,7 @@ class MvpWorkflowRunner:
                     research_plan=research_plan,
                     research=research,
                     source_packets=source_packets,
+                    writing_style_payload=writing_style_payload,
                     model=model,
                     on_stage=on_stage,
                     on_progress=on_progress,
@@ -231,18 +256,26 @@ class MvpWorkflowRunner:
                     research=research,
                     outline=outline,
                     draft=draft,
+                    writing_style_payload=writing_style_payload,
                     model=model,
                     on_stage=on_stage,
                     on_progress=on_progress,
                 )
             if job.status == "validation_complete" and job.current_stage == "revision":
-                return self.run_revision_for_job(job_id, model=model, on_stage=on_stage, on_progress=on_progress)
+                return self.run_revision_for_job(
+                    job_id,
+                    writing_style_payload=writing_style_payload,
+                    model=model,
+                    on_stage=on_stage,
+                    on_progress=on_progress,
+                )
             if job.status == "validation_complete":
                 research_plan = self._research_plan_store.load_latest(job_id)
                 research = self._research_store.load_latest(job_id)
                 outline = self._outline_store.load_latest(job_id)
                 draft = self._draft_store.load_latest(job_id)
                 validation = self._validation_store.load_latest(job_id)
+                tone_alignment = self._load_tone_alignment_report(job)
                 final_export = _load_final_export(self._export_store, job) if self._export_store is not None else None
                 _validate_research_plan(job, selected_topic, research_plan)
                 _validate_research(job, selected_topic, research)
@@ -258,6 +291,7 @@ class MvpWorkflowRunner:
                     outline=outline,
                     draft=draft,
                     validation=validation,
+                    tone_alignment=tone_alignment,
                     final_export=final_export,
                 )
             raise WorkflowContractError(f"Job is not ready to resume the MVP workflow: {job.status}")
@@ -272,6 +306,7 @@ class MvpWorkflowRunner:
         self,
         job_id: str,
         *,
+        writing_style_payload: WritingStylePayload | None = None,
         model: str | None = None,
         on_stage: StageCallback | None = None,
         on_progress: ProgressCallback | None = None,
@@ -285,6 +320,8 @@ class MvpWorkflowRunner:
             if job.status in {"blocked", "error"}:
                 message = job.error_state.message if job.error_state else f"Job is {job.status}."
                 raise WorkflowNotRunnableError(message)
+            job = self._attach_writing_style_if_provided(job, writing_style_payload)
+            writing_style_payload = writing_style_payload or self._load_writing_style_payload(job)
             if job.status != "validation_complete" or job.current_stage != "revision":
                 raise WorkflowContractError(f"Job is not ready for revision: {job.status}/{job.current_stage}")
 
@@ -301,14 +338,15 @@ class MvpWorkflowRunner:
             outline = self._outline_store.load_latest(job_id)
             previous_draft = self._draft_store.load_latest(job_id)
             validation = self._validation_store.load_latest(job_id)
+            tone_alignment = self._load_tone_alignment_report(job)
             _validate_research_plan(job, selected_topic, research_plan)
             _validate_research(job, selected_topic, research)
             _validate_outline(job, selected_topic, research_plan, research, outline)
             _validate_draft(job, selected_topic, previous_draft)
             if validation.draft_id != previous_draft.id:
                 raise WorkflowContractError("Latest validation report does not match latest draft.")
-            if validation.passes:
-                raise WorkflowContractError("Revision requires a failed validation report.")
+            if validation.passes and (tone_alignment is None or not tone_alignment.requires_revision):
+                raise WorkflowContractError("Revision requires failed core validation or a tone alignment revision.")
 
             source_packets = self._resolve_source_packets(research_plan)
             _emit_stage(on_stage, "revision", "start")
@@ -322,6 +360,8 @@ class MvpWorkflowRunner:
                 outline=outline,
                 previous_draft=previous_draft,
                 validation=validation,
+                writing_style_payload=writing_style_payload,
+                tone_alignment=tone_alignment,
                 version=revision_version,
                 source_packets=source_packets,
                 model=model or self._model_config.drafting_revision,
@@ -335,6 +375,7 @@ class MvpWorkflowRunner:
                 research=research,
                 draft=revised_draft,
                 source_packets=source_packets,
+                writing_style_payload=writing_style_payload,
                 model=model,
                 on_stage=on_stage,
                 on_progress=on_progress,
@@ -347,6 +388,7 @@ class MvpWorkflowRunner:
                 research=research,
                 outline=outline,
                 draft=revised_draft,
+                writing_style_payload=writing_style_payload,
                 model=model,
                 on_stage=on_stage,
                 on_progress=on_progress,
@@ -367,6 +409,7 @@ class MvpWorkflowRunner:
         index_manifests: list[SourceIndexManifest],
         source_maps: list[SourceMap],
         retrieved: RetrievedTopicEvidence,
+        writing_style_payload: WritingStylePayload | None,
         model: str | None,
         external_search_allowed: bool = False,
         on_stage: StageCallback | None = None,
@@ -432,6 +475,7 @@ class MvpWorkflowRunner:
             task_spec=task_spec,
             selected_topic=selected_topic,
             retrieved=retrieved,
+            writing_style_payload=writing_style_payload,
             research_plan=research_plan,
             research=research,
             source_packets=source_packets,
@@ -450,6 +494,7 @@ class MvpWorkflowRunner:
         research_plan: ResearchPlan,
         research: FinalTopicResearchResult,
         source_packets: list[SourceTextPacket] | None = None,
+        writing_style_payload: WritingStylePayload | None,
         model: str | None,
         on_stage: StageCallback | None = None,
         on_progress: ProgressCallback | None = None,
@@ -483,6 +528,7 @@ class MvpWorkflowRunner:
                 research.evidence_map,
                 outline=outline,
                 source_packets=source_packets or [],
+                writing_style_payload=writing_style_payload,
                 version=draft_version,
                 model=model or self._model_config.drafting,
             )
@@ -495,6 +541,7 @@ class MvpWorkflowRunner:
                 research=research,
                 draft=draft,
                 source_packets=source_packets or [],
+                writing_style_payload=writing_style_payload,
                 model=model,
                 on_stage=on_stage,
                 on_progress=on_progress,
@@ -511,6 +558,7 @@ class MvpWorkflowRunner:
             research=research,
             outline=outline,
             draft=draft,
+            writing_style_payload=writing_style_payload,
             model=model,
             on_stage=on_stage,
             on_progress=on_progress,
@@ -525,6 +573,7 @@ class MvpWorkflowRunner:
         research: FinalTopicResearchResult,
         outline: ThesisOutline,
         draft: EssayDraft,
+        writing_style_payload: WritingStylePayload | None,
         model: str | None,
         on_stage: StageCallback | None = None,
         on_progress: ProgressCallback | None = None,
@@ -532,32 +581,68 @@ class MvpWorkflowRunner:
         try:
             self._workflow.ensure_validation_ready(draft.job_id)
             _emit_stage(on_stage, "validation", "start")
-            _emit_progress(on_progress, "Checking claims and quality...")
             job_for_validation = self._workflow.load_job(draft.job_id)
+            writing_style_payload = writing_style_payload or self._load_writing_style_payload(job_for_validation)
+            tone_requested = (
+                self._tone_alignment_service is not None
+                and self._tone_alignment_store is not None
+                and writing_style_payload is not None
+            )
+            if tone_requested:
+                _emit_stage(on_stage, "tone_alignment", "start")
+                _emit_progress(on_progress, "Checking claims, citations, and tone alignment...")
+            else:
+                _emit_progress(on_progress, "Checking claims and quality...")
             source_cards = (
                 _load_source_cards(self._source_store, job_for_validation.source_ids)
                 if self._source_store is not None
                 else []
             )
             validation_version = self._validation_store.next_version(draft.job_id)
-            validation = self._validation_service.validate(
-                draft.content,
-                draft_id=draft.id,
-                task_spec=task_spec,
-                evidence_map=research.evidence_map.notes,
-                bibliography_candidates=draft.bibliography_candidates,
-                source_cards=source_cards,
-                model=model or self._model_config.validation,
-            )
+            tone_alignment: ToneAlignmentReport | None = None
+            with ThreadPoolExecutor(max_workers=2 if tone_requested else 1) as executor:
+                validation_future = executor.submit(
+                    self._validation_service.validate,
+                    draft.content,
+                    draft_id=draft.id,
+                    task_spec=task_spec,
+                    evidence_map=research.evidence_map.notes,
+                    bibliography_candidates=draft.bibliography_candidates,
+                    source_cards=source_cards,
+                    model=model or self._model_config.validation,
+                )
+                tone_future = (
+                    executor.submit(
+                        self._tone_alignment_service.evaluate,
+                        draft.content,
+                        draft_id=draft.id,
+                        task_spec=task_spec,
+                        writing_style_payload=writing_style_payload,
+                        model=model,
+                    )
+                    if tone_requested and self._tone_alignment_service is not None and writing_style_payload is not None
+                    else None
+                )
+                validation = validation_future.result()
+                tone_alignment = tone_future.result() if tone_future is not None else None
             self._validation_store.save(draft.job_id, validation, version=validation_version)
+            tone_alignment_report_id: str | None = None
+            if tone_alignment is not None and self._tone_alignment_store is not None:
+                tone_version = self._tone_alignment_store.next_version(draft.job_id)
+                self._tone_alignment_store.save(draft.job_id, tone_alignment, version=tone_version)
+                tone_alignment_report_id = f"{tone_alignment.draft_id}:v{tone_version:03d}"
+            ready_for_export = validation.passes and (tone_alignment is None or not tone_alignment.requires_revision)
             job = self._workflow.record_validation_complete(
                 job_id=draft.job_id,
                 validation_report_id=f"{validation.draft_id}:v{validation_version:03d}",
-                passes=validation.passes,
+                tone_alignment_report_id=tone_alignment_report_id,
+                passes=ready_for_export,
             )
             _emit_stage(on_stage, "validation", "done")
+            if tone_requested:
+                _emit_stage(on_stage, "tone_alignment", "done")
             final_export = None
-            if validation.passes and self._export_service is not None and self._export_store is not None:
+            if ready_for_export and self._export_service is not None and self._export_store is not None:
                 _emit_stage(on_stage, "export", "start")
                 _emit_progress(on_progress, "Exporting final essay...")
                 final_export = self._export_service.create_markdown_export(
@@ -582,6 +667,7 @@ class MvpWorkflowRunner:
             outline=outline,
             draft=draft,
             validation=validation,
+            tone_alignment=tone_alignment,
             final_export=final_export,
         )
 
@@ -594,6 +680,7 @@ class MvpWorkflowRunner:
         research: FinalTopicResearchResult,
         draft: EssayDraft,
         source_packets: list[SourceTextPacket],
+        writing_style_payload: WritingStylePayload | None,
         model: str | None,
         on_stage: StageCallback | None,
         on_progress: ProgressCallback | None,
@@ -610,6 +697,7 @@ class MvpWorkflowRunner:
             outline=outline,
             evidence_map=research.evidence_map,
             source_packets=source_packets,
+            writing_style_payload=writing_style_payload,
             version=style_version,
             model=model or self._model_config.drafting_style,
         )
@@ -641,6 +729,44 @@ class MvpWorkflowRunner:
             for packet in self._source_access_service.resolve_locators(research_plan.source_requests)
             if packet.text.strip()
         ]
+
+    def _attach_writing_style_if_provided(
+        self,
+        job: EssayJob,
+        writing_style_payload: WritingStylePayload | None,
+    ) -> EssayJob:
+        if writing_style_payload is None:
+            return job
+        sample_ids = [sample.sample_id for sample in writing_style_payload.samples]
+        if not sample_ids:
+            sample_ids = list(writing_style_payload.style_content.sample_ids)
+        if (
+            job.writing_style_content_id == writing_style_payload.style_content.id
+            and job.writing_style_sample_ids == sample_ids
+        ):
+            return job
+        return self._workflow.attach_writing_style(
+            job_id=job.id,
+            sample_ids=sample_ids,
+            content_id=writing_style_payload.style_content.id,
+        )
+
+    def _load_writing_style_payload(self, job: EssayJob) -> WritingStylePayload | None:
+        if (
+            job.writing_style_content_id is None
+            or not job.writing_style_sample_ids
+            or self._writing_style_content_store is None
+            or self._writing_style_sample_store is None
+        ):
+            return None
+        content = self._writing_style_content_store.load(job.writing_style_content_id)
+        samples = self._writing_style_sample_store.load_prompt_samples(job.writing_style_sample_ids)
+        return build_writing_style_payload(content, samples)
+
+    def _load_tone_alignment_report(self, job: EssayJob) -> ToneAlignmentReport | None:
+        if job.tone_alignment_report_id is None or self._tone_alignment_store is None:
+            return None
+        return self._tone_alignment_store.load(job.id, _report_version(job.tone_alignment_report_id))
 
 
 def _emit_progress(callback: ProgressCallback | None, message: str) -> None:
@@ -690,6 +816,13 @@ def _load_final_export(export_store: FinalExportStore | None, job: EssayJob) -> 
     if export_store is None or job.final_export_id is None:
         return None
     return export_store.load(job.id, job.final_export_id)
+
+
+def _report_version(report_id: str) -> int:
+    version_text = report_id.rsplit(":v", 1)[-1]
+    if not version_text.isdigit():
+        raise WorkflowContractError(f"Invalid report version reference: {report_id}")
+    return int(version_text)
 
 
 def _validate_contract(

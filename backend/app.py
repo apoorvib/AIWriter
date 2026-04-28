@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.routes import export, jobs, pipeline, settings, sources, topics
+from backend.routes import export, jobs, pipeline, settings, sources, topics, writing_style
 
 load_dotenv()
 
@@ -39,6 +39,7 @@ app.include_router(topics.router, prefix="/api")
 app.include_router(pipeline.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
+app.include_router(writing_style.router, prefix="/api")
 
 _frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
 if _frontend_dist.exists():

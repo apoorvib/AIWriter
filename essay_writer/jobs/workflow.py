@@ -93,6 +93,21 @@ class EssayWorkflow:
         )
         return self._job_store.save(updated)
 
+    def attach_writing_style(
+        self,
+        *,
+        job_id: str,
+        sample_ids: list[str],
+        content_id: str,
+    ) -> EssayJob:
+        job = self._job_store.load(job_id)
+        updated = replace(
+            job,
+            writing_style_sample_ids=list(sample_ids),
+            writing_style_content_id=content_id,
+        )
+        return self._job_store.save(updated)
+
     def mark_blocked(self, *, job_id: str, stage: str, message: str) -> EssayJob:
         job = self._job_store.load(job_id)
         updated = replace(
@@ -276,6 +291,7 @@ class EssayWorkflow:
             current_stage="validation",
             draft_id=draft.id,
             validation_report_id=None,
+            tone_alignment_report_id=None,
             final_export_id=None,
         )
         return self._job_store.save(updated)
@@ -291,6 +307,7 @@ class EssayWorkflow:
         *,
         job_id: str,
         validation_report_id: str,
+        tone_alignment_report_id: str | None = None,
         passes: bool,
     ) -> EssayJob:
         job = self._job_store.load(job_id)
@@ -301,6 +318,7 @@ class EssayWorkflow:
             status="validation_complete",
             current_stage="complete" if passes else "revision",
             validation_report_id=validation_report_id,
+            tone_alignment_report_id=tone_alignment_report_id,
         )
         return self._job_store.save(updated)
 

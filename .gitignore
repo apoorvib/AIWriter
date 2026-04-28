@@ -22,3 +22,4 @@ frontend/dist/
 web-*.log
 web-*.err
 data/
+legacy_skills/

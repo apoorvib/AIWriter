@@ -2012,6 +2012,38 @@ Caveats:
 
 ---
 
+## 2026-04-28 - Codex - Anti-Overcorrection Skill Update
+
+Summary:
+
+- Expanded the anti-AI skill to warn against over-correcting into chopped prose.
+- Added new `Over-Chopping` and `Stacked Mini-Sentence Endings` subsections under `SENTENCE STRUCTURE`.
+- Strengthened the `Anti-mechanical guard` and `Voice Calibration` sections so user voice overrides generic burstiness targets when the user's samples favor longer, conjunction-heavy sentences.
+- Added `Preserve Informal Academic Tics` under `TONE AND VOICE` with an explicit preserve-don't-invent rule.
+- Did not recreate `updated-anti-ai-detection-SKILL.md` because it is not present in the current worktree.
+
+Files changed:
+
+- `anti-ai-detection-SKILL.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+Get-ChildItem anti-ai-detection-SKILL.md,updated-anti-ai-detection-SKILL.md -ErrorAction SilentlyContinue | Select-Object Name,Length,LastWriteTime
+Get-Content anti-ai-detection-SKILL.md | Select-Object -Skip 108 -First 220
+```
+
+Results:
+
+- Verified the active skill file exists and the candidate `updated-anti-ai-detection-SKILL.md` file is absent in this checkout.
+
+Caveats:
+
+- No automated tests were needed or run because this update only changes prompt guidance text.
+
+---
+
 ## 2026-04-26 - Codex - Reordered Additional Anti-AI Skill Points
 
 Summary:
@@ -2083,3 +2115,156 @@ Caveats:
 
 - The new writing-style subsystem is intentionally not connected to the current workflow, API routes, or UI selection flow yet.
 - Model selection for style-content generation is currently handled via `ESSAY_MODEL_WRITING_STYLE` and `ESSAY_MAX_TOKENS_WRITING_STYLE` in the standalone service layer rather than the app-wide settings UI.
+
+---
+
+## 2026-04-27 - Codex - Wired Writing Style Into Drafting/Revision and Added Parallel Tone Alignment
+
+Summary:
+
+- Threaded optional `WritingStylePayload` support through drafting, revision, and the final style pass so prompts can receive both the distilled style content and full cleaned human samples.
+- Added a standalone `essay_writer.tone_alignment` package and integrated it into the MVP workflow as a separate branch that runs in parallel with core validation.
+- Changed workflow gating so revision can be triggered by either failed core validation or failed tone alignment, and ensured revision receives both reports together.
+- Reworked validation semantics so deterministic anti-AI checks are no longer hard pass/fail blockers; they remain diagnostic signals while tone alignment resolves conflicts in favor of authentic user voice.
+- Wired persisted writing-style and tone-alignment state through job/workflow storage and runner dependencies without exposing it in the UI yet.
+- Added focused tests covering writing-style prompt injection, validation semantics, and the tone-driven revision loop with parallel validation/tone execution.
+
+Files changed:
+
+- `essay_writer/tone_alignment/__init__.py`
+- `essay_writer/tone_alignment/schema.py`
+- `essay_writer/tone_alignment/prompts.py`
+- `essay_writer/tone_alignment/service.py`
+- `essay_writer/tone_alignment/storage.py`
+- `essay_writer/drafting/prompts.py`
+- `essay_writer/drafting/service.py`
+- `essay_writer/drafting/revision.py`
+- `essay_writer/drafting/style_revision.py`
+- `essay_writer/jobs/schema.py`
+- `essay_writer/jobs/workflow.py`
+- `essay_writer/validation/prompts.py`
+- `essay_writer/validation/schema.py`
+- `essay_writer/workflow/mvp.py`
+- `backend/deps.py`
+- `backend/routes/pipeline.py`
+- `tests/drafting/test_service.py`
+- `tests/drafting/test_revision.py`
+- `tests/drafting/test_style_revision.py`
+- `tests/validation/test_service.py`
+- `tests/workflow/test_mvp.py`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+python -m compileall essay_writer backend tests\drafting tests\validation tests\workflow
+pytest tests\drafting\test_service.py tests\drafting\test_revision.py tests\drafting\test_style_revision.py tests\validation\test_service.py tests\workflow\test_mvp.py tests\jobs\test_workflow.py
+pytest tests\writing_style tests\validation\test_storage.py
+python -m compileall essay_writer\tone_alignment
+git diff --check
+git status --short
+```
+
+Results:
+
+- Focused drafting, validation, workflow, and jobs suite: 57 passed.
+- Writing-style plus validation storage suite: 8 passed.
+- Compile checks passed for the updated workflow and new tone-alignment package.
+
+Caveats:
+
+- Writing-style sample selection remains optional and is still not exposed in the UI/API flow yet; the runner only consumes it when a payload or persisted sample/content IDs are available.
+- Tone alignment model selection currently uses environment variables (`ESSAY_MODEL_TONE_ALIGNMENT`, `ESSAY_MAX_TOKENS_TONE_ALIGNMENT`) rather than app settings.
+- API/export responses do not yet expose tone-alignment summaries separately; only workflow control now uses them.
+
+---
+
+## 2026-04-27 - Codex - Promoted Updated Anti-AI Skill and Archived Prior Version
+
+Summary:
+
+- Moved the previous active `anti-ai-detection-SKILL.md` into a new local-only `legacy_skills/` folder.
+- Added `legacy_skills/` to `.gitignore` so archived skill variants can stay in the workspace without being tracked.
+- Renamed the newer candidate skill file into the active root `anti-ai-detection-SKILL.md` path, which makes the drafting/style prompt loader use it immediately with no code-path change.
+- Patched the humanized-writing pipeline plan doc so it no longer references the removed `updated-anti-ai-detection-SKILL.md` path.
+
+Files changed:
+
+- `.gitignore`
+- `anti-ai-detection-SKILL.md`
+- `docs/superpowers/plans/2026-04-21-humanized-writing-pipeline.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+rg -n "updated-anti-ai-detection-SKILL\.md" README.md docs essay_writer tests backend
+New-Item -ItemType Directory -Force legacy_skills
+Move-Item -LiteralPath anti-ai-detection-SKILL.md -Destination legacy_skills\anti-ai-detection-SKILL.md
+Move-Item -LiteralPath updated-anti-ai-detection-SKILL.md -Destination anti-ai-detection-SKILL.md
+@'
+from essay_writer.drafting.anti_ai_skill import ANTI_AI_SKILL_DOCUMENT
+print(len(ANTI_AI_SKILL_DOCUMENT))
+print(ANTI_AI_SKILL_DOCUMENT.splitlines()[0])
+'@ | python -
+git status --short anti-ai-detection-SKILL.md updated-anti-ai-detection-SKILL.md .gitignore docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md
+```
+
+Results:
+
+- `essay_writer.drafting.anti_ai_skill` now loads the promoted root skill document successfully.
+- The previous root skill file is preserved locally at `legacy_skills\anti-ai-detection-SKILL.md`.
+- No live repo references to `updated-anti-ai-detection-SKILL.md` remain outside session history.
+
+Caveats:
+
+- `updated-anti-ai-detection-SKILL.md` is removed from the tracked workspace path; the only preserved old version is the local ignored archive under `legacy_skills/`.
+
+---
+
+## 2026-04-27 - Codex - Added Writing Sample Library APIs and Frontend Selection UI
+
+Summary:
+
+- Added backend writing-sample library support with list and upload routes, plus auto-import of any files already present under `data/human_samples` so previously added samples appear in the UI immediately.
+- Extended job creation to accept optional `writing_style_sample_ids`, resolve or generate cached `WritingStyleContent`, and attach the resulting style context to the job before the workflow runs.
+- Updated the new-job frontend to fetch existing writing samples on load, let users upload more, select any subset for the job, and submit that selection along with the assignment and sources.
+- Updated the pipeline frontend to show the new `tone_alignment` stage and to handle completion without an export more cleanly when another revision is still required.
+
+Files changed:
+
+- `backend/app.py`
+- `backend/deps.py`
+- `backend/routes/jobs.py`
+- `backend/routes/writing_style.py`
+- `backend/schemas.py`
+- `backend/writing_style_support.py`
+- `essay_writer/writing_style/service.py`
+- `frontend/src/api.ts`
+- `frontend/src/components/WritingSamplePicker.tsx`
+- `frontend/src/pages/NewJob.tsx`
+- `frontend/src/pages/PipelineView.tsx`
+- `frontend/src/styles.css`
+- `frontend/src/types.ts`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+python -m compileall backend essay_writer\writing_style backend\routes frontend\src
+pytest tests\writing_style tests\validation\test_service.py tests\workflow\test_mvp.py tests\jobs\test_workflow.py
+npm run build
+git diff --check
+git status --short
+```
+
+Results:
+
+- Backend and writing-style modules compiled successfully.
+- Focused Python suite: 37 passed.
+- Frontend production build passed with the new sample picker and tone stage UI.
+
+Caveats:
+
+- The frontend currently supports writing-sample selection at job creation time only; there is not yet a separate post-creation edit flow for changing the sample set on an existing job.
+- Export/API payloads still do not surface a detailed tone-alignment report; the UI currently reflects tone alignment mainly through stage progression and revision gating.

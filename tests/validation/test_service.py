@@ -261,7 +261,7 @@ def test_service_report_fails_when_unsupported_claims():
     assert report.passes is False
 
 
-def test_service_report_fails_when_disallowed_punctuation_patterns():
+def test_service_report_keeps_deterministic_punctuation_as_diagnostic_only():
     client = MockLLMClient(responses=[_MINIMAL_LLM_RESPONSE])
 
     report = ValidationService(client).validate(
@@ -270,6 +270,19 @@ def test_service_report_fails_when_disallowed_punctuation_patterns():
         task_spec=_TASK_SPEC,
         evidence_map=[],
     )
+
+    assert report.deterministic.colon_explanation_pattern_count == 1
+    assert report.passes is True
+
+
+def test_service_report_fails_when_citation_issues_present():
+    llm_response = {
+        **_MINIMAL_LLM_RESPONSE,
+        "citation_issues": [{"description": "Missing citation for statistic.", "severity": "high"}],
+    }
+    client = MockLLMClient(responses=[llm_response])
+
+    report = ValidationService(client).validate("Some draft.", draft_id="d1", task_spec=_TASK_SPEC, evidence_map=[])
 
     assert report.passes is False
 

@@ -10,6 +10,7 @@ from essay_writer.outlining.schema import OutlineSection, ThesisOutline
 from essay_writer.research.schema import EvidenceMap, ResearchNote
 from essay_writer.sources.access_schema import SourceLocator, SourceTextPacket
 from essay_writer.task_spec.schema import TaskSpecification
+from essay_writer.tone_alignment.schema import ToneAlignmentConflict, ToneAlignmentReport
 from essay_writer.topic_ideation.schema import SelectedTopic
 from essay_writer.validation.schema import (
     AssignmentFit,
@@ -20,6 +21,7 @@ from essay_writer.validation.schema import (
     ValidationDiagnostic,
     ValidationReport,
 )
+from essay_writer.writing_style.schema import PromptSampleText, StyleAnchorExcerpt, WritingStyleContent, WritingStylePayload
 
 
 def test_revision_service_passes_source_packets_to_llm() -> None:
@@ -61,6 +63,42 @@ def test_revision_service_passes_source_packets_to_llm() -> None:
     assert context["source_packets"][0]["text"] == "Source excerpt used for revision."
     assert context["revision_task"]["diagnostics"][0]["issue_type"] == "unsupported_claim"
     assert context["revision_task"]["diagnostics"][0]["action"] == "strengthen_grounding"
+
+
+def test_revision_service_includes_tone_alignment_and_writing_style_payload() -> None:
+    client = MockLLMClient(
+        responses=[
+            {
+                "content": "Revised draft.",
+                "section_source_map": [],
+                "bibliography_candidates": [],
+                "known_weak_spots": [],
+            }
+        ]
+    )
+    service = DraftRevisionService(client)
+
+    service.revise(
+        EssayJob(id="job1", task_spec_id="task1", selected_topic_id="topic_001"),
+        _task_spec(),
+        _topic(),
+        _evidence_map(),
+        outline=_outline(),
+        previous_draft=_previous_draft(),
+        validation=_validation(),
+        tone_alignment=_tone_alignment(),
+        writing_style_payload=_writing_style_payload(),
+        version=2,
+    )
+    rest = client.calls[0]["user"].split("\n\n", 1)[1]
+    context_json, style_block = rest.split("\n\n<writing_style_samples>", 1)
+    context = json.loads(context_json)
+
+    assert context["revision_task"]["tone_alignment"]["requires_revision"] is True
+    assert context["revision_task"]["tone_alignment"]["anti_ai_conflicts"][0]["resolution"] == "prefer_tone"
+    assert context["revision_task"]["deterministic_style_issues"]["em_dash_count"] == 0
+    assert "style exemplars only" in style_block.lower()
+    assert "The samples favor long, accumulative sentences before a tighter claim." in style_block
 
 
 def _task_spec() -> TaskSpecification:
@@ -187,4 +225,56 @@ def _source_packet() -> SourceTextPacket:
         pdf_page_end=2,
         extraction_method="pypdf",
         text_quality="readable",
+    )
+
+
+def _tone_alignment() -> ToneAlignmentReport:
+    return ToneAlignmentReport(
+        draft_id="draft1",
+        writing_style_content_id="style_001",
+        overall_alignment=0.45,
+        requires_revision=True,
+        matched_habits=["Uses formal academic prose."],
+        mismatched_habits=["Paragraphs break too quickly compared with the samples."],
+        preserve_points=["Keep the current direct handling of the thesis."],
+        revision_targets=["Let the body paragraphs develop longer before pivoting."],
+        anti_ai_conflicts=[
+            ToneAlignmentConflict(
+                issue_type="paragraph_shape",
+                anti_ai_signal="Long body paragraphs look too even.",
+                tone_signal="The real samples sustain longer technical paragraphs.",
+                resolution="prefer_tone",
+                rationale="Longer paragraph development is authentic for this writer.",
+            )
+        ],
+    )
+
+
+def _writing_style_payload() -> WritingStylePayload:
+    return WritingStylePayload(
+        style_content=WritingStyleContent(
+            id="style_001",
+            version=1,
+            sample_ids=["sample_001"],
+            sample_fingerprint="fingerprint-001",
+            guidance=["Uses formal academic prose with sustained paragraph development."],
+            preferred_moves=["Defines the concept before widening to implications."],
+            anchor_excerpts=[
+                StyleAnchorExcerpt(
+                    sample_id="sample_001",
+                    excerpt_id="excerpt_001",
+                    text="The samples favor long, accumulative sentences before a tighter claim.",
+                    role="body_rhythm",
+                    reason="Typical sentence movement.",
+                )
+            ],
+        ),
+        samples=[
+            PromptSampleText(
+                sample_id="sample_001",
+                title="Sample One",
+                cleaned_text="The samples favor long, accumulative sentences before a tighter claim.",
+                cleaned_text_hash="hash-001",
+            )
+        ],
     )

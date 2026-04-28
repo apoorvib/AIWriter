@@ -40,7 +40,7 @@ Target flow:
 Files:
 
 - `anti-ai-detection-SKILL.md`
-- `updated-anti-ai-detection-SKILL.md` as the candidate rewrite to review and either adopt or patch
+- the candidate rewrite now promoted into the active `anti-ai-detection-SKILL.md`; the previous version can be kept under `legacy_skills/` when needed
 
 Implementation directive:
 
@@ -295,7 +295,7 @@ Acceptance check:
 - The old 15-item checklist is removed.
 - Highest-leverage checks come first.
 
-### Phase 1.13: Review Of `updated-anti-ai-detection-SKILL.md`
+### Phase 1.13: Review Of The Candidate Anti-AI Skill Rewrite
 
 Claude's saved rewrite mostly implements the requested annotated changes:
 
@@ -320,7 +320,7 @@ Issues found in the initial Claude rewrite and how the candidate file should res
 
 Acceptance check:
 
-- `updated-anti-ai-detection-SKILL.md` has the four issues patched before it is copied over `anti-ai-detection-SKILL.md`.
+- The candidate anti-AI skill rewrite has the four issues patched before it is copied over `anti-ai-detection-SKILL.md`.
 - The loader still reads the file as UTF-8.
 
 ## Phase 2: Make Outlining Style-Aware

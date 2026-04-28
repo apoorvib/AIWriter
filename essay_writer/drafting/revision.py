@@ -12,8 +12,11 @@ from essay_writer.outlining.schema import ThesisOutline
 from essay_writer.research.schema import EvidenceMap
 from essay_writer.sources.access_schema import SourceTextPacket
 from essay_writer.task_spec.schema import TaskSpecification
+from essay_writer.tone_alignment.schema import ToneAlignmentReport
 from essay_writer.topic_ideation.schema import SelectedTopic
 from essay_writer.validation.schema import ValidationReport
+from essay_writer.writing_style.prompts import build_writing_style_prompt_block
+from essay_writer.writing_style.schema import WritingStylePayload
 
 
 class DraftRevisionService:
@@ -40,6 +43,8 @@ class DraftRevisionService:
         validation: ValidationReport,
         version: int,
         source_packets: list[SourceTextPacket] | None = None,
+        writing_style_payload: WritingStylePayload | None = None,
+        tone_alignment: ToneAlignmentReport | None = None,
         model: str | None = None,
     ) -> EssayDraft:
         payload = self._llm.chat_json(
@@ -52,6 +57,8 @@ class DraftRevisionService:
                 previous_draft=previous_draft,
                 validation=validation,
                 source_packets=source_packets or [],
+                writing_style_payload=writing_style_payload,
+                tone_alignment=tone_alignment,
             ),
             json_schema=DRAFTING_SCHEMA,
             max_tokens=self._max_tokens,
@@ -77,12 +84,15 @@ def _build_revision_message(
     previous_draft: EssayDraft,
     validation: ValidationReport,
     source_packets: list[SourceTextPacket],
+    writing_style_payload: WritingStylePayload | None,
+    tone_alignment: ToneAlignmentReport | None,
 ) -> str:
     context = {
         "revision_task": {
             "previous_draft_id": previous_draft.id,
             "previous_draft_version": previous_draft.version,
             "validation_passed": validation.passes,
+            "deterministic_style_issues": _deterministic_style_payload(validation),
             "unsupported_claims": [
                 {"claim": item.claim, "paragraph": item.paragraph}
                 for item in validation.llm_judgment.unsupported_claims
@@ -115,6 +125,28 @@ def _build_revision_message(
             ],
             "revision_suggestions": validation.llm_judgment.revision_suggestions,
             "known_weak_spots": previous_draft.known_weak_spots,
+            "tone_alignment": (
+                {
+                    "overall_alignment": tone_alignment.overall_alignment,
+                    "requires_revision": tone_alignment.requires_revision,
+                    "matched_habits": tone_alignment.matched_habits,
+                    "mismatched_habits": tone_alignment.mismatched_habits,
+                    "preserve_points": tone_alignment.preserve_points,
+                    "revision_targets": tone_alignment.revision_targets,
+                    "anti_ai_conflicts": [
+                        {
+                            "issue_type": item.issue_type,
+                            "anti_ai_signal": item.anti_ai_signal,
+                            "tone_signal": item.tone_signal,
+                            "resolution": item.resolution,
+                            "rationale": item.rationale,
+                        }
+                        for item in tone_alignment.anti_ai_conflicts
+                    ],
+                }
+                if tone_alignment is not None
+                else None
+            ),
         },
         "task_spec": {
             "essay_type": task_spec.essay_type,
@@ -191,13 +223,40 @@ def _build_revision_message(
         },
         "source_packets": _source_packets_payload(source_packets),
     }
-    return (
+    message = (
         "Revise the previous draft using the structured validation diagnostics while keeping every "
         "claim grounded in the supplied evidence. Fix diagnosed locations without copying validator "
         "wording. Do not add unsupported facts, unsupported citations, short filler sentences just "
-        "to vary rhythm, or clipped fragment chains like 'It can advise. It cannot compel.'\n\n"
+        "to vary rhythm, or clipped fragment chains like 'It can advise. It cannot compel.' "
+        "If tone_alignment is present and it conflicts with generic anti-AI heuristics, prefer the "
+        "user's authentic tone and writing habits while still removing clear machine-like artifacts.\n\n"
         f"{json.dumps(context, ensure_ascii=False)}"
     )
+    if writing_style_payload is None:
+        return message
+    return f"{message}\n\n{build_writing_style_prompt_block(writing_style_payload)}"
+
+
+def _deterministic_style_payload(validation: ValidationReport) -> dict[str, Any]:
+    det = validation.deterministic
+    return {
+        "em_dash_count": det.em_dash_count,
+        "en_dash_count": det.en_dash_count,
+        "decorative_hyphen_pause_count": det.decorative_hyphen_pause_count,
+        "colon_explanation_pattern_count": det.colon_explanation_pattern_count,
+        "tier1_vocab_hits": [{"word": item.word, "count": item.count} for item in det.tier1_vocab_hits],
+        "bad_conclusion_opener": det.bad_conclusion_opener,
+        "consecutive_similar_sentence_runs": len(det.consecutive_similar_sentence_runs),
+        "participial_phrase_count": det.participial_phrase_count,
+        "participial_phrase_rate_per_300_words": round(det.participial_phrase_rate, 2),
+        "contrastive_negation_count": det.contrastive_negation_count,
+        "signposting_hits": det.signposting_hits,
+        "triplet_contrastive_combo_count": det.triplet_contrastive_combo_count,
+        "clustered_triplet_count": det.clustered_triplet_count,
+        "paragraph_length_variance_warning": det.paragraph_length_variance_warning,
+        "mechanical_burstiness_count": det.mechanical_burstiness_count,
+        "concrete_engagement_present": det.concrete_engagement_present,
+    }
 
 
 def _draft_from_payload(

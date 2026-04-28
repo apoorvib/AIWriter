@@ -14,6 +14,8 @@ from essay_writer.research.schema import EvidenceMap
 from essay_writer.sources.access_schema import SourceTextPacket
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.validation.checks import run_deterministic_checks
+from essay_writer.writing_style.prompts import build_writing_style_prompt_block
+from essay_writer.writing_style.schema import WritingStylePayload
 
 
 STYLE_REVISION_SYSTEM_PROMPT = f"""You perform a final prose-only style pass on an academic essay draft.
@@ -29,6 +31,8 @@ Hard constraints:
 - Do not add short filler sentences just to vary rhythm.
 - Do not create clipped fragment chains like "X is limited. It can advise. It cannot compel."
 - Only revise prose shape, rhythm, transitions, generic phrasing, paragraph movement, and source engagement phrasing.
+- If real writing samples are supplied, use them only to preserve the user's authentic voice.
+- When generic anti-AI heuristics conflict with the user's real writing style, preserve the authentic voice unless the pattern is clearly machine-like.
 
 Apply the anti-AI writing skill during this pass.
 
@@ -72,6 +76,7 @@ class FinalStyleRevisionService:
         outline: ThesisOutline,
         evidence_map: EvidenceMap,
         source_packets: list[SourceTextPacket] | None = None,
+        writing_style_payload: WritingStylePayload | None = None,
         version: int,
         model: str | None = None,
     ) -> EssayDraft:
@@ -83,6 +88,7 @@ class FinalStyleRevisionService:
                 outline=outline,
                 evidence_map=evidence_map,
                 source_packets=source_packets or [],
+                writing_style_payload=writing_style_payload,
             ),
             json_schema=STYLE_REVISION_SCHEMA,
             max_tokens=self._max_tokens,
@@ -111,6 +117,7 @@ def _build_user_message(
     outline: ThesisOutline,
     evidence_map: EvidenceMap,
     source_packets: list[SourceTextPacket],
+    writing_style_payload: WritingStylePayload | None,
 ) -> str:
     det = run_deterministic_checks(draft.content)
     context = {
@@ -208,7 +215,10 @@ def _build_user_message(
             "known_weak_spots": draft.known_weak_spots,
         },
     }
-    return json.dumps(context, ensure_ascii=False)
+    context_json = json.dumps(context, ensure_ascii=False)
+    if writing_style_payload is None:
+        return context_json
+    return f"{context_json}\n\n{build_writing_style_prompt_block(writing_style_payload)}"
 
 
 def _payload_list(payload: dict[str, Any], key: str, *, max_items: int) -> list[str]:

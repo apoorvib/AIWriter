@@ -120,9 +120,21 @@ AI sentences cluster around 15–20 words. Detection tools measure this as "burs
 - At least one sentence per page should exceed 30 words
 - Alternate long and short. The rhythm should feel uneven.
 
-**Anti-mechanical guard:** Short sentences must earn their brevity: end on a point, not a filler. "This matters." earns it. "It was good." doesn't. If you can't find a real reason for a short sentence, rewrite a long one to be longer instead of padding with a short filler. Burstiness from forced filler reads as a different AI tell ("chopped" prose) and some detectors now flag it.
+**Anti-mechanical guard:** Short sentences must earn their brevity: end on a point, not a filler. "This matters." earns it. "It was good." doesn't. If you can't find a real reason for a short sentence, rewrite a long one to be longer instead of padding with a short filler. Burstiness from forced filler reads as a different AI tell ("chopped" prose) and some detectors now flag it. Similarly, do not manufacture burstiness by splitting long compound sentences into fragments. If the user's natural writing style favors long sentences with conjunctions and parenthetical asides, preserve that rhythm. Artificial shortening is as detectable as artificial uniformity.
 
 **No fake emphasis chains:** Do not stack clipped mini-sentences to simulate human rhythm. "The board's role is advisory. It can recommend. It cannot compel." sounds synthetic, not natural. If two or three ultra-short declarative sentences appear in a row, combine them into normal prose unless you are quoting speech or source language.
+
+### Over-Chopping (Splitting Natural Clauses)
+
+LLMs often compensate for uniform sentence length by splitting one continuous observation into two short sentences. This creates its own AI tell. If two clauses share a subject, continue the same observation, or would sound natural when spoken together, keep them together. Use a conjunction, semicolon, parenthetical aside, or another normal sentence shape rather than chopping the thought apart just to create variation.
+
+**Rule:** Before splitting a sentence in two, check whether the clauses belong to the same line of thought. If they do, keep them together. Short sentences should exist because the thought is genuinely short, not because a longer sentence was mechanically broken apart.
+
+### Stacked Mini-Sentence Endings
+
+LLMs often end paragraphs with two or three clipped declarative sentences meant to land with rhetorical force. "They do not face the street. They ignore it." and "This was not a plan. It was an erasure." both read as manufactured emphasis. If the final observation is worth making, fold it into the preceding sentence or cut it.
+
+**Rule:** Do not end a paragraph with two or more consecutive sentences under 8 words unless quoting source language. One short closing sentence is fine. Two in a row is a tell.
 
 ### Semantic Repetition
 
@@ -218,6 +230,12 @@ Not everything is "fascinating," "remarkable," or "striking." If something is in
 
 AI holds the same register for an entire piece. Allow natural minor shifts: a bit more casual in an aside, more precise in a technical passage, more direct in a strong claim.
 
+### Preserve Informal Academic Tics
+
+Human academic writers often have small habits that polished LLM prose removes: trailing qualifications, casual sentence openers, slight shorthand, parenthetical "etc," and other low-stakes irregularities. These can be useful human signals when they are genuinely part of the writer's voice.
+
+**Rule:** If the user's writing samples contain these tics, preserve them. Do not clean them out just to make the prose sound smoother. Do not invent them if they are absent from the user's normal writing or inappropriate for the assignment.
+
 ### Avoid Balanced Treatment
 
 AI covers every angle equally and wraps every point cleanly. Human writers take positions and spend more time on what interests them.
@@ -286,3 +304,73 @@ Run these in order. Stop at the first one you fail and fix before continuing.
 5. **Argument advancement.** Read only the first sentence of each paragraph in order. If the essay still makes sense and nothing feels missed, the paragraphs aren't advancing the argument; they're restating it. Fix the middle paragraphs.
 6. **Concrete engagement.** Is there at least one specific piece of evidence (named source, exact phrase, page number, concrete example) that would require real reading? If not, add one.
 7. **Read three random paragraphs aloud.** If any sentence sounds like corporate prose or a textbook summary, rewrite it.
+
+## Additional High-Risk Patterns
+
+Apply these in order: first calibrate to the user's actual voice, then remove inflated wording, then fix sentence-pattern tells, then force source specificity, then check the ending.
+
+### Voice Calibration
+
+Detection tools measure how much your text resembles the average output of an LLM. The best defense is text that resembles you specifically, not "human writing in general." Generic "human-sounding" output produced by following anti-AI rules still comes from the same underlying probability distribution as the AI text it is replacing, and detectors can pick that up.
+
+**Rule:** Before rewriting any submitted academic work, the user should provide 2 to 3 paragraphs of their own writing from another context (a different class, a personal email, a journal entry). The rewrite should match the user's actual sentence rhythm, word choices, hedging habits, and structural quirks rather than producing generic clean prose. If the user's samples show long, conjunction-heavy sentences with embedded parenthetical asides, the rewrite must preserve that habit even when other rules in this document push toward shorter sentences. The user's voice wins over statistical targets. If no sample is provided, ask for one before doing a heavy rewrite.
+
+### Copula Avoidance
+
+LLMs systematically avoid plain "is," "are," "was," and "has." They reach for inflated substitutes that gesture at function or role: "serves as," "functions as," "acts as," "stands as," "represents," "constitutes," "embodies," "operates as." Detectors notice this because human writers default to plain copulas and only reach for the inflated version when the meaning genuinely requires it.
+
+**Rule:** Default to "is," "are," "was," "has." Use "serves as," "functions as," "acts as," "represents," and similar only when the inflated verb carries meaning the plain copula would lose. If "is" works, use "is."
+Examples:
+
+"The board acts as an arbiter" → "The board is an arbiter"
+"The resolution functions as a counter-plan" → "The resolution is a counter-plan"
+"Village Preservation served as an advocate" → "Village Preservation was the advocate"
+
+### Filler Phrases
+
+LLMs use multi-word phrases where a single word works. "In order to" instead of "to." "Due to the fact that" instead of "because." "At this point in time" instead of "now." "In the event that" instead of "if." "For the purpose of" instead of "for." "With regard to" instead of "about."
+
+**Rule:** Replace multi-word filler with the shortest equivalent. "To," "because," "now," "if," "for," "about." This single substitution tightens prose more than almost any other edit.
+
+### Significance Inflation
+
+LLMs frame their own observations as important rather than letting the content demonstrate importance. Tells include: "the most important," "the key issue," "deserves attention," "worth noting," "the crucial point," "matters here," "the heart of the matter," "what is striking," "what is notable."
+
+**Rule:** Cut self-importance framing. State the observation directly without telling the reader it is significant. If the point is significant, the prose will show it. If the prose does not show it, adding "this is important" will not fix the prose.
+Examples:
+
+"The most important policy finding is that the project produces fewer units" → "The project produces fewer units"
+"What deserves attention here is the two-building design" → "The two-building design splits..."
+
+### Synonym Cycling
+
+LLMs avoid repeating the same noun and reach for variants: protagonist becomes "main character" becomes "central figure" becomes "hero." This is taught as good style in school but is actually a strong AI tell, because real writers repeat the clearest word. The variants often introduce small meaning shifts the writer didn't intend.
+
+**Rule:** Repeat the clearest noun rather than cycling through synonyms. "Building" stays "building." "Developer" stays "developer." "Board" stays "board." Vary only when the alternate word carries meaningfully different information (e.g., "the building" vs. "the proposal" vs. "the project" if those genuinely refer to different things).
+
+### False Ranges
+
+LLMs love "from X to Y" constructions to suggest comprehensive coverage. "From bustling cities to serene landscapes," "from solo developers to enterprise teams," "from a member of Congress to city council members." The pattern signals comprehensiveness without actually establishing it, and detectors flag it.
+
+**Rule:** Use "from X to Y" only when describing a literal range with a clear axis (years, distances, dollar amounts, temperatures). For lists of items, just list the items. "Representatives from a congressional office and several council offices" is better than "spanning every level from a member of Congress to council members."
+
+### Superficial -ing Analyses
+
+LLMs string together present participles to fake analytical depth: "showcasing," "highlighting," "reflecting," "symbolizing," "underscoring," "demonstrating," "illustrating," "embodying." These verbs claim that something means something without doing the work of showing how.
+
+**Rule:** Cut "showcasing," "highlighting," "reflecting," "symbolizing," "underscoring," "demonstrating," "illustrating," "embodying" when used as present participles attached to a main clause. Either delete the participle phrase entirely or rewrite as a separate sentence that actually argues for the connection.
+Example:
+
+"The two-building design splits the project, reflecting the developer's wage strategy" → "The two-building design splits the project. The reason is wages."
+
+### Vague Attributions
+
+LLMs cite generic authorities to add weight without committing to a source. "Experts believe," "studies show," "industry observers note," "scholars argue," "many have suggested," "it is widely understood." Real academic writing names the specific source.
+
+**Rule:** Either name the specific source ("Arnstein argues," "the board's resolution states," "Davidoff writes in his 1965 article") or remove the attribution and state the claim directly. Never use "experts," "scholars," "observers," or "many" as the subject of a sentence.
+
+### Generic Conclusions
+
+LLMs end with vague forward-looking statements: "The future looks bright," "exciting times lie ahead," "much remains to be seen," "only time will tell," "the implications will continue to unfold." These are filler that sounds like a conclusion without making any actual claim.
+
+**Rule:** End on a specific claim or a specific question, never on a forward-looking generality. If the essay has nothing specific to say at the end, the essay is not done. "Whether the LPC acts on the recommendation remains to be seen" is borderline acceptable only because the LPC is named and the action is concrete. "Time will tell whether community participation matters" would not be acceptable.

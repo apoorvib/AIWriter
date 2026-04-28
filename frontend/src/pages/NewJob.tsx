@@ -1,9 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import FileUpload from "../components/FileUpload";
-import { createJob, extractAssignment } from "../api";
-import type { SourceUploadResponse } from "../types";
+import WritingSamplePicker from "../components/WritingSamplePicker";
+import { createJob, extractAssignment, listWritingSamples } from "../api";
+import type { SourceUploadResponse, WritingSample } from "../types";
 
 const ASSIGNMENT_ACCEPT = ".pdf,.docx,.txt,.md,.markdown,.notes";
 
@@ -14,8 +15,34 @@ export default function NewJob() {
   const [assignment, setAssignment] = useState("");
   const [assignmentMeta, setAssignmentMeta] = useState<string | null>(null);
   const [extractingAssignment, setExtractingAssignment] = useState(false);
+  const [writingSamples, setWritingSamples] = useState<WritingSample[]>([]);
+  const [selectedWritingSampleIds, setSelectedWritingSampleIds] = useState<string[]>([]);
+  const [loadingWritingSamples, setLoadingWritingSamples] = useState(true);
+  const [writingSampleError, setWritingSampleError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSamples() {
+      setLoadingWritingSamples(true);
+      setWritingSampleError(null);
+      try {
+        const samples = await listWritingSamples();
+        if (cancelled) return;
+        setWritingSamples(samples);
+      } catch (e) {
+        if (cancelled) return;
+        setWritingSampleError(e instanceof Error ? e.message : "Failed to load writing samples.");
+      } finally {
+        if (!cancelled) setLoadingWritingSamples(false);
+      }
+    }
+    loadSamples();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function handleUploaded(source: SourceUploadResponse) {
     setSources((prev) => {
@@ -26,6 +53,24 @@ export default function NewJob() {
 
   function removeSource(id: string) {
     setSources((prev) => prev.filter((s) => s.source_id !== id));
+  }
+
+  function toggleWritingSample(sampleId: string) {
+    setSelectedWritingSampleIds((prev) =>
+      prev.includes(sampleId)
+        ? prev.filter((id) => id !== sampleId)
+        : [...prev, sampleId]
+    );
+  }
+
+  function handleWritingSampleUploaded(sample: WritingSample) {
+    setWritingSamples((prev) => {
+      if (prev.find((item) => item.sample_id === sample.sample_id)) return prev;
+      return [...prev, sample];
+    });
+    setSelectedWritingSampleIds((prev) =>
+      prev.includes(sample.sample_id) ? prev : [...prev, sample.sample_id]
+    );
   }
 
   async function handleAssignmentFile(event: ChangeEvent<HTMLInputElement>) {
@@ -59,7 +104,11 @@ export default function NewJob() {
 
     setSubmitting(true);
     try {
-      const job = await createJob(assignment, sources.map((s) => s.source_id));
+      const job = await createJob(
+        assignment,
+        sources.map((s) => s.source_id),
+        selectedWritingSampleIds,
+      );
       navigate(`/jobs/${job.job_id}/topics`, { state: { job } });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create job.");
@@ -132,6 +181,24 @@ export default function NewJob() {
             setAssignmentMeta(null);
           }}
           rows={10}
+        />
+      </section>
+
+      <section className="section">
+        <div className="section-heading">
+          <span className="step-mark">3</span>
+          <h2>Tone samples (optional)</h2>
+        </div>
+        <p className="subtitle">
+          Select from saved writing samples or upload new ones. These are used only for tone and style matching.
+        </p>
+        <WritingSamplePicker
+          samples={writingSamples}
+          selectedIds={selectedWritingSampleIds}
+          loading={loadingWritingSamples}
+          loadError={writingSampleError}
+          onToggle={toggleWritingSample}
+          onUploaded={handleWritingSampleUploaded}
         />
       </section>
 

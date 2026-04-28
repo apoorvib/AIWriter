@@ -161,8 +161,5 @@ class ValidationReport:
             self.llm_judgment.assignment_fit.passes
             and self.llm_judgment.length_check.passes
             and not self.llm_judgment.unsupported_claims
-            and not self.deterministic.em_dash_count
-            and not self.deterministic.en_dash_count
-            and not self.deterministic.decorative_hyphen_pause_count
-            and not self.deterministic.colon_explanation_pattern_count
+            and not self.llm_judgment.citation_issues
         )

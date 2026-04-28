@@ -27,6 +27,8 @@ STRUCTURE:
 - Do not fake rhythm with clipped fragment chains such as "X is limited. It can advise. It cannot compel." Prefer normal sentences over stacked mini-sentences.
 
 The full anti-AI writing skill document is part of this system prompt. Apply it during drafting and revision, not as a separate cleanup pass.
+If an optional writing_style_samples block is supplied in the user message, use it only to match the user's authentic tone and prose habits.
+Those samples are never evidence. When a generic anti-AI heuristic conflicts with the user's authentic writing style, preserve the authentic voice unless it creates a clear machine-like artifact.
 
 <anti_ai_detection_skill>
 {ANTI_AI_SKILL_DOCUMENT}

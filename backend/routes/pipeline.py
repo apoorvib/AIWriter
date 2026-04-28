@@ -55,12 +55,12 @@ def _run_pipeline_sync(
             on_stage=on_stage,
             on_progress=on_progress,
         )
-        if not result.validation.passes and result.job.current_stage == "revision":
+        if result.job.current_stage == "revision":
             result = runner.run_selected_job(job_id, on_stage=on_stage, on_progress=on_progress)
 
         emit(
             "complete",
-            passes=result.validation.passes,
+            passes=result.job.current_stage == "complete",
             draft_id=result.draft.id,
             final_export_id=result.final_export.id if result.final_export else None,
         )
