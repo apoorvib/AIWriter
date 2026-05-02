@@ -30,6 +30,21 @@ def test_draft_store_rejects_overwrite() -> None:
             store.save(draft)
 
 
+def test_draft_store_lists_versions_and_finds_by_id() -> None:
+    with LocalTempDir() as tmp_path:
+        store = DraftStore(tmp_path / "draft_store")
+        draft1 = _draft(version=1, content="First.")
+        draft2 = _draft(version=2, content="Second.")
+        store.save(draft1)
+        store.save(draft2)
+
+        listed = store.list_versions("job1")
+        found = store.find_by_id("job1", draft2.id)
+
+    assert [draft.version for draft in listed] == [1, 2]
+    assert found.content == "Second."
+
+
 def _draft(*, version: int, content: str) -> EssayDraft:
     return EssayDraft(
         id=f"draft_{version}",

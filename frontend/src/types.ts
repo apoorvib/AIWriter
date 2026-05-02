@@ -37,6 +37,7 @@ export interface JobStatusResponse {
   current_stage: string;
   selected_topic_id: string | null;
   draft_id: string | null;
+  final_export_id: string | null;
   writing_style_sample_ids: string[];
   error: string | null;
 }
@@ -76,23 +77,172 @@ export interface ValidationSummary {
   passes: boolean;
   overall_quality: number;
   unsupported_claim_count: number;
-  diagnostics: {
-    location: string;
-    issue_type: string;
-    evidence: string;
-    severity: string;
-    action: string;
-  }[];
+  diagnostics: ValidationDiagnostic[];
   revision_suggestions: string[];
+}
+
+export interface ValidationDiagnostic {
+  location: string;
+  issue_type: string;
+  evidence: string;
+  severity: string;
+  action: string;
+}
+
+export interface DraftSummary {
+  draft_id: string;
+  version: number;
+  origin: string;
+  created_by: string;
+  created_at: string;
+  parent_draft_id: string | null;
+  parent_export_id: string | null;
+  manual_request_id: string | null;
+  user_instruction: string | null;
+  selected_lenses: string[];
+  preview: string;
+}
+
+export interface DraftResponse {
+  job_id: string;
+  draft_id: string;
+  version: number;
+  selected_topic_id: string;
+  content: string;
+  outline_id: string | null;
+  citation_style: string | null;
+  section_source_map: SectionSourceEntry[];
+  bibliography_candidates: string[];
+  known_weak_spots: string[];
+  origin: string;
+  created_by: string;
+  parent_draft_id: string | null;
+  parent_export_id: string | null;
+  manual_request_id: string | null;
+  user_instruction: string | null;
+  selected_lenses: string[];
+  created_at: string;
+}
+
+export interface ExportSummary {
+  export_id: string;
+  draft_id: string;
+  draft_version: number | null;
+  created_at: string;
+  preview: string;
 }
 
 export interface ExportResponse {
   job_id: string;
+  export_id: string;
   draft_id: string;
+  draft_version: number | null;
   content: string;
+  draft_content: string;
   section_source_map: SectionSourceEntry[];
   bibliography_candidates: string[];
   validation: ValidationSummary;
+}
+
+export interface SentenceRun {
+  sentence_count: number;
+  avg_word_count: number;
+}
+
+export interface ParagraphLengthProfile {
+  paragraph_count: number;
+  shortest_word_count: number;
+  longest_word_count: number;
+  longest_to_shortest_ratio: number;
+}
+
+export interface VocabHit {
+  word: string;
+  count: number;
+}
+
+export interface AntiAiSummary {
+  word_count: number;
+  em_dash_count: number;
+  en_dash_count: number;
+  decorative_hyphen_pause_count: number;
+  colon_explanation_pattern_count: number;
+  triplet_contrastive_combo_count: number;
+  clustered_triplet_count: number;
+  participial_phrase_count: number;
+  participial_phrase_rate: number;
+  contrastive_negation_count: number;
+  bad_conclusion_opener: boolean;
+  concrete_engagement_present: boolean;
+  paragraph_length_variance_warning: boolean;
+  mechanical_burstiness_count: number;
+  tier1_vocab_hits: VocabHit[];
+  signposting_hits: string[];
+  consecutive_similar_sentence_runs: SentenceRun[];
+  paragraph_length_profile: ParagraphLengthProfile | null;
+}
+
+export interface ToneAlignmentConflict {
+  issue_type: string;
+  anti_ai_signal: string;
+  tone_signal: string;
+  resolution: string;
+  rationale: string;
+}
+
+export interface ToneAlignmentSummary {
+  overall_alignment: number;
+  requires_revision: boolean;
+  matched_habits: string[];
+  mismatched_habits: string[];
+  preserve_points: string[];
+  revision_targets: string[];
+  anti_ai_conflicts: ToneAlignmentConflict[];
+}
+
+export type ManualLens =
+  | "evidence"
+  | "citations"
+  | "assignment_fit"
+  | "length"
+  | "tone"
+  | "anti_ai";
+
+export type ManualMode = "review_only" | "revise";
+
+export interface ManualRevisionRunSummary {
+  run_id: string;
+  request_id: string;
+  source_draft_id: string;
+  source_draft_version: number | null;
+  result_draft_id: string | null;
+  result_draft_version: number | null;
+  mode: ManualMode;
+  selected_lenses: string[];
+  status: string;
+  created_at: string;
+}
+
+export interface ManualRevisionRunResponse {
+  run_id: string;
+  request_id: string;
+  source_draft_id: string;
+  source_draft_version: number | null;
+  result_draft_id: string | null;
+  result_draft_version: number | null;
+  mode: ManualMode;
+  instruction: string | null;
+  selected_lenses: string[];
+  change_summary: string[];
+  warnings: string[];
+  status: string;
+  created_at: string;
+  pre_revision_validation: ValidationSummary | null;
+  pre_revision_tone_alignment: ToneAlignmentSummary | null;
+  pre_revision_anti_ai: AntiAiSummary | null;
+  post_revision_validation: ValidationSummary | null;
+  post_revision_tone_alignment: ToneAlignmentSummary | null;
+  post_revision_anti_ai: AntiAiSummary | null;
 }
 
 export interface SSEEvent {

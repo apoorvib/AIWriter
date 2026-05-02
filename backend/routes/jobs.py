@@ -88,6 +88,7 @@ def get_job(job_id: str):
         current_stage=job.current_stage,
         selected_topic_id=job.selected_topic_id,
         draft_id=job.draft_id,
+        final_export_id=job.final_export_id,
         writing_style_sample_ids=job.writing_style_sample_ids,
         error=error_msg,
     )

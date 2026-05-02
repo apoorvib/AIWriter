@@ -32,11 +32,20 @@ class DraftStore:
             raise KeyError(job_id)
         return self.load(job_id, versions[-1])
 
+    def list_versions(self, job_id: str) -> list[EssayDraft]:
+        return [self.load(job_id, version) for version in self._versions(job_id)]
+
     def load(self, job_id: str, version: int) -> EssayDraft:
         path = self._path(job_id, version)
         if not path.exists():
             raise KeyError(f"{job_id} draft v{version}")
         return _draft_from_payload(json.loads(path.read_text(encoding="utf-8")))
+
+    def find_by_id(self, job_id: str, draft_id: str) -> EssayDraft:
+        for draft in self.list_versions(job_id):
+            if draft.id == draft_id:
+                return draft
+        raise KeyError(f"{job_id} {draft_id}")
 
     def _path(self, job_id: str, version: int) -> Path:
         return self.root / job_id / f"draft_v{version:03d}.json"

@@ -68,6 +68,32 @@ def test_final_export_store_saves_markdown_and_json() -> None:
     assert loaded == export
 
 
+def test_final_export_store_lists_versions() -> None:
+    draft1 = EssayDraft(id="draft1", job_id="job1", version=1, selected_topic_id="topic_001", content="Essay body one.")
+    draft2 = EssayDraft(id="draft2", job_id="job1", version=2, selected_topic_id="topic_001", content="Essay body two.")
+    service = FinalExportService()
+    export1 = service.create_markdown_export(
+        job=EssayJob(id="job1", draft_id="draft1", validation_report_id="draft1:v001"),
+        task_spec=TaskSpecification(id="task1", version=1, raw_text="Assignment."),
+        draft=draft1,
+        validation=_report("draft1"),
+    )
+    export2 = service.create_markdown_export(
+        job=EssayJob(id="job1", draft_id="draft2", validation_report_id="draft2:v002"),
+        task_spec=TaskSpecification(id="task1", version=1, raw_text="Assignment."),
+        draft=draft2,
+        validation=_report("draft2"),
+    )
+
+    with LocalTempDir() as tmp_path:
+        store = FinalExportStore(tmp_path / "exports")
+        store.save(export1)
+        store.save(export2)
+        listed = store.list_versions("job1")
+
+    assert [item.id for item in listed] == ["final_export_001", "final_export_002"]
+
+
 def _report(draft_id: str) -> ValidationReport:
     return ValidationReport(
         draft_id=draft_id,

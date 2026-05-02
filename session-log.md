@@ -2268,3 +2268,100 @@ Caveats:
 
 - The frontend currently supports writing-sample selection at job creation time only; there is not yet a separate post-creation edit flow for changing the sample set on an existing job.
 - Export/API payloads still do not surface a detailed tone-alignment report; the UI currently reflects tone alignment mainly through stage progression and revision gating.
+
+---
+
+## 2026-04-28 - Codex - Drafted Manual Reiteration And Draft History Plan
+
+Summary:
+
+- Wrote a review-first implementation plan for post-export editing, immutable draft/export history, saved user edits, and a manual reiteration loop with selectable lenses.
+- The plan recommends keeping manual reiteration separate from the main job state machine and modeling it as versioned draft artifacts plus stored manual request/run artifacts.
+- Captured API, storage, workflow, frontend, rollout, and acceptance-criteria details so implementation can begin cleanly after approval.
+
+Files changed:
+
+- `docs/superpowers/plans/2026-04-28-manual-reiteration-and-draft-history.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+Get-ChildItem docs\superpowers\plans | Select-Object Name
+Get-Content docs\superpowers\plans\2026-04-21-humanized-writing-pipeline.md
+Get-ChildItem docs\superpowers\specs | Select-Object Name
+Get-Content session-log.md -Tail 80
+```
+
+Results:
+
+- Added a detailed draft plan for review before any code changes.
+- No implementation code was changed and no tests were run.
+
+Caveats:
+
+- The plan includes open product questions around autosave, default lenses, and whether review-only should ship before manual revise.
+
+---
+
+## 2026-04-28 - Codex - Implemented Draft History, Saved User Edits, and Manual Reiteration
+
+Summary:
+
+- Added immutable draft provenance fields and history helpers so drafts can now be labeled and reopened as generated, style-pass, system-revision, user-edit, or manual-LLM-revision artifacts.
+- Added a dedicated `essay_writer/manual_revision` subsystem with request/run storage plus a manual reiteration service that saves user edits, runs selected review lenses, stores the outputs, and optionally creates a new revised draft version.
+- Fixed export handling so export routes now return real persisted export artifacts linked to their underlying draft content instead of treating the latest draft as the export.
+- Added backend routes for draft history, export history/detail, saving user edits, and stored manual review/revise runs.
+- Reworked the pipeline frontend into an artifact workspace with draft history, export history, a saved draft editor, selectable manual-review lenses, and stored run detail panels.
+
+Files changed:
+
+- `backend/app.py`
+- `backend/deps.py`
+- `backend/routes/drafts.py`
+- `backend/routes/export.py`
+- `backend/routes/jobs.py`
+- `backend/schemas.py`
+- `essay_writer/drafting/revision.py`
+- `essay_writer/drafting/schema.py`
+- `essay_writer/drafting/service.py`
+- `essay_writer/drafting/storage.py`
+- `essay_writer/drafting/style_revision.py`
+- `essay_writer/exporting/storage.py`
+- `essay_writer/manual_revision/__init__.py`
+- `essay_writer/manual_revision/schema.py`
+- `essay_writer/manual_revision/service.py`
+- `essay_writer/manual_revision/storage.py`
+- `frontend/src/api.ts`
+- `frontend/src/components/EssayViewer.tsx`
+- `frontend/src/pages/PipelineView.tsx`
+- `frontend/src/styles.css`
+- `frontend/src/types.ts`
+- `tests/drafting/test_storage.py`
+- `tests/exporting/test_service_storage.py`
+- `tests/manual_revision/test_service.py`
+- `tests/manual_revision/test_storage.py`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+python -m compileall backend essay_writer\manual_revision essay_writer\drafting essay_writer\exporting
+pytest tests\manual_revision tests\drafting\test_storage.py tests\exporting\test_service_storage.py tests\workflow\test_mvp.py tests\jobs\test_workflow.py
+python -m compileall backend essay_writer frontend\src tests\manual_revision
+npm run build
+git diff --check
+```
+
+Results:
+
+- Focused Python suite: 28 passed.
+- Backend/manual-revision/frontend source trees compiled successfully.
+- Frontend production build passed.
+- `git diff --check` passed without patch-format issues.
+
+Caveats:
+
+- Manual review outputs are intentionally stored in dedicated manual-run artifacts rather than the main validation/tone stores, so the automatic workflow's latest-report assumptions stay intact.
+- Manual user-edit and manual-revision drafts are persisted and reopenable from history, but they do not currently replace the job's primary pipeline draft/export pointers.
+- The editor flow is explicit-save rather than autosave in this first implementation.

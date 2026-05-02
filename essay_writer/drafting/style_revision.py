@@ -106,6 +106,13 @@ class FinalStyleRevisionService:
             version=version,
             content=content,
             known_weak_spots=weak_spots,
+            origin="style_revision",
+            created_by="system",
+            parent_draft_id=draft.id,
+            parent_export_id=None,
+            manual_request_id=None,
+            user_instruction=None,
+            selected_lenses=[],
             prompt_version=self._prompt_version,
         )
 

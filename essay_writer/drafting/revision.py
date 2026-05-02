@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
 from llm.client import LLMClient
 from essay_writer.drafting.prompts import DRAFTING_SCHEMA, DRAFTING_SYSTEM_PROMPT
-from essay_writer.drafting.schema import EssayDraft, SectionSourceMap
+from essay_writer.drafting.schema import DraftLens, EssayDraft, SectionSourceMap
 from essay_writer.jobs.schema import EssayJob
 from essay_writer.outlining.schema import ThesisOutline
 from essay_writer.research.schema import EvidenceMap
@@ -45,6 +46,9 @@ class DraftRevisionService:
         source_packets: list[SourceTextPacket] | None = None,
         writing_style_payload: WritingStylePayload | None = None,
         tone_alignment: ToneAlignmentReport | None = None,
+        user_instruction: str | None = None,
+        change_summary: list[str] | None = None,
+        selected_lenses: list[DraftLens] | None = None,
         model: str | None = None,
     ) -> EssayDraft:
         payload = self._llm.chat_json(
@@ -59,12 +63,14 @@ class DraftRevisionService:
                 source_packets=source_packets or [],
                 writing_style_payload=writing_style_payload,
                 tone_alignment=tone_alignment,
+                user_instruction=user_instruction,
+                change_summary=change_summary or [],
             ),
             json_schema=DRAFTING_SCHEMA,
             max_tokens=self._max_tokens,
             model=model,
         )
-        return _draft_from_payload(
+        revised = _draft_from_payload(
             payload,
             job=job,
             selected_topic=selected_topic,
@@ -72,6 +78,15 @@ class DraftRevisionService:
             outline=outline,
             version=version,
             prompt_version=self._prompt_version,
+        )
+        return replace(
+            revised,
+            origin="system_revision",
+            created_by="system",
+            parent_draft_id=previous_draft.id,
+            manual_request_id=None,
+            user_instruction=user_instruction,
+            selected_lenses=list(selected_lenses or []),
         )
 
 
@@ -86,6 +101,8 @@ def _build_revision_message(
     source_packets: list[SourceTextPacket],
     writing_style_payload: WritingStylePayload | None,
     tone_alignment: ToneAlignmentReport | None,
+    user_instruction: str | None,
+    change_summary: list[str],
 ) -> str:
     context = {
         "revision_task": {
@@ -125,6 +142,10 @@ def _build_revision_message(
             ],
             "revision_suggestions": validation.llm_judgment.revision_suggestions,
             "known_weak_spots": previous_draft.known_weak_spots,
+            "manual_reiteration": {
+                "user_instruction": user_instruction,
+                "change_summary": change_summary,
+            },
             "tone_alignment": (
                 {
                     "overall_alignment": tone_alignment.overall_alignment,
@@ -228,6 +249,8 @@ def _build_revision_message(
         "claim grounded in the supplied evidence. Fix diagnosed locations without copying validator "
         "wording. Do not add unsupported facts, unsupported citations, short filler sentences just "
         "to vary rhythm, or clipped fragment chains like 'It can advise. It cannot compel.' "
+        "If manual_reiteration.user_instruction is present, follow it while preserving the user's "
+        "edited text as the base document rather than regenerating from an older draft. "
         "If tone_alignment is present and it conflicts with generic anti-AI heuristics, prefer the "
         "user's authentic tone and writing habits while still removing clear machine-like artifacts.\n\n"
         f"{json.dumps(context, ensure_ascii=False)}"

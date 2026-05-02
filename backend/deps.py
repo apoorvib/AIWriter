@@ -32,6 +32,8 @@ from essay_writer.drafting.service import DraftService
 from essay_writer.drafting.storage import DraftStore
 from essay_writer.drafting.revision import DraftRevisionService
 from essay_writer.drafting.style_revision import FinalStyleRevisionService
+from essay_writer.manual_revision.service import ManualRevisionService
+from essay_writer.manual_revision.storage import ManualRevisionRequestStore, ManualRevisionRunStore
 from essay_writer.tone_alignment.service import ToneAlignmentService
 from essay_writer.tone_alignment.storage import ToneAlignmentStore
 from essay_writer.validation.service import ValidationService
@@ -77,6 +79,21 @@ def _logged(stage: str):
 @lru_cache(maxsize=1)
 def get_source_store() -> SourceStore:
     return SourceStore(DATA_DIR / "sources")
+
+
+@lru_cache(maxsize=1)
+def get_draft_store() -> DraftStore:
+    return DraftStore(DATA_DIR / "drafts")
+
+
+@lru_cache(maxsize=1)
+def get_validation_store() -> ValidationStore:
+    return ValidationStore(DATA_DIR / "validations")
+
+
+@lru_cache(maxsize=1)
+def get_export_store() -> FinalExportStore:
+    return FinalExportStore(DATA_DIR / "exports")
 
 
 @lru_cache(maxsize=1)
@@ -177,6 +194,16 @@ def get_tone_alignment_store() -> ToneAlignmentStore:
 
 
 @lru_cache(maxsize=1)
+def get_manual_revision_request_store() -> ManualRevisionRequestStore:
+    return ManualRevisionRequestStore(DATA_DIR / "manual_revision_requests")
+
+
+@lru_cache(maxsize=1)
+def get_manual_revision_run_store() -> ManualRevisionRunStore:
+    return ManualRevisionRunStore(DATA_DIR / "manual_revision_runs")
+
+
+@lru_cache(maxsize=1)
 def get_writing_style_ingestion_service() -> HumanWritingSampleIngestionService:
     return HumanWritingSampleIngestionService(get_writing_style_sample_store())
 
@@ -184,6 +211,32 @@ def get_writing_style_ingestion_service() -> HumanWritingSampleIngestionService:
 @lru_cache(maxsize=1)
 def get_writing_style_content_service() -> WritingStyleContentService:
     return WritingStyleContentService(_logged("writing_style"))
+
+
+@lru_cache(maxsize=1)
+def get_manual_revision_service() -> ManualRevisionService:
+    model_config = _model_config_from_settings()
+    mt = _max_tokens_config_from_settings()
+    return ManualRevisionService(
+        workflow=get_workflow(),
+        task_store=get_task_spec_store(),
+        topic_store=get_topic_store(),
+        research_plan_store=ResearchPlanStore(DATA_DIR / "research_plans"),
+        research_store=ResearchStore(DATA_DIR / "research"),
+        outline_store=ThesisOutlineStore(DATA_DIR / "outlines"),
+        draft_store=get_draft_store(),
+        export_store=get_export_store(),
+        request_store=get_manual_revision_request_store(),
+        run_store=get_manual_revision_run_store(),
+        validation_service=ValidationService(_logged("validation"), max_tokens=mt.validation),
+        tone_alignment_service=ToneAlignmentService(_logged("tone_alignment")),
+        revision_service=DraftRevisionService(_logged("drafting_revision"), max_tokens=mt.drafting_revision),
+        source_store=get_source_store(),
+        source_access_service=get_source_access_service(),
+        writing_style_sample_store=get_writing_style_sample_store(),
+        writing_style_content_store=get_writing_style_content_store(),
+        model_config=model_config,
+    )
 
 
 def _model_config_from_settings() -> StageModelConfig:
@@ -221,15 +274,15 @@ def get_workflow_runner() -> MvpWorkflowRunner:
         outline_service=ThesisOutlineService(llm_client=_logged("outlining"), max_tokens=mt.outlining),
         outline_store=ThesisOutlineStore(DATA_DIR / "outlines"),
         draft_service=DraftService(_logged("drafting"), max_tokens=mt.drafting),
-        draft_store=DraftStore(DATA_DIR / "drafts"),
+        draft_store=get_draft_store(),
         validation_service=ValidationService(_logged("validation"), max_tokens=mt.validation),
-        validation_store=ValidationStore(DATA_DIR / "validations"),
+        validation_store=get_validation_store(),
         tone_alignment_service=ToneAlignmentService(_logged("tone_alignment")),
         tone_alignment_store=get_tone_alignment_store(),
         revision_service=DraftRevisionService(_logged("drafting_revision"), max_tokens=mt.drafting_revision),
         style_revision_service=FinalStyleRevisionService(_logged("drafting_style"), max_tokens=mt.drafting_style),
         export_service=FinalExportService(),
-        export_store=FinalExportStore(DATA_DIR / "exports"),
+        export_store=get_export_store(),
         task_store=get_task_spec_store(),
         topic_store=get_topic_store(),
         source_store=get_source_store(),

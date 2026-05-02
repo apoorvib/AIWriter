@@ -50,7 +50,7 @@ export default function EssayViewer({ data }: Props) {
       )}
 
       <div className="essay-content">
-        {data.content.split("\n").map((line, i) => (
+        {data.draft_content.split("\n").map((line, i) => (
           <p key={i} className={line === "" ? "essay-para-break" : "essay-para"}>
             {line}
           </p>

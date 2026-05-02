@@ -2,10 +2,18 @@ import type {
   AppSettings,
   AppSettingsResponse,
   AssignmentExtractResponse,
-  SourceUploadResponse,
   CreateJobResponse,
-  TopicsGenerateResponse,
+  DraftResponse,
+  DraftSummary,
   ExportResponse,
+  ExportSummary,
+  JobStatusResponse,
+  ManualLens,
+  ManualMode,
+  ManualRevisionRunResponse,
+  ManualRevisionRunSummary,
+  SourceUploadResponse,
+  TopicsGenerateResponse,
   WritingSample,
 } from "./types";
 
@@ -98,8 +106,72 @@ export function runPipeline(jobId: string, externalSearchAllowed: boolean): Prom
   });
 }
 
+export function getJob(jobId: string): Promise<JobStatusResponse> {
+  return request<JobStatusResponse>(`/jobs/${jobId}`);
+}
+
+export function listDrafts(jobId: string): Promise<DraftSummary[]> {
+  return request<DraftSummary[]>(`/jobs/${jobId}/drafts`);
+}
+
+export function getDraft(jobId: string, version: number): Promise<DraftResponse> {
+  return request<DraftResponse>(`/jobs/${jobId}/drafts/${version}`);
+}
+
+export function saveUserEdit(
+  jobId: string,
+  payload: { content: string; baseDraftId?: string | null; baseExportId?: string | null }
+): Promise<DraftResponse> {
+  return request<DraftResponse>(`/jobs/${jobId}/drafts/save-user-edit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      content: payload.content,
+      base_draft_id: payload.baseDraftId ?? null,
+      base_export_id: payload.baseExportId ?? null,
+    }),
+  });
+}
+
 export function getExport(jobId: string): Promise<ExportResponse> {
   return request<ExportResponse>(`/jobs/${jobId}/export`);
+}
+
+export function listExports(jobId: string): Promise<ExportSummary[]> {
+  return request<ExportSummary[]>(`/jobs/${jobId}/exports`);
+}
+
+export function getExportById(jobId: string, exportId: string): Promise<ExportResponse> {
+  return request<ExportResponse>(`/jobs/${jobId}/exports/${exportId}`);
+}
+
+export function listManualRevisionRuns(jobId: string): Promise<ManualRevisionRunSummary[]> {
+  return request<ManualRevisionRunSummary[]>(`/jobs/${jobId}/manual-revision-runs`);
+}
+
+export function getManualRevisionRun(jobId: string, runId: string): Promise<ManualRevisionRunResponse> {
+  return request<ManualRevisionRunResponse>(`/jobs/${jobId}/manual-revision-runs/${runId}`);
+}
+
+export function createManualRevisionRun(
+  jobId: string,
+  payload: {
+    sourceDraftId: string;
+    mode: ManualMode;
+    instruction?: string | null;
+    selectedLenses: ManualLens[];
+  }
+): Promise<ManualRevisionRunResponse> {
+  return request<ManualRevisionRunResponse>(`/jobs/${jobId}/manual-revision-runs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source_draft_id: payload.sourceDraftId,
+      mode: payload.mode,
+      instruction: payload.instruction ?? null,
+      selected_lenses: payload.selectedLenses,
+    }),
+  });
 }
 
 export function openJobEvents(jobId: string): EventSource {

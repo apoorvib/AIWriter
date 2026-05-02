@@ -30,6 +30,12 @@ class FinalExportStore:
             raise KeyError(job_id)
         return self.load(job_id, paths[-1].stem)
 
+    def list_versions(self, job_id: str) -> list[FinalEssayExport]:
+        dir_ = self.root / job_id
+        if not dir_.exists():
+            return []
+        return [self.load(job_id, path.stem) for path in sorted(dir_.glob("final_export_*.json"))]
+
     def load(self, job_id: str, export_id: str) -> FinalEssayExport:
         path = self.root / job_id / f"{export_id}.json"
         if not path.exists():

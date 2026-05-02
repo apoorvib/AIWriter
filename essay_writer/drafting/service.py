@@ -200,6 +200,8 @@ def _draft_from_payload(
         section_source_map=section_source_map,
         bibliography_candidates=_payload_list(payload, "bibliography_candidates", max_items=50),
         known_weak_spots=_payload_list(payload, "known_weak_spots", max_items=20),
+        origin="generated",
+        created_by="system",
         prompt_version=prompt_version,
     )
 

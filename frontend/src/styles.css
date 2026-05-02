@@ -110,6 +110,134 @@ a:focus-visible {
   gap: 14px;
 }
 
+.artifact-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.artifact-panel,
+.editor-panel,
+.manual-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+
+.artifact-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.artifact-count {
+  min-width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-strong);
+  color: var(--accent-dark);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.artifact-meta-line {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.artifact-list,
+.artifact-result-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.artifact-row,
+.artifact-result-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: #fcfdfc;
+}
+
+.artifact-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.artifact-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.artifact-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.artifact-preview {
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.artifact-list-compact {
+  padding-left: 18px;
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.warning-list {
+  color: var(--warning);
+}
+
+.editor-textarea {
+  min-height: 340px;
+}
+
+.lens-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.lens-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fcfdfc;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.lens-chip input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
 .section-heading {
   display: flex;
   align-items: center;
@@ -843,10 +971,20 @@ a:focus-visible {
     padding-top: 28px;
   }
 
+  .artifact-grid,
   .source-chip-row,
   .regenerate-row,
   .settings-stage-row {
     grid-template-columns: 1fr;
+  }
+
+  .artifact-row {
+    grid-template-columns: 1fr;
+  }
+
+  .artifact-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
   }
 
   .source-chip-meta {
