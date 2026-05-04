@@ -119,23 +119,228 @@ are used for traceability rather than as the primary retrieval coordinate.
 ## End-to-End Application Logic
 
 The web app is an essay-writing workflow built on top of the document extraction
-pipeline. The main path is:
+pipeline. The orchestrator owns workflow state. Each stage persists its inputs,
+outputs, prompt version, and validation results. Human approval gates and
+manual revision loops are first-class steps, not escape hatches.
+
+```text
+                  assignment text + uploaded sources
+                                  |
+                                  v
+             +---------------------------------------+
+             |  1. Source Ingestion                  |  parses PDF/DOCX/TXT/MD/Notes,
+             |     - per-source artifacts            |  page/section units, lazy OCR,
+             |     - source cards (LLM)              |  source cards.
+             +---------------------------------------+
+                                  |
+                                  v
+             +---------------------------------------+
+             |  2. Assignment Parsing (LLM)          |  -> blocking_questions or
+             |     -> TaskSpecification              |     adversarial flags can
+             +---------------------------------------+     mark job blocked here
+                                  |
+                                  v
+                         +-----------------+
+                         | 3. Job Created  |
+                         +-----------------+
+                                  |
+                                  v
+             +---------------------------------------+
+             |  4. Topic Ideation (LLM)              | <----+
+             |     candidate topics with leads       |      |
+             +---------------------------------------+      |
+                                  |                         |
+                                  v                         |
+                    *** HUMAN GATE: Topic Selection ***     |
+                    select | reject + reasons | revise -----+ (next round
+                                  |                            uses rejected
+                                  v                            topics + user
+             +---------------------------------------+        instruction)
+             |  5. Research Planning (deterministic) |
+             |     validates source_requests,        |
+             |     bounds, page ranges, sections     |
+             +---------------------------------------+
+                                  |
+                                  v
+             +---------------------------------------+
+             |  6. Source Resolution                 |  request -> SourceTextPacket
+             |     pdf_pages | section | search |    |  (lazy per-page OCR if
+             |     chunk locators                    |  pages have low/empty text)
+             +---------------------------------------+
+                                  |
+                                  v
+             +---------------------------------------+
+             |  7. Final Topic Research (LLM)        |  evidence map: notes,
+             |     grounded notes, quotes verified   |  groups, gaps, conflicts
+             |     against source text               |
+             +---------------------------------------+
+                                  |
+                                  v
+             +---------------------------------------+
+             |  8. Outline (LLM)                     |  thesis, sections,
+             |     section -> note_id mapping        |  word budgets, claims
+             +---------------------------------------+
+                                  |
+                                  v
+             +---------------------------------------+
+             |  9. Drafting (LLM)                    |  draft v1 with
+             |     anti-AI skill in system prompt    |  section_source_map +
+             |     evidence + outline + packets      |  bibliography candidates
+             +---------------------------------------+
+                                  |
+                                  v
+             +---------------------------------------+
+             | 10. Final Style Pass (LLM, optional)  |  prose-only rewrite,
+             |     facts/citations frozen            |  emits next draft version
+             +---------------------------------------+
+                                  |
+                                  v
+             +---------------------------------------+
+             | 11. Validation                        |  deterministic style checks
+             |     deterministic checks +            |  + LLM judgment
+             |     LLM judgment + tone alignment     |  -> structured diagnostics
+             +---------------------------------------+
+                                  |
+                  passes?         |          requires_revision?
+                +-----------------+-------------------+
+                |                                     |
+                | yes                                 | no
+                v                                     v
+   +------------------------+      +----------------------------------+
+   | 12a. System Revision   |      | *** HUMAN GATE: Review Draft *** |
+   |      (LLM)             |      | review_only | revise | edit text |
+   |  prior draft + report  |      +----------------------------------+
+   |  + evidence + packets  |                        |
+   |  -> next draft version |       +----------------+----------------+
+   +------------------------+       |                |                |
+                |                   v                v                v
+                |          (no change)        (LLM revision)   (user edit
+                |                                    |          saved as
+                |                                    v          new draft
+                +-----------------------------+      |          version)
+                                              |     |               |
+                                              v     v               v
+                                +------------------------------------+
+                                | 13. Final Export (Markdown)        |
+                                |     content + bibliography +       |
+                                |     section source map + summary   |
+                                +------------------------------------+
+```
+
+Linear shorthand of the happy path:
 
 ```text
 assignment + uploaded sources
--> source ingestion
--> task specification
--> topic ideation
--> topic selection
--> research planning
--> source access resolution
--> final topic research
--> outline
--> draft
--> validation
--> optional revision
+-> source ingestion + source cards
+-> task specification (LLM)
+-> topic ideation (LLM) <-> [HUMAN] topic selection / rejection rounds
+-> research planning (deterministic validation)
+-> source access resolution (with lazy OCR)
+-> final topic research (LLM)
+-> outline (LLM)
+-> draft v1 (LLM)
+-> optional final style pass (LLM) -> draft v2
+-> validation (deterministic + LLM + tone alignment)
+-> [HUMAN] review draft (review_only | LLM revise | direct text edit)
+-> optional system revision loop (LLM)
 -> final Markdown export
 ```
+
+### Manual Oversight & Iteration
+
+The workflow exposes four explicit human-in-the-loop touchpoints. Each one
+produces or consumes durable artifacts so the orchestrator can resume after a
+restart.
+
+#### 1. Topic selection and rejection rounds
+
+After topic ideation, the user must select one candidate before the workflow
+proceeds. The user can also reject directions with a written reason. Rejected
+topics are persisted (`TopicRoundStore.save_rejected_topic`) and replayed into
+later ideation rounds along with an optional user instruction so the model
+avoids repeating discarded directions. Round numbers and topic IDs are stable
+across rounds.
+
+```text
+ideation round N -> [HUMAN] select | reject(reason) | request another round
+                                              |
+                                              v
+                       round N+1 prompt includes previous candidates
+                       + rejected topics + user instruction
+```
+
+#### 2. Blocking gates
+
+The workflow can mark a job `blocked` (with a user-facing `EssayJobErrorState`)
+when:
+
+- the task spec contains `blocking_questions` or unresolved prompt-option
+  ambiguity
+- evidence sufficiency falls below the configured threshold during research
+- adversarial AI-directed instructions are detected in the assignment
+
+The job remains in `blocked` until the user resolves the issue (e.g. supplies a
+clarification, picks a prompt option, or uploads more sources). Resolution
+creates a new artifact version and the workflow resumes from the affected stage.
+
+#### 3. Manual draft editing (`save_user_edit`)
+
+Any draft version can be edited directly by the user. The endpoint
+`POST /jobs/{job_id}/drafts/save-user-edit` writes the edited text as a new
+`EssayDraft` with:
+
+- `origin = "user_edit"`
+- `created_by = "user"`
+- `parent_draft_id` linking to the prior version
+- `parent_export_id` set when the edit was applied to an exported draft
+
+User edits become the new latest draft and are eligible inputs for the next
+manual or system revision pass. Each edit is its own immutable version, so
+edit history is fully traceable.
+
+#### 4. Manual revision runs
+
+Manual revision is a structured re-pass over a chosen draft. Triggered via
+`POST /jobs/{job_id}/manual-revision-runs`, it accepts:
+
+- `source_draft_id` — which version to revise from
+- `mode` — `review_only` (no rewrite, just reports) or `revise` (LLM rewrite)
+- `instruction` — optional free-text user direction
+- `selected_lenses` — any subset of:
+  `evidence`, `citations`, `assignment_fit`, `length`, `tone`, `anti_ai`
+
+Each run produces a `ManualRevisionRun` with:
+
+```text
+pre_revision_validation       post_revision_validation
+pre_revision_tone_alignment   post_revision_tone_alignment
+pre_revision_anti_ai          post_revision_anti_ai
+change_summary                warnings
+result_draft_id               status (completed | failed)
+```
+
+The pre/post reports let the UI show a side-by-side delta so the user can see
+exactly what the lens-based pass changed. In `revise` mode the result is saved
+as a new draft version with `origin = "manual_llm_revision"` and
+`manual_request_id`/`user_instruction`/`selected_lenses` recorded on the draft
+itself.
+
+#### Draft version lineage
+
+Drafts form a directed acyclic version graph through `parent_draft_id`. The
+`origin` field records how each version came into existence:
+
+| Origin                | Created by | Triggered by                                       |
+| --------------------- | ---------- | -------------------------------------------------- |
+| `generated`           | system     | drafting stage (draft v1)                          |
+| `style_revision`      | system     | optional final style pass                          |
+| `system_revision`     | system     | post-validation revision loop                      |
+| `manual_llm_revision` | system     | manual revision run in `revise` mode               |
+| `user_edit`           | user       | direct text edit via `save_user_edit`              |
+
+`GET /jobs/{job_id}/drafts` returns the full version list with previews and
+lineage so the UI can render a revision timeline. The export step always reads
+the latest validated draft.
 
 ### LLM Usage By Step
 
