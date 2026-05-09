@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Any
 
-from llm.client import DEFAULT_LLM_MAX_OUTPUT_TOKENS
+from llm.client import DEFAULT_LLM_MAX_OUTPUT_TOKENS, UserBlock, concat_user_content
 
 logger = logging.getLogger("essay_writer.llm")
 
@@ -19,18 +19,19 @@ class LoggingLLMClient:
     def chat_json(
         self,
         system: str,
-        user: str,
+        user: str | list[UserBlock],
         json_schema: dict[str, Any],
         max_tokens: int = DEFAULT_LLM_MAX_OUTPUT_TOKENS,
         model: str | None = None,
         enable_web_search: bool = False,
     ) -> dict[str, Any]:
+        user_text = concat_user_content(user)
         logger.info(
             "llm.call.start stage=%s model=%s sys_chars=%d user_chars=%d max_tokens=%d web_search=%s",
             self._stage,
             model or "adapter-default",
             len(system),
-            len(user),
+            len(user_text),
             max_tokens,
             enable_web_search,
         )

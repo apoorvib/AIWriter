@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from llm.client import LLMClient, LLMConfigurationError
+from llm.client import LLMClient, LLMConfigurationError, UserBlock
 from essay_writer.jobs.schema import EssayJob
 from essay_writer.outlining.schema import OutlineSection, ThesisOutline
 from essay_writer.research.schema import EvidenceMap, ResearchNote
@@ -105,15 +105,19 @@ class ThesisOutlineService:
         version: int,
         model: str | None,
     ) -> ThesisOutline:
+        static_context = _build_outline_user_message(
+            task_spec=task_spec,
+            selected_topic=selected_topic,
+            research_plan=research_plan,
+            evidence_map=evidence_map,
+            source_packets=source_packets,
+        )
         payload = self._llm.chat_json(
             system=OUTLINE_SYSTEM_PROMPT,
-            user=_build_outline_user_message(
-                task_spec=task_spec,
-                selected_topic=selected_topic,
-                research_plan=research_plan,
-                evidence_map=evidence_map,
-                source_packets=source_packets,
-            ),
+            user=[
+                UserBlock(text=static_context, cacheable=True),
+                UserBlock(text="\n\nProduce a thesis-grounded outline using the inputs above."),
+            ],
             json_schema=OUTLINE_SCHEMA,
             max_tokens=self._max_tokens,
             model=model,

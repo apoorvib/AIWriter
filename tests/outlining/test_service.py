@@ -98,7 +98,9 @@ def test_outline_prompt_is_style_aware_and_receives_full_source_packet_metadata(
     )
 
     assert "STYLE-AWARE STRUCTURE" in client.calls[0]["system"]
-    context = json.loads(client.calls[0]["user"])
+    blocks = client.calls[0]["user_blocks"]
+    assert blocks[0].cacheable is True
+    context = json.loads(blocks[0].text)
     packet = context["source_packets"][0]
     assert packet["packet_id"] == "src1-pdf-pages-0002-0003"
     assert packet["source_id"] == "src1"

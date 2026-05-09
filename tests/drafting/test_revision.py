@@ -55,14 +55,18 @@ def test_revision_service_passes_source_packets_to_llm() -> None:
         source_packets=[_source_packet()],
         version=2,
     )
-    context = json.loads(client.calls[0]["user"].split("\n\n", 1)[1])
+    blocks = client.calls[0]["user_blocks"]
+    static_ctx = json.loads(blocks[0].text)
+    mutable_ctx = _parse_mutable_revision_context(blocks[1].text)
 
-    assert context["source_packets"][0]["packet_id"] == "src1-pdf-pages-0002-0002"
-    assert context["source_packets"][0]["source_id"] == "src1"
-    assert context["source_packets"][0]["pdf_page_start"] == 2
-    assert context["source_packets"][0]["text"] == "Source excerpt used for revision."
-    assert context["revision_task"]["diagnostics"][0]["issue_type"] == "unsupported_claim"
-    assert context["revision_task"]["diagnostics"][0]["action"] == "strengthen_grounding"
+    assert blocks[0].cacheable is True
+    assert blocks[1].cacheable is False
+    assert static_ctx["source_packets"][0]["packet_id"] == "src1-pdf-pages-0002-0002"
+    assert static_ctx["source_packets"][0]["source_id"] == "src1"
+    assert static_ctx["source_packets"][0]["pdf_page_start"] == 2
+    assert static_ctx["source_packets"][0]["text"] == "Source excerpt used for revision."
+    assert mutable_ctx["revision_task"]["diagnostics"][0]["issue_type"] == "unsupported_claim"
+    assert mutable_ctx["revision_task"]["diagnostics"][0]["action"] == "strengthen_grounding"
 
 
 def test_revision_service_includes_tone_alignment_and_writing_style_payload() -> None:
@@ -90,15 +94,67 @@ def test_revision_service_includes_tone_alignment_and_writing_style_payload() ->
         writing_style_payload=_writing_style_payload(),
         version=2,
     )
-    rest = client.calls[0]["user"].split("\n\n", 1)[1]
-    context_json, style_block = rest.split("\n\n<writing_style_samples>", 1)
-    context = json.loads(context_json)
+    blocks = client.calls[0]["user_blocks"]
+    mutable_text = blocks[1].text
+    mutable_ctx = _parse_mutable_revision_context(mutable_text)
+    style_block = mutable_text.split("\n\n<writing_style_samples>", 1)[1]
 
-    assert context["revision_task"]["tone_alignment"]["requires_revision"] is True
-    assert context["revision_task"]["tone_alignment"]["anti_ai_conflicts"][0]["resolution"] == "prefer_tone"
-    assert context["revision_task"]["deterministic_style_issues"]["em_dash_count"] == 0
+    assert mutable_ctx["revision_task"]["tone_alignment"]["requires_revision"] is True
+    assert mutable_ctx["revision_task"]["tone_alignment"]["anti_ai_conflicts"][0]["resolution"] == "prefer_tone"
+    assert mutable_ctx["revision_task"]["deterministic_style_issues"]["em_dash_count"] == 0
     assert "style exemplars only" in style_block.lower()
     assert "The samples favor long, accumulative sentences before a tighter claim." in style_block
+
+
+def test_revision_static_block_matches_drafting_static_block_for_cache_reuse() -> None:
+    """The Anthropic prompt cache hits only when the prefix bytes match
+    exactly. The static (cacheable) user block produced by drafting and the
+    one produced by revision must therefore be byte-identical when given the
+    same task spec / topic / evidence / outline / source packets."""
+    from essay_writer.drafting.service import build_static_drafting_context_json
+    from essay_writer.drafting.revision import _build_revision_blocks
+
+    task_spec = _task_spec()
+    topic = _topic()
+    evidence_map = _evidence_map()
+    outline = _outline()
+    packets = [_source_packet()]
+
+    drafting_static = build_static_drafting_context_json(
+        task_spec, topic, evidence_map, outline, packets
+    )
+    revision_blocks = _build_revision_blocks(
+        task_spec=task_spec,
+        selected_topic=topic,
+        evidence_map=evidence_map,
+        outline=outline,
+        previous_draft=_previous_draft(),
+        validation=_validation(),
+        source_packets=packets,
+        writing_style_payload=None,
+        tone_alignment=None,
+        user_instruction=None,
+        change_summary=[],
+    )
+
+    assert revision_blocks[0].cacheable is True
+    assert revision_blocks[0].text == drafting_static
+
+
+def _parse_mutable_revision_context(mutable_text: str) -> dict:
+    """The mutable block has the shape: '\n\n<instruction>\n\n<json>[...]\n\n<style>'.
+    Find the JSON object embedded after the instruction prelude."""
+    start = mutable_text.index("{")
+    depth = 0
+    for idx in range(start, len(mutable_text)):
+        ch = mutable_text[idx]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(mutable_text[start : idx + 1])
+    raise ValueError("Could not locate JSON context in mutable revision block")
 
 
 def _task_spec() -> TaskSpecification:

@@ -2365,3 +2365,291 @@ Caveats:
 - Manual review outputs are intentionally stored in dedicated manual-run artifacts rather than the main validation/tone stores, so the automatic workflow's latest-report assumptions stay intact.
 - Manual user-edit and manual-revision drafts are persisted and reopenable from history, but they do not currently replace the job's primary pipeline draft/export pointers.
 - The editor flow is explicit-save rather than autosave in this first implementation.
+
+---
+
+## 2026-05-09 - Codex - Documented Agent Harness MCP Plan
+
+Summary:
+
+- Rewrote `docs/agent-harness-implementation.md` from pasted chat notes into a structured MCP Agent Tool Mode implementation plan.
+- Added the source-ingestion architecture: deterministic no-API materialization first, followed by harness-owned `prepare_source_card` / `commit_source_card`.
+- Clarified that the frontend is optional for Agent Tool Mode v1 and that local-path MCP ingestion should be built first.
+- Added tool categories, work packet shape, no-implicit-API enforcement, implementation phases, risks, and open decisions.
+
+Files changed:
+
+- `docs/agent-harness-implementation.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+rg --files -g "*agent*"
+Get-ChildItem -Force docs
+git status --short
+Get-Content docs\agent-harness-implementation.md
+Get-Content essay_writer\sources\summary.py
+Get-Content essay_writer\sources\schema.py
+Get-Content essay_writer\sources\storage.py
+git diff -- docs\agent-harness-implementation.md
+```
+
+Results:
+
+- Documentation-only update.
+- No tests were run because no implementation code changed.
+
+Caveats:
+
+- The worktree already contained unrelated modified and untracked files before this session.
+- `docs/agent-harness-implementation.md` is currently untracked in git.
+
+---
+
+## 2026-05-09 - Codex - Added Subagent Strategy To Agent Harness Plan
+
+Summary:
+
+- Added a subagent strategy section to `docs/agent-harness-implementation.md`.
+- Documented that subagent spawning should be a harness policy, not enforced by the MCP server.
+- Added delegation metadata to the work packet shape, including `recommended`, `suggested_role`, `allowed_tools`, `return_contract`, and `subagent_prompt`.
+- Listed good subagent stages: source cards, deep source reading, web research, topic feasibility, and validation/review lenses.
+- Added poor-fit stages, read-only versus bounded-write subagent guidance, implementation hooks, risks, and open decisions.
+
+Files changed:
+
+- `docs/agent-harness-implementation.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+Get-Content C:\Users\Apoorv\.codex\plugins\cache\openai-curated\superpowers\3c463363\skills\brainstorming\SKILL.md
+Select-String -Path docs\agent-harness-implementation.md -Pattern "Work Packets|Serial Workflow|Implementation Phases|Risks" -Context 0,4
+Get-Content docs\agent-harness-implementation.md
+Get-Content session-log.md -Tail 55
+Select-String -Path docs\agent-harness-implementation.md -Pattern "Subagent Strategy|Should Subagents Be Enforced|Good Subagent Stages|How To Tell" -Context 0,6
+git diff -- docs\agent-harness-implementation.md
+git diff --check -- docs\agent-harness-implementation.md
+```
+
+Results:
+
+- Documentation-only update.
+- `git diff --check -- docs\agent-harness-implementation.md` completed without whitespace errors.
+- No tests were run because no implementation code changed.
+
+Caveats:
+
+- `docs/agent-harness-implementation.md` remains untracked in git.
+
+## 2026-05-09 - Codex - Planned Agent Work Handoff Storage
+
+Summary:
+
+- Added AgentWorkStore planning to `docs/agent-harness-implementation.md`.
+- Specified that every `prepare_*` tool should persist a work packet and return `work_packet_id`.
+- Specified that subagent outputs should be stored as `WorkResult` artifacts, not arbitrary JSON files invented by subagents.
+- Added `submit_work_result`, work packet/result list/get tools, commit links, and recovery flow.
+- Clarified that the harness orchestrator should follow returned IDs instead of scanning folders or relying on chat transcript state.
+
+Files changed:
+
+- `docs/agent-harness-implementation.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+Get-Content C:\Users\Apoorv\.codex\plugins\cache\openai-curated\superpowers\3c463363\skills\brainstorming\SKILL.md
+Select-String -Path docs\agent-harness-implementation.md -Pattern "## Subagent Strategy|## Commit Validation|## Work Packets|## Implementation Phases|## Open Decisions" -Context 0,2
+Get-Content docs\agent-harness-implementation.md -TotalCount 560 | Select-Object -Last 280
+Select-String -Path docs\agent-harness-implementation.md -Pattern "Work Packet Persistence|Work Result Store|How The Orchestrator Finds Outputs|Lost Handoff State|AgentWorkStore" -Context 0,8
+git diff -- docs\agent-harness-implementation.md
+git diff --check -- docs\agent-harness-implementation.md
+```
+
+Results:
+
+- Documentation-only update.
+- `git diff --check -- docs\agent-harness-implementation.md` completed without whitespace errors.
+- No tests were run because no implementation code changed.
+
+Caveats:
+
+- `docs/agent-harness-implementation.md` remains untracked in git.
+
+---
+
+## 2026-05-09 - Codex - Planned Context-Compaction Recovery For Agent Harness
+
+Summary:
+
+- Added `AgentRunStore` planning to `docs/agent-harness-implementation.md`.
+- Added run-level recovery protocol for context compaction, interruption, and resume.
+- Added `start_agent_run`, `get_agent_run_state`, `recover_agent_run`, `list_agent_runs`, and `checkpoint_agent_run` tool planning.
+- Documented checkpoints, idempotency rules, lightweight leases for parallel subagent work, and human-approval recovery through `blocked_on`.
+- Clarified that persisted run state should be authoritative and chat memory should be advisory.
+
+Files changed:
+
+- `docs/agent-harness-implementation.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+Get-Content C:\Users\Apoorv\.codex\plugins\cache\openai-curated\superpowers\3c463363\skills\brainstorming\SKILL.md
+Select-String -Path docs\agent-harness-implementation.md -Pattern "Work Packet Persistence|How The Orchestrator Finds Outputs|No-Implicit-API Enforcement|Implementation Phases|Risks|Open Decisions" -Context 0,3
+Get-Content docs\agent-harness-implementation.md -TotalCount 720 | Select-Object -Last 220
+Select-String -Path docs\agent-harness-implementation.md -Pattern "Agent Run Recovery|AgentRunStore|Recovery Protocol|Checkpointing|Idempotency|Leases|Human Approval Recovery|Lost Run State" -Context 0,6
+git diff -- docs\agent-harness-implementation.md
+git diff --check -- docs\agent-harness-implementation.md
+```
+
+Results:
+
+- Documentation-only update.
+- `git diff --check -- docs\agent-harness-implementation.md` completed without whitespace errors.
+- No tests were run because no implementation code changed.
+
+Caveats:
+
+- `docs/agent-harness-implementation.md` remains untracked in git.
+
+---
+
+## 2026-05-09 - Codex - Planned Harness Instructions And LLM Isolation
+
+Summary:
+
+- Added a General Harness Instruction Prompt section to `docs/agent-harness-implementation.md`.
+- Planned `docs/agent-tool-mode-instructions.md`, `get_harness_instructions`, and MCP prompt `essay_agent_tool_mode`.
+- Documented that existing prompt instructions and JSON schemas should be reused in prepare packets rather than rewritten wholesale.
+- Strengthened no-hidden-API enforcement with import-boundary checks, runtime `LLMClient.chat_json` guards, and explicit separation from API-backed Pipeline Mode tools.
+- Added open decisions covering the need for a separate implementation spec, prompt/schema reuse, and harness instruction delivery.
+
+Files changed:
+
+- `docs/agent-harness-implementation.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+Get-Content C:\Users\Apoorv\.codex\plugins\cache\openai-curated\superpowers\3c463363\skills\brainstorming\SKILL.md
+Select-String -Path docs\agent-harness-implementation.md -Pattern "No-Implicit-API Enforcement|MCP Prompts|Implementation Phases|Open Decisions|Recommended First Vertical Slice" -Context 0,8
+Get-Content docs\agent-harness-implementation.md -TotalCount 980 | Select-Object -Last 260
+Select-String -Path docs\agent-harness-implementation.md -Pattern "General Harness Instruction Prompt|Prompt And Schema Reuse|No-Implicit-API Enforcement|implementation spec|agent-tool-mode-instructions|get_harness_instructions" -Context 0,8
+git diff -- docs\agent-harness-implementation.md
+git diff --check -- docs\agent-harness-implementation.md
+```
+
+Results:
+
+- Documentation-only update.
+- `git diff --check -- docs\agent-harness-implementation.md` completed without whitespace errors.
+- No tests were run because no implementation code changed.
+
+Caveats:
+
+- `docs/agent-harness-implementation.md` remains untracked in git.
+
+---
+
+## 2026-05-09 - Codex - Created Agent Tool Mode MCP Implementation Plan
+
+Summary:
+
+- Created a separate Superpowers implementation plan for Agent Tool Mode MCP work.
+- Planned file-level tasks for agent tool schemas, run/work stores, no-API source materialization, prepare/submit/commit cycles, recovery, subagent metadata, MCP server wrapping, docs, and tests.
+- Captured no-hidden-API enforcement through import-boundary checks and runtime `LLMClient.chat_json` guard tests.
+- Included source-ingestion, source-packet bundle storage, context-compaction recovery, and work-result handoff details.
+
+Files changed:
+
+- `docs/superpowers/plans/2026-05-09-agent-tool-mode-mcp-implementation.md`
+- `session-log.md`
+
+Commands run:
+
+```powershell
+Get-Content C:\Users\Apoorv\.codex\plugins\cache\openai-curated\superpowers\3c463363\skills\writing-plans\SKILL.md
+Get-Content docs\agent-harness-implementation.md
+Get-ChildItem -Recurse -File essay_writer | Select-Object -ExpandProperty FullName
+Get-Content pyproject.toml
+rg -n "class |def |chat_json|SourceIngestionService|build_source_card|SOURCE_CARD|RESPONSE_SCHEMA|PROMPT|schema" essay_writer\sources essay_writer\task_spec essay_writer\topic_ideation essay_writer\research essay_writer\research_planning essay_writer\outlining essay_writer\drafting essay_writer\validation essay_writer\jobs essay_writer\exporting essay_writer\manual_revision essay_writer\workflow
+Get-Content essay_writer\sources\ingestion.py
+Get-Content essay_writer\sources\storage.py
+Get-Content essay_writer\sources\summary.py
+Get-Content essay_writer\task_spec\parser.py
+Get-Content essay_writer\task_spec\prompts.py
+Get-Content essay_writer\task_spec\schema.py
+Get-Content essay_writer\task_spec\storage.py
+Get-Content essay_writer\task_spec\security.py
+Get-Content essay_writer\topic_ideation\service.py
+Get-Content essay_writer\topic_ideation\prompts.py
+Get-Content essay_writer\topic_ideation\schema.py
+Get-Content essay_writer\topic_ideation\context.py
+Get-Content essay_writer\topic_ideation\storage.py
+Get-Content essay_writer\research_planning\service.py
+Get-Content essay_writer\research_planning\schema.py
+Get-Content essay_writer\research\service.py
+Get-Content essay_writer\research\prompts.py
+Get-Content essay_writer\research\schema.py
+Get-Content essay_writer\research\storage.py
+Get-Content essay_writer\research_planning\storage.py
+Get-Content essay_writer\outlining\service.py
+Get-Content essay_writer\outlining\storage.py
+Get-Content essay_writer\outlining\schema.py
+Get-Content essay_writer\drafting\service.py
+Get-Content essay_writer\drafting\prompts.py
+Get-Content essay_writer\drafting\schema.py
+Get-Content essay_writer\drafting\storage.py
+Get-Content essay_writer\drafting\revision.py
+Get-Content essay_writer\validation\service.py
+Get-Content essay_writer\validation\prompts.py
+Get-Content essay_writer\validation\schema.py
+Get-Content essay_writer\validation\checks.py
+Get-Content essay_writer\validation\storage.py
+Get-Content essay_writer\jobs\schema.py
+Get-Content essay_writer\jobs\storage.py
+Get-Content essay_writer\jobs\workflow.py
+Get-Content essay_writer\exporting\service.py
+Get-Content essay_writer\sources\access.py
+Get-Content backend\deps.py
+Get-ChildItem -Recurse -File llm | Select-Object -ExpandProperty FullName
+Get-Content llm\client.py
+Get-Content llm\factory.py
+Get-Content llm\logging_client.py
+Get-ChildItem -Recurse -File tests | Select-Object -ExpandProperty FullName
+Get-Content session-log.md
+Get-Content README.md
+Get-ChildItem -Force docs\superpowers\plans | Select-Object Name,Length,LastWriteTime
+Get-Content tests\task_spec\_tmp.py
+Get-Content tests\sources\test_ingestion.py
+Get-Content tests\sources\test_summary.py
+Get-Content tests\workflow\test_bootstrap.py
+Get-Content essay_writer\sources\schema.py
+Get-Content essay_writer\exporting\storage.py
+Get-Content essay_writer\exporting\schema.py
+git status --short
+rg -n "mcp|MCP|agent_tool|agent_tools" .
+rg -n "\.\.\.|TBD|TODO|implement later|appropriate|similar to|fill in|Fill with|NotImplementedError" docs\superpowers\plans\2026-05-09-agent-tool-mode-mcp-implementation.md
+git diff --check -- docs\superpowers\plans\2026-05-09-agent-tool-mode-mcp-implementation.md
+git diff --check -- docs\superpowers\plans\2026-05-09-agent-tool-mode-mcp-implementation.md session-log.md
+```
+
+Results:
+
+- Documentation-only update.
+- Placeholder/red-flag scan completed with no matches after revisions.
+- `git diff --check -- docs\superpowers\plans\2026-05-09-agent-tool-mode-mcp-implementation.md` completed without whitespace errors.
+- `git diff --check -- docs\superpowers\plans\2026-05-09-agent-tool-mode-mcp-implementation.md session-log.md` completed without whitespace errors.
+- No tests were run because no implementation code changed.
+
+Caveats:
+
+- The worktree already contained unrelated modified and untracked files before this session.
+- The new implementation plan and existing `docs/agent-harness-implementation.md` are currently untracked in git.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from llm.client import LLMClient
+from llm.client import LLMClient, UserBlock
 from essay_writer.jobs.schema import EssayJob
 from essay_writer.research.prompts import FINAL_TOPIC_RESEARCH_SCHEMA, FINAL_TOPIC_RESEARCH_SYSTEM_PROMPT
 from essay_writer.research.schema import (
@@ -50,10 +50,12 @@ class FinalTopicResearchService:
         model: str | None = None,
         enable_web_search: bool = False,
     ) -> FinalTopicResearchResult:
-        chunks = [
-            *_packet_chunks(source_packets or []),
-            *_flatten_chunks(selected_topic.topic_id, retrieved_evidence),
-        ]
+        chunks = _dedupe_chunks_by_content(
+            [
+                *_packet_chunks(source_packets or []),
+                *_flatten_chunks(selected_topic.topic_id, retrieved_evidence),
+            ]
+        )
         if not chunks:
             return _empty_result(
                 job=job,
@@ -63,9 +65,13 @@ class FinalTopicResearchService:
                 warning="No retrieved source chunks were available for final topic research.",
             )
 
+        user_blocks = [
+            UserBlock(text=_build_static_research_context(job, task_spec, selected_topic, chunks), cacheable=True),
+            UserBlock(text=_build_mutable_research_message(self._max_notes)),
+        ]
         payload = self._llm.chat_json(
             system=FINAL_TOPIC_RESEARCH_SYSTEM_PROMPT,
-            user=_build_user_message(job, task_spec, selected_topic, chunks, self._max_notes),
+            user=user_blocks,
             json_schema=FINAL_TOPIC_RESEARCH_SCHEMA,
             max_tokens=self._max_tokens,
             model=model,
@@ -82,13 +88,16 @@ class FinalTopicResearchService:
         )
 
 
-def _build_user_message(
+def _build_static_research_context(
     job: EssayJob,
     task_spec: TaskSpecification,
     selected_topic: SelectedTopic,
     chunks: list[TopicEvidenceChunk],
-    max_notes: int,
 ) -> str:
+    """Cache-stable prefix: job + task spec + selected topic + retrieved chunks.
+    These bytes are identical for any re-run of research on the same retrieval,
+    so structuring them as a separate UserBlock lets the prompt cache hit.
+    Field order is fixed; do not change it without invalidating the cache."""
     return json.dumps(
         {
             "job": {
@@ -122,7 +131,6 @@ def _build_user_message(
                 "research_question": selected_topic.research_question,
                 "tentative_thesis_direction": selected_topic.tentative_thesis_direction,
             },
-            "max_notes": max_notes,
             "retrieved_chunks": [
                 {
                     "source_id": chunk.source_id,
@@ -136,6 +144,16 @@ def _build_user_message(
         },
         ensure_ascii=False,
         indent=2,
+    )
+
+
+def _build_mutable_research_message(max_notes: int) -> str:
+    return (
+        "\n\n"
+        f"Extract up to {max_notes} research notes from the retrieved_chunks above. "
+        "Each note must reference a chunk_id present in the static context. "
+        "Use the task specification and selected topic to focus extraction.\n\n"
+        + json.dumps({"max_notes": max_notes}, ensure_ascii=False)
     )
 
 
@@ -270,6 +288,23 @@ def _flatten_chunks(topic_id: str, retrieved_evidence: list[RetrievedTopicEviden
             chunks.append(chunk)
             seen.add(chunk.chunk_id)
     return chunks
+
+
+def _dedupe_chunks_by_content(chunks: list[TopicEvidenceChunk]) -> list[TopicEvidenceChunk]:
+    """Retrieved chunks (from FTS) and packet-derived chunks (from explicit
+    locators) can carry identical text under different `chunk_id` values
+    (e.g. "src1-chunk-0042" vs "src1-pdf-pages-0002-0002" when both target
+    page 2). Send only one copy to the LLM — the duplicated text wastes
+    25k+ input tokens on overlap-heavy retrievals."""
+    seen: set[str] = set()
+    result: list[TopicEvidenceChunk] = []
+    for chunk in chunks:
+        key = " ".join(chunk.text.split()).lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(chunk)
+    return result
 
 
 def _packet_chunks(source_packets: list[SourceTextPacket]) -> list[TopicEvidenceChunk]:

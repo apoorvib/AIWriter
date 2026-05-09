@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from llm.client import LLMClient
+from llm.client import LLMClient, UserBlock
 from essay_writer.research.schema import ResearchNote
 from essay_writer.sources.schema import SourceCard
 from essay_writer.task_spec.schema import TaskSpecification
@@ -58,17 +58,18 @@ class ValidationService:
             bibliography_candidates,
             source_cards,
         )
+        user_blocks = _build_user_blocks(
+            draft_text,
+            task_spec=task_spec,
+            evidence_map=evidence_map,
+            det=det,
+            bibliography_candidates=bibliography_candidates,
+            source_cards=source_cards,
+            metadata_warnings=metadata_warnings,
+        )
         payload = self._llm.chat_json(
             system=VALIDATION_SYSTEM_PROMPT,
-            user=_build_user_message(
-                draft_text,
-                task_spec=task_spec,
-                evidence_map=evidence_map,
-                det=det,
-                bibliography_candidates=bibliography_candidates,
-                source_cards=source_cards,
-                metadata_warnings=metadata_warnings,
-            ),
+            user=user_blocks,
             json_schema=VALIDATION_SCHEMA,
             max_tokens=self._max_tokens,
             model=model,
@@ -83,7 +84,7 @@ class ValidationService:
         )
 
 
-def _build_user_message(
+def _build_user_blocks(
     draft_text: str,
     *,
     task_spec: TaskSpecification,
@@ -92,82 +93,99 @@ def _build_user_message(
     bibliography_candidates: list[str],
     source_cards: list[SourceCard],
     metadata_warnings: list[CitationMetadataWarning],
-) -> str:
-    context = {
-        "task_spec": {
-            "raw_text": task_spec.raw_text,
-            "essay_type": task_spec.essay_type,
-            "academic_level": task_spec.academic_level,
-            "target_length": task_spec.target_length,
-            "length_unit": task_spec.length_unit,
-            "citation_style": task_spec.citation_style,
-            "rubric": task_spec.rubric,
-            "grading_criteria": task_spec.grading_criteria,
-            "required_claims_or_questions": task_spec.required_claims_or_questions,
-            "professor_constraints": task_spec.professor_constraints,
-        },
-        "evidence_map": [
-            {
-                "note_id": n.id,
-                "source_id": n.source_id,
-                "chunk_id": n.chunk_id,
-                "page_start": n.page_start,
-                "page_end": n.page_end,
-                "claim": n.claim,
-                "paraphrase": n.paraphrase,
-                "quote": n.quote,
-                "evidence_type": n.evidence_type,
-            }
-            for n in evidence_map
-        ],
-        "bibliography_candidates": bibliography_candidates,
-        "known_source_metadata": source_metadata_context(source_cards),
-        "metadata_citation_warnings": [
-            {
-                "source_id": warning.source_id,
-                "description": warning.description,
-                "severity": warning.severity,
-            }
-            for warning in metadata_warnings
-        ],
-        "deterministic_issues": {
-            "em_dash_count": det.em_dash_count,
-            "en_dash_count": det.en_dash_count,
-            "decorative_hyphen_pause_count": det.decorative_hyphen_pause_count,
-            "colon_explanation_pattern_count": det.colon_explanation_pattern_count,
-            "tier1_vocab_hits": [{"word": h.word, "count": h.count} for h in det.tier1_vocab_hits],
-            "bad_conclusion_opener": det.bad_conclusion_opener,
-            "participial_phrase_count": det.participial_phrase_count,
-            "participial_phrase_rate_per_300_words": round(det.participial_phrase_rate, 2),
-            "contrastive_negation_count": det.contrastive_negation_count,
-            "signposting_hits": det.signposting_hits,
-            "consecutive_similar_sentence_runs": len(det.consecutive_similar_sentence_runs),
-            "triplet_contrastive_combo_count": det.triplet_contrastive_combo_count,
-            "clustered_triplet_count": det.clustered_triplet_count,
-            "paragraph_length_variance_warning": det.paragraph_length_variance_warning,
-            "mechanical_burstiness_count": det.mechanical_burstiness_count,
-            "concrete_engagement_present": det.concrete_engagement_present,
-            "paragraph_length_profile": (
+) -> list[UserBlock]:
+    """Split into a static (cacheable) prefix — task spec + evidence map +
+    known source metadata, all stable across revision passes — and a mutable
+    suffix carrying the per-pass draft + deterministic checks + bibliography.
+    Lets the prompt cache hit on revision-loop validation calls."""
+    static_context = json.dumps(
+        {
+            "task_spec": {
+                "raw_text": task_spec.raw_text,
+                "essay_type": task_spec.essay_type,
+                "academic_level": task_spec.academic_level,
+                "target_length": task_spec.target_length,
+                "length_unit": task_spec.length_unit,
+                "citation_style": task_spec.citation_style,
+                "rubric": task_spec.rubric,
+                "grading_criteria": task_spec.grading_criteria,
+                "required_claims_or_questions": task_spec.required_claims_or_questions,
+                "professor_constraints": task_spec.professor_constraints,
+            },
+            "evidence_map": [
                 {
-                    "paragraph_count": det.paragraph_length_profile.paragraph_count,
-                    "shortest_word_count": det.paragraph_length_profile.shortest_word_count,
-                    "longest_word_count": det.paragraph_length_profile.longest_word_count,
-                    "longest_to_shortest_ratio": round(
-                        det.paragraph_length_profile.longest_to_shortest_ratio,
-                        2,
-                    ),
+                    "note_id": n.id,
+                    "source_id": n.source_id,
+                    "chunk_id": n.chunk_id,
+                    "page_start": n.page_start,
+                    "page_end": n.page_end,
+                    "claim": n.claim,
+                    "paraphrase": n.paraphrase,
+                    "quote": n.quote,
+                    "evidence_type": n.evidence_type,
                 }
-                if det.paragraph_length_profile is not None
-                else None
-            ),
+                for n in evidence_map
+            ],
+            "known_source_metadata": source_metadata_context(source_cards),
         },
-    }
-    return (
+        ensure_ascii=False,
+    )
+    mutable_payload = json.dumps(
+        {
+            "bibliography_candidates": bibliography_candidates,
+            "metadata_citation_warnings": [
+                {
+                    "source_id": warning.source_id,
+                    "description": warning.description,
+                    "severity": warning.severity,
+                }
+                for warning in metadata_warnings
+            ],
+            "deterministic_issues": {
+                "em_dash_count": det.em_dash_count,
+                "en_dash_count": det.en_dash_count,
+                "decorative_hyphen_pause_count": det.decorative_hyphen_pause_count,
+                "colon_explanation_pattern_count": det.colon_explanation_pattern_count,
+                "tier1_vocab_hits": [{"word": h.word, "count": h.count} for h in det.tier1_vocab_hits],
+                "bad_conclusion_opener": det.bad_conclusion_opener,
+                "participial_phrase_count": det.participial_phrase_count,
+                "participial_phrase_rate_per_300_words": round(det.participial_phrase_rate, 2),
+                "contrastive_negation_count": det.contrastive_negation_count,
+                "signposting_hits": det.signposting_hits,
+                "consecutive_similar_sentence_runs": len(det.consecutive_similar_sentence_runs),
+                "triplet_contrastive_combo_count": det.triplet_contrastive_combo_count,
+                "clustered_triplet_count": det.clustered_triplet_count,
+                "paragraph_length_variance_warning": det.paragraph_length_variance_warning,
+                "mechanical_burstiness_count": det.mechanical_burstiness_count,
+                "concrete_engagement_present": det.concrete_engagement_present,
+                "paragraph_length_profile": (
+                    {
+                        "paragraph_count": det.paragraph_length_profile.paragraph_count,
+                        "shortest_word_count": det.paragraph_length_profile.shortest_word_count,
+                        "longest_word_count": det.paragraph_length_profile.longest_word_count,
+                        "longest_to_shortest_ratio": round(
+                            det.paragraph_length_profile.longest_to_shortest_ratio,
+                            2,
+                        ),
+                    }
+                    if det.paragraph_length_profile is not None
+                    else None
+                ),
+            },
+        },
+        ensure_ascii=False,
+    )
+    mutable_text = (
+        "\n\n"
         "Validate the essay draft below against the task specification, evidence map, and rubric.\n"
         "The deterministic_issues have already been identified; do not re-check them.\n\n"
-        f"{json.dumps(context)}\n\n"
+        f"{mutable_payload}\n\n"
         f"<essay_draft>\n{draft_text}\n</essay_draft>"
     )
+    return [
+        UserBlock(text=static_context, cacheable=True),
+        UserBlock(text=mutable_text),
+    ]
 
 
 def _judgment_from_payload(payload: dict[str, Any]) -> LLMJudgmentResult:

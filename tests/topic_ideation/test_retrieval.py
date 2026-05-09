@@ -4,6 +4,7 @@ from essay_writer.sources.index import SQLiteChunkIndex
 from essay_writer.sources.manifest import build_index_manifest
 from essay_writer.sources.schema import SourceCard, SourceChunk, SourceDocument, SourceIngestionResult, SourcePage
 from essay_writer.sources.storage import SourceStore
+from essay_writer.topic_ideation import retrieval as retrieval_module
 from essay_writer.topic_ideation.retrieval import TopicEvidenceRetriever
 from essay_writer.topic_ideation.schema import CandidateTopic, SelectedTopic, TopicSourceLead
 from tests.task_spec._tmp import LocalTempDir
@@ -172,3 +173,71 @@ def test_topic_evidence_retriever_accepts_selected_topic() -> None:
 
     assert evidence.topic_id == "topic_001"
     assert [chunk.chunk_id for chunk in evidence.chunks] == ["src1-chunk-0001"]
+
+
+def test_topic_evidence_retriever_pools_index_connection_per_source(monkeypatch) -> None:
+    """Multiple search queries on the same source must reuse one
+    SQLiteChunkIndex connection — opening a fresh connection per query
+    burns ~5–15 file opens per topic round."""
+    with LocalTempDir() as tmp_path:
+        store = SourceStore(tmp_path / "source_store")
+        source_id = "src1"
+        chunks = [
+            SourceChunk(
+                id="src1-chunk-0001",
+                source_id=source_id,
+                ordinal=1,
+                page_start=1,
+                page_end=1,
+                text="Urban heat affects renters in older housing without insulation.",
+                char_count=64,
+            ),
+            SourceChunk(
+                id="src1-chunk-0002",
+                source_id=source_id,
+                ordinal=2,
+                page_start=2,
+                page_end=3,
+                text="Tree canopy and cooling centers are common adaptation policies.",
+                char_count=63,
+            ),
+        ]
+        index_path = store.source_dir(source_id) / "index.sqlite"
+        manifest = build_index_manifest(source_id=source_id, index_path=str(index_path), chunks=chunks)
+        with SQLiteChunkIndex(index_path) as index:
+            index.add_chunks(chunks)
+
+        instantiations: list[str] = []
+        original_cls = retrieval_module.SQLiteChunkIndex
+
+        class CountingIndex(original_cls):
+            def __init__(self, path) -> None:
+                instantiations.append(str(path))
+                super().__init__(path)
+
+        monkeypatch.setattr(retrieval_module, "SQLiteChunkIndex", CountingIndex)
+
+        topic = CandidateTopic(
+            id="topic_001",
+            title="Urban heat",
+            research_question="?",
+            tentative_thesis_direction=".",
+            rationale=".",
+            source_leads=[
+                TopicSourceLead(
+                    source_id=source_id,
+                    chunk_ids=[],
+                    suggested_source_search_queries=[
+                        "renters housing",
+                        "cooling centers",
+                        "adaptation policy",
+                    ],
+                )
+            ],
+        )
+
+        TopicEvidenceRetriever(store).retrieve_for_topic(topic, index_manifests=[manifest])
+
+    assert len(instantiations) == 1, (
+        f"expected one SQLiteChunkIndex per source, got {len(instantiations)}"
+    )

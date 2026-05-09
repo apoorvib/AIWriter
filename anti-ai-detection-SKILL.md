@@ -7,15 +7,13 @@ description: "Use this skill when the user is writing academic or submitted work
 
 ## Who This Skill Is For
 
-This skill reduces detector-risk signals while preserving readable, submittable academic prose. It is calibrated for cases where the user is worried about AI-detection tools such as Turnitin, GPTZero, Copyleaks, or Originality.ai. If you want general "sound more human" writing advice without the detection pressure, many of these rules are overcalibrated.
+This skill reduces detector-risk signals while preserving readable, submittable academic prose. It is calibrated for cases where the user is worried about AI-detection tools such as Turnitin, GPTZero, Copyleaks, or Originality.ai.
 
 ## Detector Reality Check
 
-AI-detection tools are unreliable and can produce false positives, especially on heavily polished, formulaic, or non-native English writing. Grammarly-heavy human text can also get flagged. This means two things: (1) you cannot reliably know whether your text will pass, only lower the risk; (2) over-cleaning can make text _more_ detectable, not less. If the user tells you the text has already been through Grammarly or similar polish tools, expect the detector risk to be higher, not lower.
+AI-detection tools are unreliable and can produce false positives, especially on heavily polished, formulaic, or non-native English writing. Grammarly-heavy human text can also get flagged.
 
-<!-- Maintainer note: Save this file as UTF-8. It intentionally uses Unicode examples such as en dashes, arrows, and multiplication signs, but avoids literal em dash glyphs in instruction text. -->
-
-Apply these rules during drafting, not as a post-processing step. AI prose regresses to the mean: it is correct, balanced, and predictable. Detection tools exploit this by measuring perplexity (word predictability) and burstiness (sentence length variation). The goal is to break the patterns that make text statistically machine-like, not to introduce errors. The deeper goal is to sound like a specific person thinking through a specific source, not a machine producing balanced coverage.
+AI prose regresses to the mean: it is correct, balanced, and predictable. Detection tools exploit this by measuring perplexity (word predictability) and burstiness (sentence length variation). The goal is to break the patterns that make text statistically machine-like, not to introduce errors. The deeper goal is to sound like a specific person thinking through a specific source, not a machine producing balanced coverage.
 
 ## Core Prose Standard
 
@@ -36,7 +34,7 @@ What helps most:
 
 ## HARD BAN: DASH AND COLON HABITS
 
-The em dash is the single most cited indicator of AI text. LLMs use it at 3 to 10 times the rate of human writers. En dashes and colon-heavy explanation patterns have also become common model habits. Colons are especially suspicious when they create a neat "claim: explanation" rhythm, introduce tidy lists, or turn a sentence into a labeled summary.
+The em dash is the single most cited indicator of AI text. En dashes and colon-heavy explanation patterns have also become common model habits. Colons are especially suspicious when they create a neat "claim: explanation" rhythm, introduce tidy lists, or turn a sentence into a labeled summary.
 
 **Rule: Never use em dashes. Zero. Not one.**
 

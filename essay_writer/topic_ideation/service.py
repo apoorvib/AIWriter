@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from llm.client import LLMClient
+from llm.client import LLMClient, UserBlock
 from essay_writer.sources.schema import SourceCard, SourceIndexManifest
 from essay_writer.sources.access_schema import SourceLocator, SourceMap, locator_from_payload
 from essay_writer.task_spec.schema import TaskSpecification
-from essay_writer.topic_ideation.context import build_topic_ideation_context
+from essay_writer.topic_ideation.context import (
+    build_topic_ideation_mutable_context,
+    build_topic_ideation_static_context,
+)
 from essay_writer.topic_ideation.prompts import TOPIC_IDEATION_SCHEMA, TOPIC_IDEATION_SYSTEM_PROMPT
 from essay_writer.topic_ideation.schema import CandidateTopic, RejectedTopic, TopicIdeationResult, TopicSourceLead
 
@@ -41,19 +44,25 @@ class TopicIdeationService:
         user_instruction: str | None = None,
         model: str | None = None,
     ) -> TopicIdeationResult:
-        context = build_topic_ideation_context(
+        static_context = build_topic_ideation_static_context(
             task_spec,
             source_cards=source_cards,
             index_manifests=index_manifests or [],
             source_maps=source_maps or [],
+            max_manifest_entries=80,
+        )
+        mutable_context = build_topic_ideation_mutable_context(
             previous_candidates=previous_candidates or [],
             rejected_topics=rejected_topics or [],
             user_instruction=user_instruction,
-            max_manifest_entries=80,
         )
+        user_blocks = [
+            UserBlock(text=static_context, cacheable=True),
+            UserBlock(text=_build_mutable_user_message(mutable_context, self._max_candidates)),
+        ]
         payload = self._llm.chat_json(
             system=TOPIC_IDEATION_SYSTEM_PROMPT,
-            user=_build_user_message(context, self._max_candidates),
+            user=user_blocks,
             json_schema=TOPIC_IDEATION_SCHEMA,
             max_tokens=self._max_tokens,
             model=model or self._model,
@@ -66,8 +75,9 @@ class TopicIdeationService:
         )
 
 
-def _build_user_message(context: str, max_candidates: int) -> str:
+def _build_mutable_user_message(mutable_context: str, max_candidates: int) -> str:
     return (
+        "\n\n"
         f"Generate up to {max_candidates} candidate approaches for this assignment.\n"
         "Each candidate must fit the assignment constraints and be plausibly supported by the uploaded sources.\n"
         "If previous_candidates are present, avoid duplicates and use parent_topic_id only when refining a prior topic.\n"
@@ -76,7 +86,7 @@ def _build_user_message(context: str, max_candidates: int) -> str:
         "Use chunk_ids from the manifests when possible and suggested_source_search_queries for uploaded-source retrieval.\n"
         "Prefer source_requests from source maps: use physical PDF page numbers for PDFs and section IDs for non-PDF sources.\n"
         "Do not include external web or database search queries in this stage.\n\n"
-        f"{context}"
+        f"{mutable_context}"
     )
 
 

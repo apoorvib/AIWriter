@@ -138,6 +138,36 @@ def test_reject_topic_persists_rejection_reason() -> None:
     assert loaded == [rejected]
 
 
+def test_reject_topic_propagates_parent_topic_id_from_candidate() -> None:
+    """Q6: when a refinement candidate is rejected, the rejection record must
+    carry forward the parent_topic_id so the next round's prompt knows the
+    rejection scopes to a specific refinement of that parent direction."""
+    from dataclasses import replace as _replace
+
+    with LocalTempDir() as tmp_path:
+        job_store = EssayJobStore(tmp_path / "essay_store")
+        topic_store = TopicRoundStore(tmp_path / "topic_store")
+        workflow = EssayWorkflow(job_store, topic_store)
+        job = workflow.create_job(job_id="job1", task_spec_id="task1", source_ids=["src1"])
+        refinement = _replace(
+            _candidate("topic_007", "Cooling-center equity refinement"),
+            parent_topic_id="topic_003",
+        )
+        round_ = workflow.record_topic_round(
+            job_id=job.id,
+            topic_result=_result("task1", [refinement]),
+        )
+
+        rejected = workflow.reject_topic(
+            job_id=job.id,
+            round_number=round_.round_number,
+            topic_id="topic_007",
+            reason="Refinement narrowed too much.",
+        )
+
+    assert rejected.parent_topic_id == "topic_003"
+
+
 def test_research_planning_requires_selected_topic() -> None:
     with LocalTempDir() as tmp_path:
         workflow = EssayWorkflow(

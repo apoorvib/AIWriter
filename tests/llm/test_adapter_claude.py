@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from llm.adapters.claude import ClaudeClient
-from llm.client import LLMError
+from llm.client import LLMError, UserBlock
 
 
 def _fake_response(tool_name: str, tool_input: dict) -> MagicMock:
@@ -136,7 +136,12 @@ def test_claude_client_logs_token_usage(caplog):
     import logging
     sdk = MagicMock()
     response = _fake_response("return_result", {"r": 1})
-    response.usage = MagicMock(input_tokens=120, output_tokens=55)
+    response.usage = MagicMock(
+        input_tokens=120,
+        output_tokens=55,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
     sdk.messages.create.return_value = response
     client = ClaudeClient(sdk=sdk, model="claude-sonnet-4-6")
 
@@ -147,3 +152,97 @@ def test_claude_client_logs_token_usage(caplog):
     assert token_msgs
     assert "120" in token_msgs[0]
     assert "55" in token_msgs[0]
+
+
+def test_claude_client_keeps_small_system_prompt_as_string():
+    """Small system prompts stay as plain strings — caching them would pay the
+    1.25x write surcharge without ever clearing the cacheable-token floor."""
+    sdk = MagicMock()
+    sdk.messages.create.return_value = _fake_response("return_result", {"answer": 1})
+    client = ClaudeClient(sdk=sdk, model="claude-sonnet-4-6")
+
+    client.chat_json("be helpful", "u", {"type": "object"})
+
+    assert sdk.messages.create.call_args.kwargs["system"] == "be helpful"
+
+
+def test_claude_client_wraps_large_system_prompt_with_cache_control():
+    """Large system prompts (e.g. drafting prompt with anti-AI skill) get
+    wrapped in a content-block list with cache_control=ephemeral so reuse
+    across drafting/revision/style passes hits the prompt cache."""
+    sdk = MagicMock()
+    sdk.messages.create.return_value = _fake_response("return_result", {"answer": 1})
+    client = ClaudeClient(sdk=sdk, model="claude-sonnet-4-6")
+    big_system = "x" * 10_000  # well past the 6000-char cache threshold
+
+    client.chat_json(big_system, "u", {"type": "object"})
+
+    system_param = sdk.messages.create.call_args.kwargs["system"]
+    assert isinstance(system_param, list)
+    assert system_param[0]["type"] == "text"
+    assert system_param[0]["text"] == big_system
+    assert system_param[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_claude_client_marks_cacheable_user_block_with_cache_control():
+    """A UserBlock with cacheable=True and enough text becomes a cache
+    breakpoint so revision passes hit the cache for the shared static prefix."""
+    sdk = MagicMock()
+    sdk.messages.create.return_value = _fake_response("return_result", {"answer": 1})
+    client = ClaudeClient(sdk=sdk, model="claude-sonnet-4-6")
+    static_prefix = "y" * 10_000
+
+    client.chat_json(
+        "small system",
+        [UserBlock(text=static_prefix, cacheable=True), UserBlock(text="mutable suffix")],
+        {"type": "object"},
+    )
+
+    content = sdk.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert content[0]["text"] == static_prefix
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert content[1]["text"] == "mutable suffix"
+    assert "cache_control" not in content[1]
+
+
+def test_claude_client_skips_cache_control_on_short_user_block():
+    """Cacheable UserBlocks below the size floor don't receive cache_control
+    so callers don't pay the 1.25x write surcharge for content that wouldn't
+    qualify as a cache entry anyway."""
+    sdk = MagicMock()
+    sdk.messages.create.return_value = _fake_response("return_result", {"answer": 1})
+    client = ClaudeClient(sdk=sdk, model="claude-sonnet-4-6")
+
+    client.chat_json(
+        "small system",
+        [UserBlock(text="short prefix", cacheable=True), UserBlock(text="more")],
+        {"type": "object"},
+    )
+
+    content = sdk.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert "cache_control" not in content[0]
+    assert "cache_control" not in content[1]
+
+
+def test_claude_client_logs_cache_metrics_when_present(caplog):
+    import logging
+    sdk = MagicMock()
+    response = _fake_response("return_result", {"r": 1})
+    response.usage = MagicMock(
+        input_tokens=200,
+        output_tokens=50,
+        cache_creation_input_tokens=8000,
+        cache_read_input_tokens=4000,
+    )
+    sdk.messages.create.return_value = response
+    client = ClaudeClient(sdk=sdk, model="claude-sonnet-4-6")
+
+    with caplog.at_level(logging.DEBUG, logger="essay_writer.llm"):
+        client.chat_json("s", "u", {"type": "object"})
+
+    msgs = [r.message for r in caplog.records if "cache_write_tokens" in r.message]
+    assert msgs
+    assert "8000" in msgs[0]
+    assert "4000" in msgs[0]

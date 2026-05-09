@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from llm.client import UserBlock
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.validation.schema import DeterministicCheckResult
 from essay_writer.writing_style.prompts import build_writing_style_prompt_block
@@ -73,34 +74,52 @@ def build_tone_alignment_user_message(
     task_spec: TaskSpecification,
     det: DeterministicCheckResult,
     writing_style_payload: WritingStylePayload,
-) -> str:
-    context = {
-        "task_spec": {
-            "essay_type": task_spec.essay_type,
-            "academic_level": task_spec.academic_level,
-            "citation_style": task_spec.citation_style,
-            "professor_constraints": task_spec.professor_constraints,
+) -> list[UserBlock]:
+    """Static (cacheable) prefix: task spec snippet + writing style samples,
+    both stable across revision-loop tone-alignment calls. Mutable suffix
+    carries the per-pass draft + deterministic signals."""
+    static_context = json.dumps(
+        {
+            "task_spec": {
+                "essay_type": task_spec.essay_type,
+                "academic_level": task_spec.academic_level,
+                "citation_style": task_spec.citation_style,
+                "professor_constraints": task_spec.professor_constraints,
+            },
         },
-        "anti_ai_signals": {
-            "em_dash_count": det.em_dash_count,
-            "en_dash_count": det.en_dash_count,
-            "decorative_hyphen_pause_count": det.decorative_hyphen_pause_count,
-            "colon_explanation_pattern_count": det.colon_explanation_pattern_count,
-            "tier1_vocab_hits": [{"word": item.word, "count": item.count} for item in det.tier1_vocab_hits],
-            "bad_conclusion_opener": det.bad_conclusion_opener,
-            "participial_phrase_rate_per_300_words": round(det.participial_phrase_rate, 2),
-            "contrastive_negation_count": det.contrastive_negation_count,
-            "signposting_hits": det.signposting_hits,
-            "triplet_contrastive_combo_count": det.triplet_contrastive_combo_count,
-            "clustered_triplet_count": det.clustered_triplet_count,
-            "paragraph_length_variance_warning": det.paragraph_length_variance_warning,
-            "mechanical_burstiness_count": det.mechanical_burstiness_count,
-            "concrete_engagement_present": det.concrete_engagement_present,
+        ensure_ascii=False,
+    )
+    static_text = (
+        f"{static_context}\n\n"
+        f"{build_writing_style_prompt_block(writing_style_payload)}"
+    )
+    mutable_signals = json.dumps(
+        {
+            "anti_ai_signals": {
+                "em_dash_count": det.em_dash_count,
+                "en_dash_count": det.en_dash_count,
+                "decorative_hyphen_pause_count": det.decorative_hyphen_pause_count,
+                "colon_explanation_pattern_count": det.colon_explanation_pattern_count,
+                "tier1_vocab_hits": [{"word": item.word, "count": item.count} for item in det.tier1_vocab_hits],
+                "bad_conclusion_opener": det.bad_conclusion_opener,
+                "participial_phrase_rate_per_300_words": round(det.participial_phrase_rate, 2),
+                "contrastive_negation_count": det.contrastive_negation_count,
+                "signposting_hits": det.signposting_hits,
+                "triplet_contrastive_combo_count": det.triplet_contrastive_combo_count,
+                "clustered_triplet_count": det.clustered_triplet_count,
+                "paragraph_length_variance_warning": det.paragraph_length_variance_warning,
+                "mechanical_burstiness_count": det.mechanical_burstiness_count,
+                "concrete_engagement_present": det.concrete_engagement_present,
+            },
         },
-    }
-    return (
-        f"{json.dumps(context, ensure_ascii=False)}\n\n"
-        f"{build_writing_style_prompt_block(writing_style_payload)}\n\n"
+        ensure_ascii=False,
+    )
+    mutable_text = (
+        f"\n\n{mutable_signals}\n\n"
         f"<essay_draft>\n{draft_text}\n</essay_draft>"
     )
+    return [
+        UserBlock(text=static_text, cacheable=True),
+        UserBlock(text=mutable_text),
+    ]
 

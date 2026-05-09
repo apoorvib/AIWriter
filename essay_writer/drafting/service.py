@@ -4,7 +4,7 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from llm.client import LLMClient
+from llm.client import LLMClient, UserBlock
 from essay_writer.jobs.schema import EssayJob
 from essay_writer.outlining.schema import ThesisOutline
 from essay_writer.task_spec.schema import TaskSpecification
@@ -44,7 +44,7 @@ class DraftService:
     ) -> EssayDraft:
         payload = self._llm.chat_json(
             system=DRAFTING_SYSTEM_PROMPT,
-            user=_build_user_message(
+            user=build_drafting_user_blocks(
                 task_spec,
                 selected_topic,
                 evidence_map,
@@ -67,15 +67,20 @@ class DraftService:
         )
 
 
-def _build_user_message(
+def build_static_drafting_context_json(
     task_spec: TaskSpecification,
     selected_topic: SelectedTopic,
     evidence_map: EvidenceMap,
     outline: ThesisOutline | None,
     source_packets: list[SourceTextPacket],
-    writing_style_payload: WritingStylePayload | None,
 ) -> str:
-    context = {
+    """Serialize the static drafting context.
+
+    The output is shared between initial drafting and revision so the
+    Anthropic prompt cache keys match. Field order is fixed; do not change it
+    without invalidating the cache.
+    """
+    context: dict[str, Any] = {
         "task_spec": {
             "essay_type": task_spec.essay_type,
             "academic_level": task_spec.academic_level,
@@ -143,10 +148,30 @@ def _build_user_message(
             ],
         }
     context["source_packets"] = _source_packets_payload(source_packets)
-    context_json = json.dumps(context, ensure_ascii=False)
+    return json.dumps(context, ensure_ascii=False)
+
+
+def build_drafting_user_blocks(
+    task_spec: TaskSpecification,
+    selected_topic: SelectedTopic,
+    evidence_map: EvidenceMap,
+    outline: ThesisOutline | None,
+    source_packets: list[SourceTextPacket],
+    writing_style_payload: WritingStylePayload | None,
+) -> list[UserBlock]:
+    """Split the drafting user message into a cacheable static block plus a
+    mutable suffix. The mutable suffix is empty unless the caller supplied a
+    writing-style payload."""
+    static_json = build_static_drafting_context_json(
+        task_spec, selected_topic, evidence_map, outline, source_packets
+    )
     if writing_style_payload is None:
-        return context_json
-    return f"{context_json}\n\n{build_writing_style_prompt_block(writing_style_payload)}"
+        return [UserBlock(text=static_json, cacheable=True)]
+    suffix = f"\n\n{build_writing_style_prompt_block(writing_style_payload)}"
+    return [
+        UserBlock(text=static_json, cacheable=True),
+        UserBlock(text=suffix, cacheable=False),
+    ]
 
 
 def _source_packets_payload(source_packets: list[SourceTextPacket]) -> list[dict[str, Any]]:

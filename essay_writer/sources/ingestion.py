@@ -21,8 +21,10 @@ from essay_writer.sources.schema import (
     SourceIngestionResult,
     SourcePage,
 )
+from essay_writer.sources.source_card_cache import SourceCardCache
 from essay_writer.sources.storage import SourceStore
 from essay_writer.sources.summary import build_source_card
+from essay_writer.sources.text_quality import is_better_extraction
 
 
 class SourceIngestionError(RuntimeError):
@@ -48,6 +50,7 @@ class SourceIngestionService:
         llm_client: LLMClient | None = None,
         source_card_max_tokens: int = 2500,
         source_card_model: str | None = None,
+        source_card_cache: SourceCardCache | None = None,
     ) -> None:
         self._store = store
         self._config = config or SourceIngestionConfig()
@@ -56,6 +59,9 @@ class SourceIngestionService:
         self._llm_client = llm_client
         self._source_card_max_tokens = source_card_max_tokens
         self._source_card_model = source_card_model
+        self._source_card_cache = source_card_cache or SourceCardCache(
+            store.root / "_source_card_cache"
+        )
 
     def ingest(self, document_path: str | Path, *, source_id: str | None = None) -> SourceIngestionResult:
         path = Path(document_path)
@@ -147,6 +153,7 @@ class SourceIngestionService:
             summary_char_limit=self._config.source_card_summary_char_limit,
             max_tokens=self._source_card_max_tokens,
             model=self._source_card_model,
+            cache=self._source_card_cache,
         )
         result = SourceIngestionResult(
             source=source,
@@ -200,7 +207,7 @@ def _merge_partial_ocr_pages(
         if (
             page.char_count < config.min_text_chars_per_page
             and ocr_page is not None
-            and ocr_page.char_count > page.char_count
+            and is_better_extraction(ocr_page, page)
         ):
             merged.append(ocr_page)
         else:
