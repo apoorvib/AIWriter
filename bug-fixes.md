@@ -175,6 +175,13 @@ Findings from a workflow audit of the AI Essay Writer pipeline (task spec → to
 - **Fix direction:** Parse bibliography per citation style, or add LLM-judge as a second pass when string match fails.
 
 ### Q4. Evidence dedup is by `chunk_id` only
+- **Status:** ✅ Fixed (literal + tuple tier). Original entry's premise was wrong — `_result_from_payload` had NO note-level dedup at all (chunk_id dedup only happened at the input chunk level via `_flatten_chunks`). Fix in `research/service.py`:
+  - New `_claim_signature()` normalizes a claim (lowercase, collapse whitespace, strip trailing punctuation).
+  - The note loop now keys a `seen_signatures: set[(chunk_id, claim_signature)]` and drops any note whose tuple has already been seen, with a warning naming the dropped chunk + claim prefix.
+  - Catches: literal duplicates, capitalization-only variants, trailing-punctuation-only variants, same-chunk + same-claim emitted twice with different paraphrases.
+  - Does NOT catch: cross-chunk semantic duplicates or word-order rephrasings — those require embeddings, intentionally deferred (tier 2).
+  - Distinct claims drawn from the same chunk are preserved (multiple notes per chunk is normal and desirable).
+  - Tests: 3 in `tests/research/test_service.py` covering literal dup, capitalization-variant dup, and the negative case (distinct claims same chunk preserved).
 - **Where:** `essay_writer/research/service.py:261`.
 - **Impact:** Two notes citing the same chunk with paraphrased quotes both survive into the outline; pads evidence count without adding signal.
 - **Fix direction:** Add semantic similarity dedup (embedding cosine threshold) on top of chunk_id dedup.
