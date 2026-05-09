@@ -164,6 +164,7 @@ Findings from a workflow audit of the AI Essay Writer pipeline (task spec → to
 ## Quality
 
 ### Q1. Required structure isn't enforced on the outline
+- **Status:** ✅ Fixed (tier-1 fuzzy validator). New `validate_outline_coverage()` runs after the LLM returns and flags every `task_spec.required_structure` clause that no section heading + purpose plausibly satisfies. Match is fuzzy: substring containment, word-level overlap requiring majority of label words, plus a 5-char shared-prefix stem so "Methodology" matches "Methods Used / describe research methods" without flagging unrelated words like "math". Warnings flow into a new `ThesisOutline.warnings` list (schema field added with default `list`, backward compatible). Tier 2 (LLM-judge fallback) and tier 3 (re-prompt loop) intentionally deferred — tier 1 catches the common case for a fraction of the cost.
 - **Where:** `essay_writer/task_spec/schema.py:86` defines `required_structure`; `essay_writer/outlining/service.py` includes it as context but never asserts coverage.
 - **Impact:** An assignment requiring "literature review" + "methodology" can produce an outline with neither.
 - **Fix direction:** Validate outline section labels against `required_structure`; reject or re-prompt on miss.
@@ -172,11 +173,6 @@ Findings from a workflow audit of the AI Essay Writer pipeline (task spec → to
 - **Where:** `essay_writer/validation/citations.py:32`.
 - **Impact:** "Smith (2020)" vs "Smith, J., et al. (2020)" mismatches. No structured bibliography parsing, no LLM-judge fallback.
 - **Fix direction:** Parse bibliography per citation style, or add LLM-judge as a second pass when string match fails.
-
-### Q3. `unsupported_claims` doesn't block export
-- **Where:** `essay_writer/validation/service.py` reports them; no enforcement gate downstream.
-- **Impact:** `passes=true` can ship with known unsupported claims still in the body.
-- **Fix direction:** Treat non-empty `unsupported_claims` as a hard fail unless explicitly user-overridden.
 
 ### Q4. Evidence dedup is by `chunk_id` only
 - **Where:** `essay_writer/research/service.py:261`.
@@ -199,6 +195,10 @@ Findings from a workflow audit of the AI Essay Writer pipeline (task spec → to
 - **Fix direction:** Include `parent_topic_id` in rejected payload; propagate parent-level dispreference.
 
 ### Q7. Outline sections can omit evidence for required structure clauses
+- **Status:** ✅ Fixed alongside Q1 in `validate_outline_coverage()`. Two checks:
+  - **Required source coverage:** computes `used_source_ids` (union across sections via `note_ids → evidence_map.notes`) and warns for every `research_plan.source_requests[i].source_id` not present.
+  - **Priority='high' coverage:** separately warns when a `research_plan.uploaded_source_priorities` entry with `priority='high'` is silently dropped — this is a louder signal than a generic source_request miss.
+  - Warnings flow into `ThesisOutline.warnings`. The original entry's title talked about "required structure clauses" but the body was about source coverage; the structure-clause concern is what Q1 covers, so Q7's fix is purely the source-coverage axis.
 - **Where:** `essay_writer/outlining/service.py:_sections_from_payload` validates note_ids against `evidence_map.notes` but doesn't validate that section note_ids map back to sources selected in `research_plan.source_requests`.
 - **Impact:** Required source from the plan can be skipped without warning.
 - **Fix direction:** Cross-validate section coverage against `source_requests`.

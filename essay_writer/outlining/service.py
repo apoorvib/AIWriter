@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from llm.client import LLMClient, LLMConfigurationError, UserBlock
@@ -128,6 +129,12 @@ class ThesisOutlineService:
         thesis = str(payload.get("working_thesis", "")).strip() or _working_thesis(selected_topic, evidence_map)
         if thesis and thesis[-1] not in ".!?":
             thesis += "."
+        warnings = validate_outline_coverage(
+            sections=sections,
+            task_spec=task_spec,
+            research_plan=research_plan,
+            evidence_map=evidence_map,
+        )
         return ThesisOutline(
             id=f"thesis_outline_v{version:03d}",
             job_id=job.id,
@@ -137,6 +144,7 @@ class ThesisOutlineService:
             version=version,
             working_thesis=thesis,
             sections=sections,
+            warnings=warnings,
             prompt_version=self._prompt_version,
         )
 
@@ -241,6 +249,116 @@ def _source_packet_payload(packet: SourceTextPacket) -> dict[str, Any]:
         "warnings": packet.warnings,
         "text": packet.text,
     }
+
+
+def validate_outline_coverage(
+    *,
+    sections: list[OutlineSection],
+    task_spec: TaskSpecification,
+    research_plan: ResearchPlan,
+    evidence_map: EvidenceMap,
+) -> list[str]:
+    """Deterministic post-LLM checks. Returns human-readable warning strings;
+    does not raise. The outline still ships — these surface gaps the user
+    should be aware of before drafting starts.
+
+    Q1: every required_structure label has at least one fuzzy-matching section.
+    Q7: every research_plan source_request is cited by at least one section,
+    and priority='high' uploaded sources are not silently skipped.
+    """
+    warnings: list[str] = []
+    warnings.extend(_required_structure_warnings(sections, task_spec.required_structure))
+    warnings.extend(_source_coverage_warnings(sections, research_plan, evidence_map))
+    return warnings
+
+
+def _required_structure_warnings(
+    sections: list[OutlineSection],
+    required_structure: list[str],
+) -> list[str]:
+    """Q1: surface required-structure clauses that no section seems to cover.
+    Match is fuzzy — substring + word-overlap + 4+ char prefix stem — to
+    avoid false negatives like 'Methodology' vs 'Methods Used'."""
+    if not required_structure:
+        return []
+    section_blobs = [_normalize_label(f"{section.heading} {section.purpose}") for section in sections]
+    section_word_sets = [set(blob.split()) for blob in section_blobs]
+    warnings: list[str] = []
+    for label in required_structure:
+        norm_label = _normalize_label(label)
+        if not norm_label:
+            continue
+        if any(_section_satisfies_label(norm_label, blob, words) for blob, words in zip(section_blobs, section_word_sets)):
+            continue
+        warnings.append(
+            f"Required structure clause not clearly covered by any outline section: '{label}'."
+        )
+    return warnings
+
+
+def _source_coverage_warnings(
+    sections: list[OutlineSection],
+    research_plan: ResearchPlan,
+    evidence_map: EvidenceMap,
+) -> list[str]:
+    """Q7: surface required sources from the research plan whose notes
+    don't appear in any outline section, and priority='high' uploaded
+    sources that are silently dropped."""
+    note_to_source = {note.id: note.source_id for note in evidence_map.notes}
+    used_source_ids = {
+        note_to_source[note_id]
+        for section in sections
+        for note_id in section.note_ids
+        if note_id in note_to_source
+    }
+    warnings: list[str] = []
+    requested_source_ids = {request.source_id for request in research_plan.source_requests if request.source_id}
+    for source_id in sorted(requested_source_ids - used_source_ids):
+        warnings.append(
+            f"Research-plan source not used by any outline section: source_id='{source_id}'."
+        )
+    for priority in research_plan.uploaded_source_priorities:
+        if priority.priority == "high" and priority.source_id and priority.source_id not in used_source_ids:
+            warnings.append(
+                "Priority='high' uploaded source not used by any outline section: "
+                f"source_id='{priority.source_id}'."
+            )
+    return warnings
+
+
+def _normalize_label(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
+
+
+def _section_satisfies_label(norm_label: str, section_blob: str, section_words: set[str]) -> bool:
+    if norm_label in section_blob:
+        return True
+    label_words = [word for word in norm_label.split() if word]
+    if not label_words:
+        return False
+    matched = sum(1 for word in label_words if _word_matches(word, section_words))
+    threshold = max(1, len(label_words) // 2 + 1)
+    return matched >= threshold
+
+
+def _word_matches(label_word: str, section_words: set[str]) -> bool:
+    if label_word in section_words:
+        return True
+    if len(label_word) < 4:
+        return False
+    for word in section_words:
+        if len(word) < 4:
+            continue
+        # Shared-prefix stem of >=5 chars matches method/methods/methodology
+        # and review/reviewing without flagging math/methods or data/date.
+        common = 0
+        for ch_a, ch_b in zip(label_word, word):
+            if ch_a != ch_b:
+                break
+            common += 1
+        if common >= 5:
+            return True
+    return False
 
 
 def _sections_from_payload(

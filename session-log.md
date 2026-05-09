@@ -2653,3 +2653,59 @@ Caveats:
 
 - The worktree already contained unrelated modified and untracked files before this session.
 - The new implementation plan and existing `docs/agent-harness-implementation.md` are currently untracked in git.
+
+## 2026-05-09 - Codex - Agent Tool Mode Task 1 Contract Layer
+
+- Summary: Added the local-only `essay_writer.agent_tools` contract layer with dataclasses, deterministic JSON/hash/id helpers, atomic JSON IO, work packet/result/commit/source bundle storage, and agent run checkpoint/recovery storage. Added focused tests for schema roundtrips, work store behavior, and run recovery.
+- Files changed: `essay_writer/agent_tools/__init__.py`, `essay_writer/agent_tools/config.py`, `essay_writer/agent_tools/schemas.py`, `essay_writer/agent_tools/json_io.py`, `essay_writer/agent_tools/id_utils.py`, `essay_writer/agent_tools/work_store.py`, `essay_writer/agent_tools/run_store.py`, `tests/agent_tools/__init__.py`, `tests/agent_tools/_tmp.py`, `tests/agent_tools/helpers.py`, `tests/agent_tools/test_schema_roundtrip.py`, `tests/agent_tools/test_work_store.py`, `tests/agent_tools/test_run_store.py`, `session-log.md`.
+- Tests/commands run: `pytest tests\agent_tools\test_schema_roundtrip.py tests\agent_tools\test_work_store.py tests\agent_tools\test_run_store.py` (initial expected import failure, then 7 passed with known pytest cache permission warning); `python -m compileall essay_writer\agent_tools tests\agent_tools` (passed).
+- Caveats/follow-ups: No LLM/backend/API-backed imports were added. Pytest still warns that `.pytest_cache` cannot be written in this Windows environment.
+
+## 2026-05-09 - Codex - Agent Tool Mode Task 1 Review Fixes
+
+- Summary: Addressed Task 1 review findings by adding direct `AgentToolConfig` defaults, freezing agent tool schema dataclasses, broadening schema roundtrip coverage, cleaning completed packet IDs from pending state when attaching results with packet IDs, using newer checkpoints for recovery when run records are stale, making result/commit persistence safer against traceability collisions, and adding focused tests for the collision/recovery edge cases.
+- Files changed: `essay_writer/agent_tools/config.py`, `essay_writer/agent_tools/id_utils.py`, `essay_writer/agent_tools/json_io.py`, `essay_writer/agent_tools/schemas.py`, `essay_writer/agent_tools/work_store.py`, `essay_writer/agent_tools/run_store.py`, `tests/agent_tools/test_schema_roundtrip.py`, `tests/agent_tools/test_work_store.py`, `tests/agent_tools/test_run_store.py`, `session-log.md`.
+- Tests/commands run: `pytest tests\agent_tools\test_schema_roundtrip.py tests\agent_tools\test_work_store.py tests\agent_tools\test_run_store.py` (13 passed; known pytest cache permission warning); `python -m compileall essay_writer\agent_tools tests\agent_tools` (passed); `rg -n "llm|backend\.deps|openai|claude|gemini|chat_json|requests|httpx|urllib" essay_writer\agent_tools tests\agent_tools` (only intentional `ExplodingLLMClient.chat_json` helper matched); `git diff --check -- essay_writer\agent_tools tests\agent_tools session-log.md` (passed with existing LF-to-CRLF notice for `session-log.md`).
+- Caveats/follow-ups: Task 1 remains local-only; broader Agent Tool Mode tools are still pending in later implementation tasks.
+
+## 2026-05-09 - Codex - Agent Tool Mode Task 2 Facade Bootstrap
+
+- Summary: Added harness operating instructions, local store bundle wiring, and `AgentToolFacade` lifecycle/recovery methods for AgentRun bootstrap, state, listing, recovery, and checkpoints.
+- Files changed: `docs/agent-tool-mode-instructions.md`, `essay_writer/agent_tools/stores.py`, `essay_writer/agent_tools/facade.py`, `essay_writer/agent_tools/__init__.py`, `tests/agent_tools/test_job_and_recovery_tools.py`, `session-log.md`.
+- Tests/commands run: `pytest tests\agent_tools\test_job_and_recovery_tools.py` (initial expected missing-facade failure, then 5 passed with known pytest cache permission warning); `pytest tests\agent_tools\test_job_and_recovery_tools.py tests\agent_tools\test_run_store.py` (8 passed with known pytest cache permission warning); `python -m compileall essay_writer\agent_tools docs` (passed); `rg -n "llm|backend\.deps|openai|claude|gemini|chat_json|requests|httpx|urllib" essay_writer\agent_tools tests\agent_tools` (only `resolve_source_requests` tool name and existing `ExplodingLLMClient.chat_json` helper matched).
+- Caveats/follow-ups: Facade remains local-only and exposes later workflow tool names as advertised but does not implement those later tools yet.
+
+## 2026-05-09 - Codex - Agent Tool Mode Task 2 Review Fixes
+
+- Summary: Addressed Task 2 review findings by returning `must_remember` from instruction/list tools, distinguishing planned workflow tools from currently callable bootstrap tools, allowing checkpoints to unblock previously blocked AgentRuns, using stable local `SourceAccessConfig()` during facade bootstrap, aligning validation store path with `validations`, and adding missing-run/error and bootstrap stability tests.
+- Files changed: `docs/agent-tool-mode-instructions.md`, `docs/superpowers/plans/2026-05-09-agent-tool-mode-mcp-implementation.md`, `essay_writer/agent_tools/facade.py`, `essay_writer/agent_tools/stores.py`, `essay_writer/agent_tools/run_store.py`, `tests/agent_tools/test_job_and_recovery_tools.py`, `session-log.md`.
+- Tests/commands run: `pytest tests\agent_tools\test_job_and_recovery_tools.py tests\agent_tools\test_run_store.py` (11 passed; known pytest cache permission warning); `pytest tests\agent_tools\test_schema_roundtrip.py tests\agent_tools\test_work_store.py tests\agent_tools\test_run_store.py tests\agent_tools\test_job_and_recovery_tools.py` (21 passed; known pytest cache permission warning); `python -m compileall essay_writer\agent_tools docs` (passed); `rg -n "backend\.deps|from llm|import llm|openai|claude|gemini|chat_json|requests|httpx|urllib" essay_writer\agent_tools tests\agent_tools` (only `resolve_source_requests` tool name and existing `ExplodingLLMClient.chat_json` helper matched); `git diff --check -- docs\agent-tool-mode-instructions.md docs\superpowers\plans\2026-05-09-agent-tool-mode-mcp-implementation.md essay_writer\agent_tools tests\agent_tools session-log.md` (passed with LF-to-CRLF notices for docs plan and session log).
+- Caveats/follow-ups: Task 2 exposes only bootstrap/run lifecycle methods as callable; later workflow tools remain planned for following tasks.
+
+## 2026-05-09 - Codex - Agent Tool Mode Task 3 Boundary Tests
+
+- Summary: Added no-hidden-API guardrails for `essay_writer.agent_tools`, covering forbidden app-owned LLM/API imports, forbidden LLM-backed service call strings, and a non-vacuous scanned-module check. Marked Task 3 steps complete in the MCP implementation plan.
+- Files changed: `tests/agent_tools/test_no_llm_boundary.py`, `docs/superpowers/plans/2026-05-09-agent-tool-mode-mcp-implementation.md`, `session-log.md`.
+- Tests/commands run: `pytest tests\agent_tools\test_no_llm_boundary.py` (3 passed; known pytest cache permission warning); `pytest tests\agent_tools\test_no_llm_boundary.py tests\agent_tools\test_job_and_recovery_tools.py` (11 passed; known pytest cache permission warning); `python -m compileall tests\agent_tools essay_writer\agent_tools` (passed).
+- Caveats/follow-ups: No production code changes were needed. The pytest cache warning is the known Windows `.pytest_cache` permission issue.
+
+## 2026-05-09 - Codex - Agent Tool Mode Task 3 Review Fixes
+
+- Summary: Tightened the import-boundary test so equivalent `from backend import deps`, `from llm import factory`, `from llm import logging_client`, `from llm import adapters`, and `from llm.adapters import claude` forms are detected. Updated the implementation plan expectation to match the expanded four-test boundary suite.
+- Files changed: `tests/agent_tools/test_no_llm_boundary.py`, `docs/superpowers/plans/2026-05-09-agent-tool-mode-mcp-implementation.md`, `session-log.md`.
+- Tests/commands run: `pytest tests\agent_tools\test_no_llm_boundary.py` (4 passed; known pytest cache permission warning); `pytest tests\agent_tools\test_no_llm_boundary.py tests\agent_tools\test_job_and_recovery_tools.py` (12 passed; known pytest cache permission warning); `pytest tests\agent_tools` (25 passed; known pytest cache permission warning); `python -m compileall tests\agent_tools essay_writer\agent_tools` (passed).
+- Caveats/follow-ups: Boundary checks are intentionally blunt and scan production `essay_writer/agent_tools` files only.
+
+## 2026-05-09 - Codex - Agent Tool Mode Task 4 Source Materialization
+
+- Summary: Added no-API Agent Tool Mode source materialization, pending-card source storage methods, `ingest_source_file` facade wiring, materialization idempotency, unsupported suffix errors, and `ToolResult.next_suggested_tools`.
+- Files changed: `essay_writer/sources/schema.py`, `essay_writer/sources/storage.py`, `essay_writer/agent_tools/source_materialization.py`, `essay_writer/agent_tools/facade.py`, `essay_writer/agent_tools/schemas.py`, `tests/agent_tools/test_source_materialization.py`, `docs/superpowers/plans/2026-05-09-agent-tool-mode-mcp-implementation.md`, `session-log.md`.
+- Tests/commands run: `pytest tests\agent_tools\test_source_materialization.py` (initial RED: missing facade API, then 4 passed; known pytest cache permission warning); `pytest tests\sources\test_ingestion.py tests\agent_tools\test_source_materialization.py` (11 passed; known pytest cache permission warning); `pytest tests\agent_tools` (29 passed; known pytest cache permission warning); `python -m compileall essay_writer\sources essay_writer\agent_tools tests\agent_tools` (passed); `pytest tests\agent_tools\test_no_llm_boundary.py` (4 passed; known pytest cache permission warning).
+- Caveats/follow-ups: `ToolResult` now has `next_suggested_tools`. Agent Tool Mode materialization creates text/index/source-map artifacts only; source-card generation remains pending for the later prepare/submit/commit flow.
+
+## 2026-05-09 - Codex - Agent Tool Mode Task 4 Review Fixes
+
+- Summary: Addressed Task 4 review findings by making materialization artifact refs only advertise existing manifests/maps, rejecting directory paths before extraction, validating `agent_run_id` before source artifact writes, adding `build_source_card` to the Agent Tool Mode boundary deny-list, and adding regression tests for those cases.
+- Files changed: `essay_writer/agent_tools/facade.py`, `tests/agent_tools/test_no_llm_boundary.py`, `tests/agent_tools/test_source_materialization.py`, `session-log.md`.
+- Tests/commands run: `pytest tests\sources\test_ingestion.py tests\agent_tools\test_source_materialization.py` (14 passed; known pytest cache permission warning); `pytest tests\agent_tools` (32 passed; known pytest cache permission warning); `pytest tests\agent_tools\test_no_llm_boundary.py` (4 passed; known pytest cache permission warning); `python -m compileall essay_writer\sources essay_writer\agent_tools tests\agent_tools` (passed).
+- Caveats/follow-ups: No blocker remains. There is no dedicated test for omitting `source_map` from artifact refs because normal materialization creates a source map.

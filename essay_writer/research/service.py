@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from llm.client import LLMClient, UserBlock
@@ -170,6 +171,7 @@ def _result_from_payload(
     chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
     warnings = _payload_list(payload, "warnings", max_items=20)
     notes: list[ResearchNote] = []
+    seen_signatures: set[tuple[str, str]] = set()
 
     for idx, item in enumerate(payload.get("notes", [])[:max_notes], start=1):
         chunk_id = str(item.get("chunk_id", "")).strip()
@@ -183,8 +185,16 @@ def _result_from_payload(
             chunk=chunk,
             warnings=warnings,
         )
-        if note is not None:
-            notes.append(note)
+        if note is None:
+            continue
+        signature = (note.chunk_id, _claim_signature(note.claim))
+        if signature in seen_signatures:
+            warnings.append(
+                f"Dropped duplicate note for chunk {note.chunk_id}: '{note.claim[:60]}'."
+            )
+            continue
+        seen_signatures.add(signature)
+        notes.append(note)
 
     note_ids = {note.id for note in notes}
     groups: list[EvidenceGroup] = []
@@ -288,6 +298,15 @@ def _flatten_chunks(topic_id: str, retrieved_evidence: list[RetrievedTopicEviden
             chunks.append(chunk)
             seen.add(chunk.chunk_id)
     return chunks
+
+
+def _claim_signature(claim: str) -> str:
+    """Normalize a claim for dedup: lowercase, collapse whitespace, strip
+    trailing punctuation. Notes with the same chunk_id and signature are
+    treated as the same evidence — catches literal-duplicate notes and
+    capitalization/punctuation-only variants without requiring embeddings."""
+    collapsed = re.sub(r"\s+", " ", claim.strip().lower())
+    return collapsed.rstrip(".!?,;:")
 
 
 def _dedupe_chunks_by_content(chunks: list[TopicEvidenceChunk]) -> list[TopicEvidenceChunk]:

@@ -143,6 +143,170 @@ def test_final_topic_research_drops_invalid_chunk_and_bad_quote_references() -> 
     assert any("Corrected page range" in warning for warning in result.report.warnings)
 
 
+def test_research_drops_literal_duplicate_notes() -> None:
+    """Q4: the LLM occasionally emits the same claim twice for the same
+    chunk under different paraphrases. Literal-claim dedup catches the
+    cheap case so the outline doesn't carry phantom evidence."""
+    client = MockLLMClient(
+        responses=[
+            {
+                "notes": [
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Urban heat affects renters in older housing.",
+                        "quote": None,
+                        "paraphrase": "Heat risk concentrates in older rental stock.",
+                        "relevance": "Supports housing-inequality angle.",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    },
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Urban heat affects renters in older housing.",
+                        "quote": None,
+                        "paraphrase": "Older rental housing exposes renters to heat.",
+                        "relevance": "Same point, different paraphrase.",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.85,
+                    },
+                ],
+                "evidence_groups": [],
+                "gaps": [],
+                "conflicts": [],
+                "warnings": [],
+            }
+        ]
+    )
+
+    result = FinalTopicResearchService(client).extract(
+        job=_job(),
+        task_spec=_task_spec(),
+        selected_topic=_selected_topic(),
+        retrieved_evidence=[_retrieved_evidence()],
+    )
+
+    assert len(result.evidence_map.notes) == 1
+    assert any("duplicate note" in warning.lower() for warning in result.report.warnings)
+
+
+def test_research_dedup_ignores_capitalization_and_trailing_punctuation() -> None:
+    """Q4: capitalization-only or trailing-punctuation-only variants of the
+    same claim count as duplicates."""
+    client = MockLLMClient(
+        responses=[
+            {
+                "notes": [
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Urban heat affects renters in older housing.",
+                        "quote": None,
+                        "paraphrase": "Paraphrase A.",
+                        "relevance": "x",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    },
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "URBAN HEAT AFFECTS RENTERS IN OLDER HOUSING",
+                        "quote": None,
+                        "paraphrase": "Paraphrase B.",
+                        "relevance": "y",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    },
+                ],
+                "evidence_groups": [],
+                "gaps": [],
+                "conflicts": [],
+                "warnings": [],
+            }
+        ]
+    )
+
+    result = FinalTopicResearchService(client).extract(
+        job=_job(),
+        task_spec=_task_spec(),
+        selected_topic=_selected_topic(),
+        retrieved_evidence=[_retrieved_evidence()],
+    )
+
+    assert len(result.evidence_map.notes) == 1
+
+
+def test_research_keeps_distinct_claims_from_same_chunk() -> None:
+    """Q4 negative case: dedup must NOT collapse different claims drawn
+    from the same chunk — multiple distinct points per chunk is normal."""
+    client = MockLLMClient(
+        responses=[
+            {
+                "notes": [
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Urban heat affects renters in older housing.",
+                        "quote": None,
+                        "paraphrase": "x",
+                        "relevance": "x",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    },
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Cooling centers are unevenly distributed across neighborhoods.",
+                        "quote": None,
+                        "paraphrase": "y",
+                        "relevance": "y",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    },
+                ],
+                "evidence_groups": [],
+                "gaps": [],
+                "conflicts": [],
+                "warnings": [],
+            }
+        ]
+    )
+
+    result = FinalTopicResearchService(client).extract(
+        job=_job(),
+        task_spec=_task_spec(),
+        selected_topic=_selected_topic(),
+        retrieved_evidence=[_retrieved_evidence()],
+    )
+
+    assert len(result.evidence_map.notes) == 2
+
+
 def test_research_dedupes_overlapping_packet_and_retrieved_chunks() -> None:
     """P9: a packet derived from explicit page locator and a retrieved FTS
     chunk can carry the SAME text under different chunk_ids. Sending both

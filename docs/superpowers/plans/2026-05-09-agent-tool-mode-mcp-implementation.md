@@ -337,6 +337,8 @@ Those service methods stay available for Pipeline Mode. Agent Tool Mode uses the
 
 ## Task 1: Add Agent Tool Schemas And JSON Stores
 
+**Status:** Done on 2026-05-09. Implemented with subagent worker plus spec/quality/final review passes. Focused tests ended at 13 passing.
+
 **Files:**
 
 - Create: `essay_writer/agent_tools/__init__.py`
@@ -352,7 +354,7 @@ Those service methods stay available for Pipeline Mode. Agent Tool Mode uses the
 - Test: `tests/agent_tools/test_work_store.py`
 - Test: `tests/agent_tools/test_run_store.py`
 
-- [ ] **Step 1: Write schema roundtrip tests**
+- [x] **Step 1: Write schema roundtrip tests**
 
 Create `tests/agent_tools/test_schema_roundtrip.py` with tests that construct:
 
@@ -435,7 +437,7 @@ def test_agent_run_records_recovery_state() -> None:
     assert run.pending_work_packet_ids == ["workpkt_source_src1_source_card_001"]
 ```
 
-- [ ] **Step 2: Write store tests**
+- [x] **Step 2: Write store tests**
 
 Create `tests/agent_tools/test_work_store.py` with tests that save and reload a packet, submit a duplicate result, save a commit link, and persist a source-packet bundle:
 
@@ -520,7 +522,7 @@ def test_work_store_saves_source_packet_bundle() -> None:
 
 Create `tests/agent_tools/test_run_store.py` with tests for `start`, `record_event`, `checkpoint`, `attach_packet`, `attach_result`, `attach_commit`, and `recover`.
 
-- [ ] **Step 3: Add shared test helpers**
+- [x] **Step 3: Add shared test helpers**
 
 Create `tests/agent_tools/_tmp.py`:
 
@@ -577,7 +579,7 @@ seeded_job_through_validation(tmp: Path, passes: bool) -> AgentToolFacade
 
 Each seeded helper must build state through stores and workflow methods, not by calling API-backed services. For example, `seed_materialized_source_with_card` should create `SourceDocument`, `SourcePage`, chunks via `chunk_pages`, a source map via `build_source_map`, persist with `SourceStore.save_materialized_source`, then persist a `SourceCard` with `SourceStore.save_source_card`.
 
-- [ ] **Step 4: Implement schema dataclasses**
+- [x] **Step 4: Implement schema dataclasses**
 
 Implement `essay_writer/agent_tools/schemas.py` with:
 
@@ -636,11 +638,11 @@ class DelegationHint:
 
 Continue in the same file for `ToolResult`, `WorkPacket`, `WorkProducer`, `WorkResult`, `CommitRecord`, `AgentRun`, `AgentRunRecovery`, `AgentRunCheckpoint`, `AgentRunEvent`, and `SourcePacketBundle`. Every dataclass that is loaded from disk needs a `from_dict` classmethod for nested dataclasses.
 
-- [ ] **Step 5: Implement atomic JSON helpers**
+- [x] **Step 5: Implement atomic JSON helpers**
 
 Implement `essay_writer/agent_tools/json_io.py` using the same tempfile-plus-`os.replace` pattern already used by existing stores.
 
-- [ ] **Step 6: Implement ID helpers**
+- [x] **Step 6: Implement ID helpers**
 
 Implement `essay_writer/agent_tools/id_utils.py`:
 
@@ -674,7 +676,7 @@ def timestamp_id(prefix: str) -> str:
     return f"{prefix}_{stamp}"
 ```
 
-- [ ] **Step 7: Implement stores**
+- [x] **Step 7: Implement stores**
 
 Implement `AgentWorkStore` and `AgentRunStore` with plain file operations only. Both stores should create parent directories in `__init__`.
 
@@ -709,7 +711,7 @@ attach_commit(agent_run_id: str, artifact_refs: dict[str, object], next_suggeste
 recover(agent_run_id: str) -> AgentRunRecovery
 ```
 
-- [ ] **Step 8: Run focused tests**
+- [x] **Step 8: Run focused tests**
 
 Run:
 
@@ -727,6 +729,8 @@ compileall exits with code 0
 
 ## Task 2: Add Harness Instructions And Facade Bootstrap
 
+**Status:** Done on 2026-05-09. Implemented with subagent worker plus spec/quality/final review passes. Review fixes added explicit currently-callable tool metadata, blocked-run unblocking, stable local source-access config, and missing-run error tests.
+
 **Files:**
 
 - Create: `docs/agent-tool-mode-instructions.md`
@@ -734,7 +738,7 @@ compileall exits with code 0
 - Create: `essay_writer/agent_tools/facade.py`
 - Test: `tests/agent_tools/test_job_and_recovery_tools.py`
 
-- [ ] **Step 1: Write instructions document**
+- [x] **Step 1: Write instructions document**
 
 Create `docs/agent-tool-mode-instructions.md` with these exact sections:
 
@@ -796,7 +800,7 @@ You are orchestrating EssayWriter through local Agent Tool Mode tools.
 Use subagents for source-card packets, deep source reading, web-research capture, topic feasibility checks, and independent validation lenses. Keep final synthesis, final thesis choice, draft commits, validation commits, revision commits, and export under the main orchestrator unless a future bounded-write packet explicitly allows otherwise.
 ```
 
-- [ ] **Step 2: Write facade bootstrap test**
+- [x] **Step 2: Write facade bootstrap test**
 
 Create `tests/agent_tools/test_job_and_recovery_tools.py` with:
 
@@ -834,7 +838,7 @@ def test_start_and_recover_agent_run() -> None:
     assert "Do not call Pipeline Mode tools." in recovered.data["must_remember"]
 ```
 
-- [ ] **Step 3: Implement store bundle**
+- [x] **Step 3: Implement store bundle**
 
 Implement `essay_writer/agent_tools/stores.py`:
 
@@ -900,7 +904,7 @@ class AgentStoreBundle:
         )
 ```
 
-- [ ] **Step 4: Implement facade bootstrap methods**
+- [x] **Step 4: Implement facade bootstrap methods**
 
 Implement `AgentToolFacade.from_data_dir`, `get_harness_instructions`, `start_agent_run`, `get_agent_run_state`, `list_agent_runs`, `recover_agent_run`, and `checkpoint_agent_run`.
 
@@ -912,7 +916,7 @@ os.environ["ESSAY_AGENT_TOOL_MODE"] = "1"
 
 This flag is an audit marker. The hard prevention is still import-boundary and runtime tests.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run:
 
@@ -936,7 +940,7 @@ compileall exits with code 0
 - Modify: `essay_writer/agent_tools/facade.py`
 - Modify: future agent tool files from later tasks
 
-- [ ] **Step 1: Write import-boundary test**
+- [x] **Step 1: Write import-boundary test**
 
 Create `tests/agent_tools/test_no_llm_boundary.py`:
 
@@ -974,7 +978,7 @@ def test_agent_tools_do_not_import_api_backed_wiring() -> None:
     assert offenders == []
 ```
 
-- [ ] **Step 2: Write forbidden service call test**
+- [x] **Step 2: Write forbidden service call test**
 
 In the same file, add:
 
@@ -1002,11 +1006,11 @@ def test_agent_tools_do_not_call_llm_backed_service_methods() -> None:
 
 This string scan is intentionally blunt. If a future agent tool needs to mention a forbidden method in documentation text, keep the text outside `essay_writer/agent_tools`.
 
-- [ ] **Step 3: Use runtime guard helper in later tests**
+- [x] **Step 3: Use runtime guard helper in later tests**
 
 Use `ExplodingLLMClient` from `tests/agent_tools/helpers.py` when constructing any facade or service-like object that might accidentally accept an LLM client. The helper raises immediately if `chat_json` is called from an Agent Tool Mode test path.
 
-- [ ] **Step 4: Run boundary tests**
+- [x] **Step 4: Run boundary tests**
 
 Run:
 
@@ -1017,10 +1021,12 @@ pytest tests\agent_tools\test_no_llm_boundary.py
 Expected:
 
 ```text
-2 passed
+4 passed
 ```
 
 ## Task 4: Add No-API Source Materialization
+
+**Status:** Done on 2026-05-09. Implemented no-API source materialization, pending source-card storage semantics, facade ingestion wiring, and focused tests.
 
 **Files:**
 
@@ -1031,7 +1037,7 @@ Expected:
 - Test: `tests/agent_tools/test_source_materialization.py`
 - Test: `tests/sources/test_ingestion.py`
 
-- [ ] **Step 1: Add failing materialization tests**
+- [x] **Step 1: Add failing materialization tests**
 
 Create `tests/agent_tools/test_source_materialization.py`:
 
@@ -1095,7 +1101,7 @@ def test_ingest_source_file_materializes_text_without_source_card_or_llm() -> No
 
 Add a second test proving re-ingesting the same materialized source returns the existing source without calling extraction again.
 
-- [ ] **Step 2: Add `SourceMaterializationResult`**
+- [x] **Step 2: Add `SourceMaterializationResult`**
 
 Modify `essay_writer/sources/schema.py`:
 
@@ -1114,7 +1120,7 @@ class SourceMaterializationResult:
 
 Do not change `SourceIngestionResult.source_card`; that keeps Pipeline Mode compatibility.
 
-- [ ] **Step 3: Add source-store pending-card methods**
+- [x] **Step 3: Add source-store pending-card methods**
 
 Modify `essay_writer/sources/storage.py` with four methods:
 
@@ -1134,7 +1140,7 @@ Modify `essay_writer/sources/storage.py` with four methods:
 
 Update `is_ingested` only if necessary to preserve current semantics. Current `is_ingested` should continue to mean "complete with source card" for Pipeline Mode.
 
-- [ ] **Step 4: Extract deterministic materialization**
+- [x] **Step 4: Extract deterministic materialization**
 
 Implement `essay_writer/agent_tools/source_materialization.py` by copying the deterministic portion of `SourceIngestionService.ingest` through source map/index creation, excluding the `build_source_card` call.
 
@@ -1180,7 +1186,7 @@ _read_pdf_page_labels
 
 Keep these helpers in `sources/ingestion.py` to avoid moving Pipeline Mode logic. Importing private helpers is acceptable for the first slice because it avoids duplicating extraction behavior; a cleanup can promote them if they become broadly used.
 
-- [ ] **Step 5: Wire `ingest_source_file` facade method**
+- [x] **Step 5: Wire `ingest_source_file` facade method**
 
 `AgentToolFacade.ingest_source_file` should:
 
@@ -1210,7 +1216,7 @@ Response data:
 }
 ```
 
-- [ ] **Step 6: Preserve Pipeline Mode tests**
+- [x] **Step 6: Preserve Pipeline Mode tests**
 
 Run:
 
