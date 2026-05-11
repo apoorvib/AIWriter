@@ -5,7 +5,10 @@
       "Bash(python *)",
       "Bash(PYTHONPATH=. python *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(where python *)",
+      "Bash(C:/Users/Apoorv/miniforge3/python.exe -m pytest tests/llm tests/drafting tests/manual_revision --ignore=tests/llm/test_backend_model_config.py --tb=short)",
+      "Bash(git stash *)"
     ]
   }
 }

@@ -25,6 +25,18 @@ _MINIMAL_LLM_RESPONSE = {
 _TASK_SPEC = TaskSpecification(id="task1", version=1, raw_text="Write an argumentative essay.")
 
 
+def _validation_context(client_call: dict) -> dict:
+    """Merge the static (cacheable) and mutable user blocks back into one
+    dict so existing assertions can keep referring to keys regardless of
+    which block they live in."""
+    blocks = client_call["user_blocks"]
+    static_payload = json.loads(blocks[0].text)
+    mutable_text = blocks[1].text
+    mutable_payload_json = mutable_text.split("\n\n", 2)[2].split("<essay_draft>")[0].strip()
+    mutable_payload = json.loads(mutable_payload_json)
+    return {**static_payload, **mutable_payload}
+
+
 def test_service_runs_deterministic_checks_and_includes_in_report():
     draft = "In conclusion, we should leverage the tapestry of evidence — it is pivotal."
     client = MockLLMClient(responses=[_MINIMAL_LLM_RESPONSE])
@@ -43,8 +55,7 @@ def test_service_passes_deterministic_findings_to_llm():
 
     ValidationService(client).validate(draft, draft_id="d1", task_spec=_TASK_SPEC, evidence_map=[])
 
-    user_msg = client.calls[0]["user"]
-    context = json.loads(user_msg.split("\n\n", 1)[1].split("<essay_draft>")[0].strip())
+    context = _validation_context(client.calls[0])
     assert context["deterministic_issues"]["em_dash_count"] == 1
     assert context["deterministic_issues"]["en_dash_count"] == 1
     assert context["deterministic_issues"]["decorative_hyphen_pause_count"] == 1
@@ -76,8 +87,7 @@ def test_service_passes_evidence_map_to_llm():
 
     ValidationService(client).validate("Some draft.", draft_id="d1", task_spec=_TASK_SPEC, evidence_map=notes)
 
-    user_msg = client.calls[0]["user"]
-    context = json.loads(user_msg.split("\n\n", 1)[1].split("<essay_draft>")[0].strip())
+    context = _validation_context(client.calls[0])
     assert len(context["evidence_map"]) == 2
     assert context["evidence_map"][0]["note_id"] == "n1"
     assert context["evidence_map"][0]["chunk_id"] == "src1-c001"
@@ -106,8 +116,7 @@ def test_service_passes_source_metadata_and_bibliography_candidates_to_llm():
         source_cards=[card],
     )
 
-    user_msg = client.calls[0]["user"]
-    context = json.loads(user_msg.split("\n\n", 1)[1].split("<essay_draft>")[0].strip())
+    context = _validation_context(client.calls[0])
     assert context["known_source_metadata"][0]["source_id"] == "src1"
     assert context["known_source_metadata"][0]["citation_metadata"]["author"] == "Jane Smith"
     assert context["bibliography_candidates"] == ["Smith, Jane. Urban Heat. 2023."]
@@ -156,8 +165,7 @@ def test_service_passes_task_spec_fields_to_llm():
 
     ValidationService(client).validate("Some draft.", draft_id="d1", task_spec=task_spec, evidence_map=[])
 
-    user_msg = client.calls[0]["user"]
-    context = json.loads(user_msg.split("\n\n", 1)[1].split("<essay_draft>")[0].strip())
+    context = _validation_context(client.calls[0])
     assert context["task_spec"]["essay_type"] == "argumentative"
     assert context["task_spec"]["citation_style"] == "MLA"
     assert context["task_spec"]["target_length"] == 1000

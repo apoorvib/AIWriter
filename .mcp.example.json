@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "essaywriter": {
+      "command": "python",
+      "args": ["-m", "essay_writer.agent_tools.server"],
+      "env": {
+        "ESSAY_DATA_DIR": "./data"
+      }
+    }
+  }
+}

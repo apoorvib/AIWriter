@@ -48,6 +48,87 @@ def test_style_revision_preserves_metadata_and_passes_source_packets() -> None:
     assert "deterministic_style_issues" in context
 
 
+def test_style_revision_replaces_weak_spots_with_current_assessment() -> None:
+    """L13: known_weak_spots from a style-revision pass is the LLM's current
+    assessment, not a delta. Items from the parent draft that this pass no
+    longer flags must NOT survive into the styled draft."""
+    parent = EssayDraft(
+        id="draft1",
+        job_id="job1",
+        version=1,
+        selected_topic_id="topic_001",
+        content="Old draft.",
+        outline_id="outline1",
+        section_source_map=[
+            SectionSourceMap(section_id="section_001", heading="Body", note_ids=["note_001"], source_ids=["src1"])
+        ],
+        bibliography_candidates=["Source citation."],
+        known_weak_spots=["Paragraph 3 lacks evidence", "Paragraph 5 has weak transition"],
+    )
+    client = MockLLMClient(
+        responses=[
+            {
+                "content": "Restyled prose.",
+                "style_changes": [],
+                "preservation_notes": [],
+                "known_risks": ["Paragraph 5 has weak transition"],
+            }
+        ]
+    )
+    service = FinalStyleRevisionService(client)
+
+    styled = service.revise_style(
+        job=EssayJob(id="job1", task_spec_id="task1", selected_topic_id="topic_001"),
+        task_spec=TaskSpecification(id="task1", version=1, raw_text="Write an essay."),
+        draft=parent,
+        outline=_outline(),
+        evidence_map=_evidence_map(),
+        source_packets=[],
+        version=2,
+    )
+
+    assert styled.known_weak_spots == ["Paragraph 5 has weak transition"]
+    assert "Paragraph 3 lacks evidence" not in styled.known_weak_spots
+
+
+def test_style_revision_carries_forward_when_llm_returns_empty_risks() -> None:
+    """L13 safety: an empty known_risks list could mean 'all clean' or 'LLM
+    failed to assess'. Preserve the parent's list rather than silently dropping
+    signal — this is the conservative branch of the fix."""
+    parent = EssayDraft(
+        id="draft1",
+        job_id="job1",
+        version=1,
+        selected_topic_id="topic_001",
+        content="Old draft.",
+        outline_id="outline1",
+        known_weak_spots=["Paragraph 3 lacks evidence"],
+    )
+    client = MockLLMClient(
+        responses=[
+            {
+                "content": "Restyled prose.",
+                "style_changes": [],
+                "preservation_notes": [],
+                "known_risks": [],
+            }
+        ]
+    )
+    service = FinalStyleRevisionService(client)
+
+    styled = service.revise_style(
+        job=EssayJob(id="job1", task_spec_id="task1", selected_topic_id="topic_001"),
+        task_spec=TaskSpecification(id="task1", version=1, raw_text="Write an essay."),
+        draft=parent,
+        outline=_outline(),
+        evidence_map=_evidence_map(),
+        source_packets=[],
+        version=2,
+    )
+
+    assert styled.known_weak_spots == ["Paragraph 3 lacks evidence"]
+
+
 def test_style_revision_appends_writing_style_samples() -> None:
     client = MockLLMClient(
         responses=[

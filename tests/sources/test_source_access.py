@@ -89,6 +89,92 @@ def test_source_access_rejects_oversized_pdf_request_by_default() -> None:
     assert "max_pdf_pages_per_request=2" in packet.warnings[0]
 
 
+def test_packet_range_narrows_to_actually_included_pages_when_middle_page_empty() -> None:
+    """Q9: a request for pages 1-3 where page 2 is empty must produce a packet
+    whose pdf_page_start/end reflects the actually-included range — otherwise
+    the citation metadata claims coverage of a page that contributed no text."""
+    source = _source("src-pdf", source_type="pdf", page_count=3)
+    pages = [
+        SourcePage("src-pdf", 1, "first page text body present", 28, "pypdf"),
+        SourcePage("src-pdf", 2, "", 0, "pypdf"),
+        SourcePage("src-pdf", 3, "third page text body present", 28, "pypdf"),
+    ]
+    source_map = build_source_map(source, pages, printed_page_labels={})
+
+    with LocalTempDir() as tmp:
+        store = SourceStore(tmp)
+        store.save_result(_result(source, pages, source_map))
+        packet = SourceAccessService(
+            store,
+            config=SourceAccessConfig(lazy_pdf_ocr_enabled=False),
+        ).resolve_locators(
+            [
+                SourceLocator(
+                    source_id="src-pdf",
+                    locator_type="pdf_pages",
+                    pdf_page_start=1,
+                    pdf_page_end=3,
+                )
+            ]
+        )[0]
+
+    assert packet.pdf_page_start == 1
+    assert packet.pdf_page_end == 3  # bounding box of included pages
+    assert "first page text body present" in packet.text
+    assert "third page text body present" in packet.text
+    assert any("Missing readable text" in w and "[2]" in w for w in packet.warnings)
+
+
+def test_packet_returns_warning_when_all_requested_pages_empty() -> None:
+    """Q9: if every page in the requested range has no readable text, the
+    resolver must return a warning packet with empty text rather than a
+    success packet whose text concatenation is silently empty."""
+    source = _source("src-pdf", source_type="pdf", page_count=2)
+    pages = [
+        SourcePage("src-pdf", 1, "", 0, "pypdf"),
+        SourcePage("src-pdf", 2, "", 0, "pypdf"),
+    ]
+    source_map = build_source_map(source, pages, printed_page_labels={})
+
+    with LocalTempDir() as tmp:
+        store = SourceStore(tmp)
+        store.save_result(_result(source, pages, source_map))
+        packet = SourceAccessService(
+            store,
+            config=SourceAccessConfig(lazy_pdf_ocr_enabled=False),
+        ).resolve_locators(
+            [
+                SourceLocator(
+                    source_id="src-pdf",
+                    locator_type="pdf_pages",
+                    pdf_page_start=1,
+                    pdf_page_end=2,
+                )
+            ]
+        )[0]
+
+    assert packet.text == ""
+    assert any("No readable text" in w for w in packet.warnings)
+
+
+def test_pdf_source_map_distinguishes_empty_from_low_quality() -> None:
+    """Q9: empty-text pages get text_quality='empty' (distinct from 'low')
+    so resolvers and validators can handle them precisely."""
+    source = _source("src-pdf", source_type="pdf")
+    pages = [
+        SourcePage("src-pdf", 1, "ok", 2, "pypdf"),  # tiny readable -> partial
+        SourcePage("src-pdf", 2, "", 0, "pypdf"),     # no text -> empty
+        SourcePage("src-pdf", 3, "   ", 3, "pypdf"),  # whitespace-only -> empty
+    ]
+
+    source_map = build_source_map(source, pages)
+
+    qualities = [unit.text_quality for unit in source_map.units]
+    assert qualities[0] == "partial"
+    assert qualities[1] == "empty"
+    assert qualities[2] == "empty"
+
+
 def test_pdf_source_map_keeps_empty_page_units_for_lazy_ocr() -> None:
     source = _source("src-pdf", source_type="pdf")
     pages = [
@@ -100,7 +186,7 @@ def test_pdf_source_map_keeps_empty_page_units_for_lazy_ocr() -> None:
 
     assert [unit.pdf_page_start for unit in source_map.units] == [1, 2]
     assert source_map.units[1].printed_page_start == "1"
-    assert source_map.units[1].text_quality == "low"
+    assert source_map.units[1].text_quality == "empty"
 
 
 def test_source_access_lazy_ocrs_missing_pdf_page_and_persists_it() -> None:

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from llm.client import LLMClient
+from llm.client import LLMClient, UserBlock
 from essay_writer.jobs.schema import EssayJob
 from essay_writer.research.prompts import FINAL_TOPIC_RESEARCH_SCHEMA, FINAL_TOPIC_RESEARCH_SYSTEM_PROMPT
 from essay_writer.research.schema import (
@@ -50,10 +51,12 @@ class FinalTopicResearchService:
         model: str | None = None,
         enable_web_search: bool = False,
     ) -> FinalTopicResearchResult:
-        chunks = [
-            *_packet_chunks(source_packets or []),
-            *_flatten_chunks(selected_topic.topic_id, retrieved_evidence),
-        ]
+        chunks = _dedupe_chunks_by_content(
+            [
+                *_packet_chunks(source_packets or []),
+                *_flatten_chunks(selected_topic.topic_id, retrieved_evidence),
+            ]
+        )
         if not chunks:
             return _empty_result(
                 job=job,
@@ -63,9 +66,13 @@ class FinalTopicResearchService:
                 warning="No retrieved source chunks were available for final topic research.",
             )
 
+        user_blocks = [
+            UserBlock(text=_build_static_research_context(job, task_spec, selected_topic, chunks), cacheable=True),
+            UserBlock(text=_build_mutable_research_message(self._max_notes)),
+        ]
         payload = self._llm.chat_json(
             system=FINAL_TOPIC_RESEARCH_SYSTEM_PROMPT,
-            user=_build_user_message(job, task_spec, selected_topic, chunks, self._max_notes),
+            user=user_blocks,
             json_schema=FINAL_TOPIC_RESEARCH_SCHEMA,
             max_tokens=self._max_tokens,
             model=model,
@@ -82,13 +89,71 @@ class FinalTopicResearchService:
         )
 
 
-def _build_user_message(
+def build_final_topic_research_user_message(
     job: EssayJob,
     task_spec: TaskSpecification,
     selected_topic: SelectedTopic,
     chunks: list[TopicEvidenceChunk],
     max_notes: int,
 ) -> str:
+    return (
+        _build_static_research_context(job, task_spec, selected_topic, chunks)
+        + _build_mutable_research_message(max_notes)
+    )
+
+
+def final_topic_research_result_from_payload(
+    *,
+    job: EssayJob,
+    selected_topic: SelectedTopic,
+    chunks: list[TopicEvidenceChunk],
+    payload: dict[str, Any],
+    evidence_map_version: int,
+    prompt_version: str = "final-topic-research-v1",
+    max_notes: int = 80,
+) -> FinalTopicResearchResult:
+    return _result_from_payload(
+        job=job,
+        selected_topic=selected_topic,
+        chunks=chunks,
+        payload=payload,
+        evidence_map_version=evidence_map_version,
+        prompt_version=prompt_version,
+        max_notes=max_notes,
+    )
+
+
+def topic_evidence_chunks_from_packets(
+    source_packets: list[SourceTextPacket],
+) -> list[TopicEvidenceChunk]:
+    chunks: list[TopicEvidenceChunk] = []
+    for packet in source_packets:
+        if not packet.text.strip():
+            continue
+        chunks.append(
+            TopicEvidenceChunk(
+                source_id=packet.source_id,
+                chunk_id=packet.packet_id,
+                page_start=packet.pdf_page_start or 1,
+                page_end=packet.pdf_page_end or packet.pdf_page_start or 1,
+                text=packet.text,
+                score=None,
+                retrieval_method=f"source_packet:{packet.locator.locator_type}",
+            )
+        )
+    return chunks
+
+
+def _build_static_research_context(
+    job: EssayJob,
+    task_spec: TaskSpecification,
+    selected_topic: SelectedTopic,
+    chunks: list[TopicEvidenceChunk],
+) -> str:
+    """Cache-stable prefix: job + task spec + selected topic + retrieved chunks.
+    These bytes are identical for any re-run of research on the same retrieval,
+    so structuring them as a separate UserBlock lets the prompt cache hit.
+    Field order is fixed; do not change it without invalidating the cache."""
     return json.dumps(
         {
             "job": {
@@ -122,7 +187,6 @@ def _build_user_message(
                 "research_question": selected_topic.research_question,
                 "tentative_thesis_direction": selected_topic.tentative_thesis_direction,
             },
-            "max_notes": max_notes,
             "retrieved_chunks": [
                 {
                     "source_id": chunk.source_id,
@@ -139,6 +203,16 @@ def _build_user_message(
     )
 
 
+def _build_mutable_research_message(max_notes: int) -> str:
+    return (
+        "\n\n"
+        f"Extract up to {max_notes} research notes from the retrieved_chunks above. "
+        "Each note must reference a chunk_id present in the static context. "
+        "Use the task specification and selected topic to focus extraction.\n\n"
+        + json.dumps({"max_notes": max_notes}, ensure_ascii=False)
+    )
+
+
 def _result_from_payload(
     *,
     job: EssayJob,
@@ -152,6 +226,7 @@ def _result_from_payload(
     chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
     warnings = _payload_list(payload, "warnings", max_items=20)
     notes: list[ResearchNote] = []
+    seen_signatures: set[tuple[str, str]] = set()
 
     for idx, item in enumerate(payload.get("notes", [])[:max_notes], start=1):
         chunk_id = str(item.get("chunk_id", "")).strip()
@@ -165,8 +240,16 @@ def _result_from_payload(
             chunk=chunk,
             warnings=warnings,
         )
-        if note is not None:
-            notes.append(note)
+        if note is None:
+            continue
+        signature = (note.chunk_id, _claim_signature(note.claim))
+        if signature in seen_signatures:
+            warnings.append(
+                f"Dropped duplicate note for chunk {note.chunk_id}: '{note.claim[:60]}'."
+            )
+            continue
+        seen_signatures.add(signature)
+        notes.append(note)
 
     note_ids = {note.id for note in notes}
     groups: list[EvidenceGroup] = []
@@ -272,23 +355,34 @@ def _flatten_chunks(topic_id: str, retrieved_evidence: list[RetrievedTopicEviden
     return chunks
 
 
-def _packet_chunks(source_packets: list[SourceTextPacket]) -> list[TopicEvidenceChunk]:
-    chunks: list[TopicEvidenceChunk] = []
-    for packet in source_packets:
-        if not packet.text.strip():
+def _claim_signature(claim: str) -> str:
+    """Normalize a claim for dedup: lowercase, collapse whitespace, strip
+    trailing punctuation. Notes with the same chunk_id and signature are
+    treated as the same evidence — catches literal-duplicate notes and
+    capitalization/punctuation-only variants without requiring embeddings."""
+    collapsed = re.sub(r"\s+", " ", claim.strip().lower())
+    return collapsed.rstrip(".!?,;:")
+
+
+def _dedupe_chunks_by_content(chunks: list[TopicEvidenceChunk]) -> list[TopicEvidenceChunk]:
+    """Retrieved chunks (from FTS) and packet-derived chunks (from explicit
+    locators) can carry identical text under different `chunk_id` values
+    (e.g. "src1-chunk-0042" vs "src1-pdf-pages-0002-0002" when both target
+    page 2). Send only one copy to the LLM — the duplicated text wastes
+    25k+ input tokens on overlap-heavy retrievals."""
+    seen: set[str] = set()
+    result: list[TopicEvidenceChunk] = []
+    for chunk in chunks:
+        key = " ".join(chunk.text.split()).lower()
+        if not key or key in seen:
             continue
-        chunks.append(
-            TopicEvidenceChunk(
-                source_id=packet.source_id,
-                chunk_id=packet.packet_id,
-                page_start=packet.pdf_page_start or 1,
-                page_end=packet.pdf_page_end or packet.pdf_page_start or 1,
-                text=packet.text,
-                score=None,
-                retrieval_method=f"source_packet:{packet.locator.locator_type}",
-            )
-        )
-    return chunks
+        seen.add(key)
+        result.append(chunk)
+    return result
+
+
+def _packet_chunks(source_packets: list[SourceTextPacket]) -> list[TopicEvidenceChunk]:
+    return topic_evidence_chunks_from_packets(source_packets)
 
 
 def _empty_result(

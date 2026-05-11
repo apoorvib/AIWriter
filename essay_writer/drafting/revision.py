@@ -5,9 +5,10 @@ from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
-from llm.client import LLMClient
+from llm.client import LLMClient, UserBlock
 from essay_writer.drafting.prompts import DRAFTING_SCHEMA, DRAFTING_SYSTEM_PROMPT
 from essay_writer.drafting.schema import DraftLens, EssayDraft, SectionSourceMap
+from essay_writer.drafting.service import build_static_drafting_context_json
 from essay_writer.jobs.schema import EssayJob
 from essay_writer.outlining.schema import ThesisOutline
 from essay_writer.research.schema import EvidenceMap
@@ -53,7 +54,7 @@ class DraftRevisionService:
     ) -> EssayDraft:
         payload = self._llm.chat_json(
             system=DRAFTING_SYSTEM_PROMPT,
-            user=_build_revision_message(
+            user=build_revision_user_blocks(
                 task_spec=task_spec,
                 selected_topic=selected_topic,
                 evidence_map=evidence_map,
@@ -70,7 +71,7 @@ class DraftRevisionService:
             max_tokens=self._max_tokens,
             model=model,
         )
-        revised = _draft_from_payload(
+        revised = revised_draft_from_payload(
             payload,
             job=job,
             selected_topic=selected_topic,
@@ -90,7 +91,7 @@ class DraftRevisionService:
         )
 
 
-def _build_revision_message(
+def build_revision_user_blocks(
     *,
     task_spec: TaskSpecification,
     selected_topic: SelectedTopic,
@@ -103,8 +104,18 @@ def _build_revision_message(
     tone_alignment: ToneAlignmentReport | None,
     user_instruction: str | None,
     change_summary: list[str],
-) -> str:
-    context = {
+) -> list[UserBlock]:
+    """Build the revision user message as a cacheable static block plus a
+    mutable suffix.
+
+    The static block is byte-identical to the drafting-stage static block (see
+    drafting.service.build_static_drafting_context_json) so that within the
+    Anthropic prompt-cache TTL, revision calls hit the cache for the whole
+    task_spec + selected_topic + evidence + outline + source_packets payload.
+    The mutable block carries the revision instruction text, the validation
+    diagnostics, the previous draft body, and any tone/style payloads.
+    """
+    revision_context = {
         "revision_task": {
             "previous_draft_id": previous_draft.id,
             "previous_draft_version": previous_draft.version,
@@ -169,66 +180,6 @@ def _build_revision_message(
                 else None
             ),
         },
-        "task_spec": {
-            "essay_type": task_spec.essay_type,
-            "academic_level": task_spec.academic_level,
-            "target_length": task_spec.target_length,
-            "length_unit": task_spec.length_unit,
-            "citation_style": task_spec.citation_style,
-            "rubric": task_spec.rubric,
-            "required_structure": task_spec.required_structure,
-            "selected_prompt": task_spec.selected_prompt,
-            "professor_constraints": task_spec.professor_constraints,
-        },
-        "selected_topic": {
-            "topic_id": selected_topic.topic_id,
-            "title": selected_topic.title,
-            "research_question": selected_topic.research_question,
-            "thesis_direction": selected_topic.tentative_thesis_direction,
-        },
-        "outline": {
-            "outline_id": outline.id,
-            "working_thesis": outline.working_thesis,
-            "sections": [
-                {
-                    "id": section.id,
-                    "heading": section.heading,
-                    "purpose": section.purpose,
-                    "key_points": section.key_points,
-                    "note_ids": section.note_ids,
-                    "target_words": section.target_words,
-                }
-                for section in outline.sections
-            ],
-        },
-        "evidence": {
-            "notes": [
-                {
-                    "id": note.id,
-                    "source_id": note.source_id,
-                    "page_start": note.page_start,
-                    "page_end": note.page_end,
-                    "claim": note.claim,
-                    "paraphrase": note.paraphrase,
-                    "quote": note.quote,
-                    "evidence_type": note.evidence_type,
-                    "supports_topic": note.supports_topic,
-                }
-                for note in evidence_map.notes
-            ],
-            "evidence_groups": [
-                {
-                    "id": group.id,
-                    "label": group.label,
-                    "purpose": group.purpose,
-                    "note_ids": group.note_ids,
-                    "synthesis": group.synthesis,
-                }
-                for group in evidence_map.evidence_groups
-            ],
-            "gaps": evidence_map.gaps,
-            "conflicts": evidence_map.conflicts,
-        },
         "previous_draft": {
             "content": previous_draft.content,
             "section_source_map": [
@@ -242,9 +193,11 @@ def _build_revision_message(
             ],
             "bibliography_candidates": previous_draft.bibliography_candidates,
         },
-        "source_packets": _source_packets_payload(source_packets),
     }
-    message = (
+    static_block = build_static_drafting_context_json(
+        task_spec, selected_topic, evidence_map, outline, source_packets
+    )
+    instruction = (
         "Revise the previous draft using the structured validation diagnostics while keeping every "
         "claim grounded in the supplied evidence. Fix diagnosed locations without copying validator "
         "wording. Do not add unsupported facts, unsupported citations, short filler sentences just "
@@ -252,12 +205,51 @@ def _build_revision_message(
         "If manual_reiteration.user_instruction is present, follow it while preserving the user's "
         "edited text as the base document rather than regenerating from an older draft. "
         "If tone_alignment is present and it conflicts with generic anti-AI heuristics, prefer the "
-        "user's authentic tone and writing habits while still removing clear machine-like artifacts.\n\n"
-        f"{json.dumps(context, ensure_ascii=False)}"
+        "user's authentic tone and writing habits while still removing clear machine-like artifacts."
     )
-    if writing_style_payload is None:
-        return message
-    return f"{message}\n\n{build_writing_style_prompt_block(writing_style_payload)}"
+    mutable_parts = [
+        "\n\n",
+        instruction,
+        "\n\n",
+        json.dumps(revision_context, ensure_ascii=False),
+    ]
+    if writing_style_payload is not None:
+        mutable_parts.append("\n\n")
+        mutable_parts.append(build_writing_style_prompt_block(writing_style_payload))
+    mutable_block = "".join(mutable_parts)
+    return [
+        UserBlock(text=static_block, cacheable=True),
+        UserBlock(text=mutable_block, cacheable=False),
+    ]
+
+
+def _build_revision_blocks(
+    *,
+    task_spec: TaskSpecification,
+    selected_topic: SelectedTopic,
+    evidence_map: EvidenceMap,
+    outline: ThesisOutline,
+    previous_draft: EssayDraft,
+    validation: ValidationReport,
+    source_packets: list[SourceTextPacket],
+    writing_style_payload: WritingStylePayload | None,
+    tone_alignment: ToneAlignmentReport | None,
+    user_instruction: str | None,
+    change_summary: list[str],
+) -> list[UserBlock]:
+    return build_revision_user_blocks(
+        task_spec=task_spec,
+        selected_topic=selected_topic,
+        evidence_map=evidence_map,
+        outline=outline,
+        previous_draft=previous_draft,
+        validation=validation,
+        source_packets=source_packets,
+        writing_style_payload=writing_style_payload,
+        tone_alignment=tone_alignment,
+        user_instruction=user_instruction,
+        change_summary=change_summary,
+    )
 
 
 def _deterministic_style_payload(validation: ValidationReport) -> dict[str, Any]:
@@ -282,7 +274,7 @@ def _deterministic_style_payload(validation: ValidationReport) -> dict[str, Any]
     }
 
 
-def _draft_from_payload(
+def revised_draft_from_payload(
     payload: dict[str, Any],
     *,
     job: EssayJob,
@@ -317,6 +309,27 @@ def _draft_from_payload(
     )
 
 
+def _draft_from_payload(
+    payload: dict[str, Any],
+    *,
+    job: EssayJob,
+    selected_topic: SelectedTopic,
+    task_spec: TaskSpecification,
+    outline: ThesisOutline,
+    version: int,
+    prompt_version: str,
+) -> EssayDraft:
+    return revised_draft_from_payload(
+        payload,
+        job=job,
+        selected_topic=selected_topic,
+        task_spec=task_spec,
+        outline=outline,
+        version=version,
+        prompt_version=prompt_version,
+    )
+
+
 def _payload_list(payload: dict[str, Any], key: str, *, max_items: int) -> list[str]:
     value = payload.get(key, [])
     if not isinstance(value, list):
@@ -324,21 +337,3 @@ def _payload_list(payload: dict[str, Any], key: str, *, max_items: int) -> list[
     return [str(item).strip() for item in value[:max_items] if str(item).strip()]
 
 
-def _source_packets_payload(source_packets: list[SourceTextPacket]) -> list[dict[str, Any]]:
-    return [
-        {
-            "packet_id": packet.packet_id,
-            "source_id": packet.source_id,
-            "locator_type": packet.locator.locator_type,
-            "pdf_page_start": packet.pdf_page_start,
-            "pdf_page_end": packet.pdf_page_end,
-            "printed_page_start": packet.printed_page_start,
-            "printed_page_end": packet.printed_page_end,
-            "heading_path": packet.heading_path,
-            "extraction_method": packet.extraction_method,
-            "text_quality": packet.text_quality,
-            "warnings": packet.warnings,
-            "text": packet.text,
-        }
-        for packet in source_packets
-    ]

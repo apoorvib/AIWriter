@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any
 
-from llm.client import DEFAULT_LLM_MAX_OUTPUT_TOKENS, LLMError
+from llm.client import DEFAULT_LLM_MAX_OUTPUT_TOKENS, LLMError, UserBlock, concat_user_content
 
 logger = logging.getLogger("essay_writer.llm")
 
@@ -30,7 +30,7 @@ class GeminiClient:
     def chat_json(
         self,
         system: str,
-        user: str,
+        user: str | list[UserBlock],
         json_schema: dict[str, Any],
         max_tokens: int = DEFAULT_LLM_MAX_OUTPUT_TOKENS,
         model: str | None = None,
@@ -38,7 +38,7 @@ class GeminiClient:
     ) -> dict[str, Any]:
         if enable_web_search:
             raise NotImplementedError("enable_web_search is not yet supported for Gemini")
-        combined = f"{system}\n\n{user}"
+        combined = f"{system}\n\n{concat_user_content(user)}"
         gen_model = self._model
         if model is not None and model != self._model_name:
             import google.generativeai as genai

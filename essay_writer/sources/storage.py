@@ -15,6 +15,7 @@ from essay_writer.sources.schema import (
     SourceIndexEntry,
     SourceIndexManifest,
     SourceIngestionResult,
+    SourceMaterializationResult,
     SourcePage,
 )
 from essay_writer.sources.access_schema import SourceMap, SourceUnit
@@ -39,6 +40,7 @@ class SourceStore:
             indexed=result.indexed,
             has_index_manifest=result.index_manifest is not None,
             has_source_map=result.source_map is not None,
+            has_source_card=True,
         )
         saved = SourceIngestionResult(
             source=source,
@@ -63,6 +65,57 @@ class SourceStore:
             _write_jsonl(dir_ / "source_units.jsonl", (asdict(unit) for unit in result.source_map.units))
         return saved
 
+    def save_materialized_source(
+        self,
+        result: SourceMaterializationResult,
+    ) -> SourceMaterializationResult:
+        dir_ = self.source_dir(result.source.id)
+        dir_.mkdir(parents=True, exist_ok=True)
+        original_path = _persist_original_source(result.source, dir_)
+        source = _source_with_artifact_paths(
+            result.source,
+            dir_,
+            original_path=original_path,
+            indexed=result.indexed,
+            has_index_manifest=result.index_manifest is not None,
+            has_source_map=result.source_map is not None,
+            has_source_card=False,
+        )
+        saved = SourceMaterializationResult(
+            source=source,
+            pages=result.pages,
+            chunks=result.chunks,
+            indexed=result.indexed,
+            full_text_available=result.full_text_available,
+            index_manifest=result.index_manifest,
+            source_map=result.source_map,
+            warnings=result.warnings,
+        )
+        _write_json(dir_ / "source.json", asdict(source))
+        _write_jsonl(dir_ / "pages.jsonl", (asdict(page) for page in result.pages))
+        _write_jsonl(dir_ / "chunks.jsonl", (asdict(chunk) for chunk in result.chunks))
+        _write_text(dir_ / "full_text.txt", _full_text(result.pages))
+        if result.index_manifest is not None:
+            _write_json(dir_ / "index_manifest.json", asdict(result.index_manifest))
+        if result.source_map is not None:
+            _write_json(dir_ / "source_map.json", asdict(result.source_map))
+            _write_jsonl(dir_ / "source_units.jsonl", (asdict(unit) for unit in result.source_map.units))
+        return saved
+
+    def save_source_card(self, source_id: str, source_card: SourceCard) -> SourceCard:
+        dir_ = self.source_dir(source_id)
+        dir_.mkdir(parents=True, exist_ok=True)
+        _write_json(dir_ / "source_card.json", asdict(source_card))
+        source = self.load_source(source_id)
+        updated_source = SourceDocument(
+            **{
+                **asdict(source),
+                "source_card_path": str(dir_ / "source_card.json"),
+            }
+        )
+        _write_json(dir_ / "source.json", asdict(updated_source))
+        return source_card
+
     def save_text_artifacts(
         self,
         source: SourceDocument,
@@ -78,6 +131,7 @@ class SourceStore:
             indexed=source.indexed,
             has_index_manifest=source.index_manifest_path is not None,
             has_source_map=True,
+            has_source_card=source.source_card_path is not None,
         )
         _write_json(dir_ / "source.json", asdict(saved_source))
         _write_jsonl(dir_ / "pages.jsonl", (asdict(page) for page in pages))
@@ -110,6 +164,16 @@ class SourceStore:
     def is_ingested(self, source_id: str) -> bool:
         return (self.source_dir(source_id) / "source_card.json").exists()
 
+    def has_text_artifacts(self, source_id: str) -> bool:
+        dir_ = self.source_dir(source_id)
+        return all(
+            (dir_ / name).exists()
+            for name in ("source.json", "pages.jsonl", "chunks.jsonl")
+        )
+
+    def has_source_card(self, source_id: str) -> bool:
+        return (self.source_dir(source_id) / "source_card.json").exists()
+
     def load_result(self, source_id: str) -> SourceIngestionResult:
         dir_ = self.source_dir(source_id)
         source = self.load_source(source_id)
@@ -135,6 +199,24 @@ class SourceStore:
         payload = dict(payload)
         payload["units"] = [SourceUnit(**item) for item in payload.get("units", [])]
         return SourceMap(**payload)
+
+    def load_materialized_source(self, source_id: str) -> SourceMaterializationResult:
+        dir_ = self.source_dir(source_id)
+        source = self.load_source(source_id)
+        pages = self.load_pages(source_id)
+        chunks = self.load_chunks(source_id)
+        index_manifest = self.load_index_manifest(source_id) if (dir_ / "index_manifest.json").exists() else None
+        source_map = self.load_source_map(source_id) if (dir_ / "source_map.json").exists() else None
+        return SourceMaterializationResult(
+            source=source,
+            pages=pages,
+            chunks=chunks,
+            indexed=source.indexed,
+            full_text_available=source.full_text_available,
+            index_manifest=index_manifest,
+            source_map=source_map,
+            warnings=[],
+        )
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -163,13 +245,14 @@ def _source_with_artifact_paths(
     indexed: bool,
     has_index_manifest: bool,
     has_source_map: bool,
+    has_source_card: bool,
 ) -> SourceDocument:
     return SourceDocument(
         **{
             **asdict(source),
             "original_path": original_path,
             "artifact_dir": str(dir_),
-            "source_card_path": str(dir_ / "source_card.json"),
+            "source_card_path": str(dir_ / "source_card.json") if has_source_card else None,
             "index_path": str(dir_ / "index.sqlite") if indexed else None,
             "index_manifest_path": str(dir_ / "index_manifest.json") if has_index_manifest else None,
             "source_map_path": str(dir_ / "source_map.json") if has_source_map else None,

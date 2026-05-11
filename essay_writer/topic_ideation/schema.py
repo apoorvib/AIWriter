@@ -91,6 +91,7 @@ class RejectedTopic:
     topic_id: str
     title: str
     reason: str
+    parent_topic_id: str | None = None
     rejected_at: str = field(default_factory=utc_now_iso)
 
 

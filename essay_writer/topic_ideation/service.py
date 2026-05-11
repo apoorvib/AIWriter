@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-from llm.client import LLMClient
+from llm.client import LLMClient, UserBlock
 from essay_writer.sources.schema import SourceCard, SourceIndexManifest
 from essay_writer.sources.access_schema import SourceLocator, SourceMap, locator_from_payload
 from essay_writer.task_spec.schema import TaskSpecification
-from essay_writer.topic_ideation.context import build_topic_ideation_context
+from essay_writer.topic_ideation.context import (
+    build_topic_ideation_mutable_context,
+    build_topic_ideation_static_context,
+)
 from essay_writer.topic_ideation.prompts import TOPIC_IDEATION_SCHEMA, TOPIC_IDEATION_SYSTEM_PROMPT
 from essay_writer.topic_ideation.schema import CandidateTopic, RejectedTopic, TopicIdeationResult, TopicSourceLead
+
+
+@dataclass(frozen=True)
+class TopicPromptBlock:
+    text: str
+    cacheable: bool = False
 
 
 class TopicIdeationService:
@@ -41,7 +51,7 @@ class TopicIdeationService:
         user_instruction: str | None = None,
         model: str | None = None,
     ) -> TopicIdeationResult:
-        context = build_topic_ideation_context(
+        prompt_blocks = build_topic_ideation_user_blocks(
             task_spec,
             source_cards=source_cards,
             index_manifests=index_manifests or [],
@@ -49,16 +59,20 @@ class TopicIdeationService:
             previous_candidates=previous_candidates or [],
             rejected_topics=rejected_topics or [],
             user_instruction=user_instruction,
-            max_manifest_entries=80,
+            max_candidates=self._max_candidates,
         )
+        user_blocks = [
+            UserBlock(text=block.text, cacheable=block.cacheable)
+            for block in prompt_blocks
+        ]
         payload = self._llm.chat_json(
             system=TOPIC_IDEATION_SYSTEM_PROMPT,
-            user=_build_user_message(context, self._max_candidates),
+            user=user_blocks,
             json_schema=TOPIC_IDEATION_SCHEMA,
             max_tokens=self._max_tokens,
             model=model or self._model,
         )
-        return _result_from_payload(
+        return topic_ideation_result_from_payload(
             task_spec_id=task_spec.id,
             payload=payload,
             prompt_version=self._prompt_version,
@@ -66,8 +80,56 @@ class TopicIdeationService:
         )
 
 
-def _build_user_message(context: str, max_candidates: int) -> str:
+def build_topic_ideation_user_blocks(
+    task_spec: TaskSpecification,
+    *,
+    source_cards: list[SourceCard],
+    index_manifests: list[SourceIndexManifest] | None = None,
+    source_maps: list[SourceMap] | None = None,
+    previous_candidates: list[CandidateTopic] | None = None,
+    rejected_topics: list[RejectedTopic] | None = None,
+    user_instruction: str | None = None,
+    max_candidates: int = 8,
+) -> list[TopicPromptBlock]:
+    static_context = build_topic_ideation_static_context(
+        task_spec,
+        source_cards=source_cards,
+        index_manifests=index_manifests or [],
+        source_maps=source_maps or [],
+        max_manifest_entries=80,
+    )
+    mutable_context = build_topic_ideation_mutable_context(
+        previous_candidates=previous_candidates or [],
+        rejected_topics=rejected_topics or [],
+        user_instruction=user_instruction,
+    )
+    return [
+        TopicPromptBlock(text=static_context, cacheable=True),
+        TopicPromptBlock(
+            text=_build_mutable_user_message(mutable_context, max_candidates),
+            cacheable=False,
+        ),
+    ]
+
+
+def topic_ideation_result_from_payload(
+    *,
+    task_spec_id: str,
+    payload: dict[str, Any],
+    prompt_version: str = "topic-ideation-v1",
+    max_candidates: int = 8,
+) -> TopicIdeationResult:
+    return _result_from_payload(
+        task_spec_id=task_spec_id,
+        payload=payload,
+        prompt_version=prompt_version,
+        max_candidates=max_candidates,
+    )
+
+
+def _build_mutable_user_message(mutable_context: str, max_candidates: int) -> str:
     return (
+        "\n\n"
         f"Generate up to {max_candidates} candidate approaches for this assignment.\n"
         "Each candidate must fit the assignment constraints and be plausibly supported by the uploaded sources.\n"
         "If previous_candidates are present, avoid duplicates and use parent_topic_id only when refining a prior topic.\n"
@@ -76,7 +138,7 @@ def _build_user_message(context: str, max_candidates: int) -> str:
         "Use chunk_ids from the manifests when possible and suggested_source_search_queries for uploaded-source retrieval.\n"
         "Prefer source_requests from source maps: use physical PDF page numbers for PDFs and section IDs for non-PDF sources.\n"
         "Do not include external web or database search queries in this stage.\n\n"
-        f"{context}"
+        f"{mutable_context}"
     )
 
 

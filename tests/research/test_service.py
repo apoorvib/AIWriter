@@ -55,11 +55,14 @@ def test_final_topic_research_extracts_grounded_notes_and_groups() -> None:
         selected_topic=_selected_topic(),
         retrieved_evidence=[_retrieved_evidence()],
     )
-    user_payload = json.loads(client.calls[0]["user"])
+    blocks = client.calls[0]["user_blocks"]
+    static_payload = json.loads(blocks[0].text)
 
+    assert blocks[0].cacheable is True
+    assert blocks[1].cacheable is False
     assert "Use only the supplied" in FINAL_TOPIC_RESEARCH_SYSTEM_PROMPT
-    assert user_payload["selected_topic"]["topic_id"] == "topic_001"
-    assert user_payload["retrieved_chunks"][0]["chunk_id"] == "chunk1"
+    assert static_payload["selected_topic"]["topic_id"] == "topic_001"
+    assert static_payload["retrieved_chunks"][0]["chunk_id"] == "chunk1"
     assert result.evidence_map.notes[0].source_id == "src1"
     assert result.evidence_map.notes[0].chunk_id == "chunk1"
     assert result.evidence_map.notes[0].quote == "Urban heat affects renters in older housing."
@@ -138,6 +141,249 @@ def test_final_topic_research_drops_invalid_chunk_and_bad_quote_references() -> 
     assert any("unknown chunk_id" in warning for warning in result.report.warnings)
     assert any("not found in chunk" in warning for warning in result.report.warnings)
     assert any("Corrected page range" in warning for warning in result.report.warnings)
+
+
+def test_research_drops_literal_duplicate_notes() -> None:
+    """Q4: the LLM occasionally emits the same claim twice for the same
+    chunk under different paraphrases. Literal-claim dedup catches the
+    cheap case so the outline doesn't carry phantom evidence."""
+    client = MockLLMClient(
+        responses=[
+            {
+                "notes": [
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Urban heat affects renters in older housing.",
+                        "quote": None,
+                        "paraphrase": "Heat risk concentrates in older rental stock.",
+                        "relevance": "Supports housing-inequality angle.",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    },
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Urban heat affects renters in older housing.",
+                        "quote": None,
+                        "paraphrase": "Older rental housing exposes renters to heat.",
+                        "relevance": "Same point, different paraphrase.",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.85,
+                    },
+                ],
+                "evidence_groups": [],
+                "gaps": [],
+                "conflicts": [],
+                "warnings": [],
+            }
+        ]
+    )
+
+    result = FinalTopicResearchService(client).extract(
+        job=_job(),
+        task_spec=_task_spec(),
+        selected_topic=_selected_topic(),
+        retrieved_evidence=[_retrieved_evidence()],
+    )
+
+    assert len(result.evidence_map.notes) == 1
+    assert any("duplicate note" in warning.lower() for warning in result.report.warnings)
+
+
+def test_research_dedup_ignores_capitalization_and_trailing_punctuation() -> None:
+    """Q4: capitalization-only or trailing-punctuation-only variants of the
+    same claim count as duplicates."""
+    client = MockLLMClient(
+        responses=[
+            {
+                "notes": [
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Urban heat affects renters in older housing.",
+                        "quote": None,
+                        "paraphrase": "Paraphrase A.",
+                        "relevance": "x",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    },
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "URBAN HEAT AFFECTS RENTERS IN OLDER HOUSING",
+                        "quote": None,
+                        "paraphrase": "Paraphrase B.",
+                        "relevance": "y",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    },
+                ],
+                "evidence_groups": [],
+                "gaps": [],
+                "conflicts": [],
+                "warnings": [],
+            }
+        ]
+    )
+
+    result = FinalTopicResearchService(client).extract(
+        job=_job(),
+        task_spec=_task_spec(),
+        selected_topic=_selected_topic(),
+        retrieved_evidence=[_retrieved_evidence()],
+    )
+
+    assert len(result.evidence_map.notes) == 1
+
+
+def test_research_keeps_distinct_claims_from_same_chunk() -> None:
+    """Q4 negative case: dedup must NOT collapse different claims drawn
+    from the same chunk — multiple distinct points per chunk is normal."""
+    client = MockLLMClient(
+        responses=[
+            {
+                "notes": [
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Urban heat affects renters in older housing.",
+                        "quote": None,
+                        "paraphrase": "x",
+                        "relevance": "x",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    },
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Cooling centers are unevenly distributed across neighborhoods.",
+                        "quote": None,
+                        "paraphrase": "y",
+                        "relevance": "y",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    },
+                ],
+                "evidence_groups": [],
+                "gaps": [],
+                "conflicts": [],
+                "warnings": [],
+            }
+        ]
+    )
+
+    result = FinalTopicResearchService(client).extract(
+        job=_job(),
+        task_spec=_task_spec(),
+        selected_topic=_selected_topic(),
+        retrieved_evidence=[_retrieved_evidence()],
+    )
+
+    assert len(result.evidence_map.notes) == 2
+
+
+def test_research_dedupes_overlapping_packet_and_retrieved_chunks() -> None:
+    """P9: a packet derived from explicit page locator and a retrieved FTS
+    chunk can carry the SAME text under different chunk_ids. Sending both
+    wastes ~25k+ tokens when retrievals overlap heavily."""
+    from essay_writer.sources.access_schema import SourceLocator, SourceTextPacket
+
+    client = MockLLMClient(
+        responses=[
+            {"notes": [], "evidence_groups": [], "gaps": [], "conflicts": [], "warnings": []}
+        ]
+    )
+
+    duplicate_text = "Urban heat affects renters in older housing. Cooling centers are unevenly distributed."
+
+    packet = SourceTextPacket(
+        packet_id="src1-pdf-pages-0002-0003",
+        source_id="src1",
+        locator=SourceLocator(source_id="src1", locator_type="pdf_pages", pdf_page_start=2, pdf_page_end=3),
+        text=duplicate_text,
+        pdf_page_start=2,
+        pdf_page_end=3,
+        extraction_method="pypdf",
+        text_quality="readable",
+    )
+    retrieved = RetrievedTopicEvidence(
+        topic_id="topic_001",
+        chunks=[
+            TopicEvidenceChunk(
+                source_id="src1",
+                chunk_id="src1-chunk-0042",
+                page_start=2,
+                page_end=3,
+                text=duplicate_text,
+                score=0.1,
+            )
+        ],
+    )
+
+    FinalTopicResearchService(client).extract(
+        job=_job(),
+        task_spec=_task_spec(),
+        selected_topic=_selected_topic(),
+        retrieved_evidence=[retrieved],
+        source_packets=[packet],
+    )
+    static_payload = json.loads(client.calls[0]["user_blocks"][0].text)
+
+    assert len(static_payload["retrieved_chunks"]) == 1
+
+
+def test_research_static_block_is_byte_stable_for_cache_reuse() -> None:
+    """P9: the same retrieval should produce a byte-identical cacheable
+    prefix on re-runs so the prompt cache hits."""
+    client = MockLLMClient(
+        responses=[
+            {"notes": [], "evidence_groups": [], "gaps": [], "conflicts": [], "warnings": []},
+            {"notes": [], "evidence_groups": [], "gaps": [], "conflicts": [], "warnings": []},
+        ]
+    )
+    service = FinalTopicResearchService(client)
+
+    service.extract(
+        job=_job(),
+        task_spec=_task_spec(),
+        selected_topic=_selected_topic(),
+        retrieved_evidence=[_retrieved_evidence()],
+    )
+    service.extract(
+        job=_job(),
+        task_spec=_task_spec(),
+        selected_topic=_selected_topic(),
+        retrieved_evidence=[_retrieved_evidence()],
+    )
+
+    first_static = client.calls[0]["user_blocks"][0].text
+    second_static = client.calls[1]["user_blocks"][0].text
+    assert first_static == second_static
 
 
 def test_final_topic_research_returns_gap_without_evidence_or_llm_call() -> None:

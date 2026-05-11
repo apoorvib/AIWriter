@@ -28,6 +28,7 @@ class ThesisOutline:
     version: int
     working_thesis: str
     sections: list[OutlineSection]
+    warnings: list[str] = field(default_factory=list)
     prompt_version: str = "thesis-outline-v1"
     created_at: str = field(default_factory=utc_now_iso)
 

@@ -81,19 +81,24 @@ def test_topic_ideation_service_returns_structured_source_leads() -> None:
     )
 
     result = TopicIdeationService(client).generate(task_spec, source_cards=[card], index_manifests=[manifest])
-    user_payload = client.calls[0]["user"]
+    blocks = client.calls[0]["user_blocks"]
+    static_ctx = json.loads(blocks[0].text)
+    mutable_text = blocks[1].text
+    full_user = client.calls[0]["user"]
 
+    assert blocks[0].cacheable is True
+    assert blocks[1].cacheable is False
     assert "source_id as the index handle" in TOPIC_IDEATION_SYSTEM_PROMPT
-    assert "src1-chunk-0001" in user_payload
-    assert "internal.sqlite" not in user_payload
+    assert "src1-chunk-0001" in full_user
+    assert "internal.sqlite" not in full_user
     assert result.candidates[0].source_leads[0].chunk_ids == ["src1-chunk-0001"]
     assert result.candidates[0].source_leads[0].suggested_source_search_queries == ["urban heat renters housing"]
     assert result.candidates[0].source_requests[0].pdf_page_start == 2
     assert result.candidates[0].source_requests[0].pdf_page_end == 4
     assert result.candidates[0].parent_topic_id is None
     assert result.candidates[0].novelty_note == "Initial source-grounded topic."
-    assert json.loads(user_payload.split("\n\n", 1)[1])["source_index_manifests"][0]["index_handle"] == "src1"
-    assert "external web" in user_payload
+    assert static_ctx["source_index_manifests"][0]["index_handle"] == "src1"
+    assert "external web" in mutable_text
 
 
 def test_topic_ideation_service_includes_user_instruction_and_previous_candidates() -> None:
@@ -155,16 +160,75 @@ def test_topic_ideation_service_includes_user_instruction_and_previous_candidate
         ],
         user_instruction="Give me more choices, but make them narrower and less obvious.",
     )
-    context = json.loads(client.calls[0]["user"].split("\n\n", 1)[1])
+    blocks = client.calls[0]["user_blocks"]
+    mutable_ctx = _extract_mutable_json(blocks[1].text)
 
-    assert context["user_instruction"] == "Give me more choices, but make them narrower and less obvious."
-    assert context["previous_candidates"][0]["id"] == "topic_old"
-    assert context["previous_candidates"][0]["title"] == "Urban heat as housing inequality"
-    assert context["rejected_topics"][0]["title"] == "Generic heat topic"
-    assert context["rejected_topics"][0]["reason"] == "Too broad."
-    assert "rejected_topics" in client.calls[0]["user"]
+    assert mutable_ctx["user_instruction"] == "Give me more choices, but make them narrower and less obvious."
+    assert mutable_ctx["previous_candidates"][0]["id"] == "topic_old"
+    assert mutable_ctx["previous_candidates"][0]["title"] == "Urban heat as housing inequality"
+    assert mutable_ctx["rejected_topics"][0]["title"] == "Generic heat topic"
+    assert mutable_ctx["rejected_topics"][0]["reason"] == "Too broad."
+    assert "rejected_topics" in blocks[1].text
     assert result.candidates[0].parent_topic_id == "topic_old"
     assert result.candidates[0].novelty_note == "Narrows the prior topic toward cooling access."
+
+
+def test_topic_ideation_static_block_is_byte_stable_across_rounds() -> None:
+    """The static (cacheable) block must be byte-identical across re-ideation
+    rounds for the prompt cache to hit. Differences in mutable inputs
+    (rejected topics, user instruction, previous candidates) must NOT leak
+    into the static prefix."""
+    task_spec = TaskSpecification(id="task1", version=1, raw_text="Write a policy essay.")
+    card = SourceCard(
+        source_id="src1",
+        title="Urban Heat Report",
+        source_type="pdf",
+        page_count=20,
+        extraction_method="pypdf",
+        brief_summary="Discusses urban heat and housing risk.",
+    )
+
+    def _empty_response() -> dict:
+        return {"blocking_questions": [], "warnings": [], "candidates": []}
+
+    from essay_writer.topic_ideation.schema import RejectedTopic
+
+    client = MockLLMClient(responses=[_empty_response(), _empty_response()])
+    service = TopicIdeationService(client)
+
+    service.generate(task_spec, source_cards=[card])
+    service.generate(
+        task_spec,
+        source_cards=[card],
+        rejected_topics=[
+            RejectedTopic(job_id="job1", round_id="round2", topic_id="t1", title="x", reason="too broad")
+        ],
+        user_instruction="Try a narrower angle.",
+    )
+
+    first_static = client.calls[0]["user_blocks"][0].text
+    second_static = client.calls[1]["user_blocks"][0].text
+    first_mutable = client.calls[0]["user_blocks"][1].text
+    second_mutable = client.calls[1]["user_blocks"][1].text
+
+    assert first_static == second_static, "static block must be byte-stable for cache reuse"
+    assert first_mutable != second_mutable, "mutable block should reflect round inputs"
+
+
+def _extract_mutable_json(text: str) -> dict:
+    """The mutable user block has the form '\n\n<instruction prelude>\n\n<json>'.
+    Find the embedded JSON object."""
+    start = text.index("{")
+    depth = 0
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start : idx + 1])
+    raise ValueError("Could not locate JSON in mutable topic-ideation block")
 
 
 def _candidate(*, title: str, research_question: str):

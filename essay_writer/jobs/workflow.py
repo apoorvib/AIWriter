@@ -195,6 +195,7 @@ class EssayWorkflow:
             topic_id=topic.id,
             title=topic.title,
             reason=reason,
+            parent_topic_id=topic.parent_topic_id,
         )
         self._topic_store.save_rejected_topic(rejected)
         return rejected

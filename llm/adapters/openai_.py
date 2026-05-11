@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any
 
-from llm.client import DEFAULT_LLM_MAX_OUTPUT_TOKENS, LLMError
+from llm.client import DEFAULT_LLM_MAX_OUTPUT_TOKENS, LLMError, UserBlock, concat_user_content
 
 logger = logging.getLogger("essay_writer.llm")
 
@@ -29,7 +29,7 @@ class OpenAIClient:
     def chat_json(
         self,
         system: str,
-        user: str,
+        user: str | list[UserBlock],
         json_schema: dict[str, Any],
         max_tokens: int = DEFAULT_LLM_MAX_OUTPUT_TOKENS,
         model: str | None = None,
@@ -42,7 +42,7 @@ class OpenAIClient:
             max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": concat_user_content(user)},
             ],
             response_format={
                 "type": "json_schema",

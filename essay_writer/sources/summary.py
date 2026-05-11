@@ -7,6 +7,7 @@ from typing import Any
 
 from llm.client import LLMClient, LLMConfigurationError
 from essay_writer.sources.schema import SourceCard, SourceChunk, SourceDocument
+from essay_writer.sources.source_card_cache import SourceCardCache
 
 
 SOURCE_CARD_SYSTEM_PROMPT = """You create compact source cards for an essay-planning system.
@@ -55,18 +56,31 @@ def build_source_card(
     summary_char_limit: int = 1_200,
     max_tokens: int = 2500,
     model: str | None = None,
+    cache: SourceCardCache | None = None,
 ) -> SourceCard:
     excerpts = select_source_card_excerpts(chunks, char_budget=input_char_budget)
+    cache_key: str | None = None
+    if cache is not None:
+        cache_key = SourceCardCache.compute_key(
+            excerpts=excerpts,
+            summary_char_limit=summary_char_limit,
+            model=model,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return source_card_from_payload(source, cached, summary_char_limit)
     if llm_client is None:
         raise LLMConfigurationError("Source card generation requires an LLM client.")
     payload = llm_client.chat_json(
         system=SOURCE_CARD_SYSTEM_PROMPT,
-        user=_build_source_card_user_message(source, excerpts, summary_char_limit),
+        user=build_source_card_user_message(source, excerpts, summary_char_limit),
         json_schema=SOURCE_CARD_SCHEMA,
         max_tokens=max_tokens,
         model=model,
     )
-    return _card_from_payload(source, payload, summary_char_limit)
+    if cache is not None and cache_key is not None:
+        cache.put(cache_key, payload)
+    return source_card_from_payload(source, payload, summary_char_limit)
 
 
 def select_source_card_excerpts(chunks: list[SourceChunk], *, char_budget: int) -> list[SourceChunk]:
@@ -94,7 +108,11 @@ def select_source_card_excerpts(chunks: list[SourceChunk], *, char_budget: int) 
     return sorted(selected, key=lambda item: item.ordinal)
 
 
-def _card_from_payload(source: SourceDocument, payload: dict[str, Any], summary_char_limit: int) -> SourceCard:
+def source_card_from_payload(
+    source: SourceDocument,
+    payload: dict[str, Any],
+    summary_char_limit: int,
+) -> SourceCard:
     summary = str(payload.get("brief_summary", "")).strip()
     if len(summary) > summary_char_limit:
         summary = summary[: summary_char_limit - 3].rstrip() + "..."
@@ -114,7 +132,7 @@ def _card_from_payload(source: SourceDocument, payload: dict[str, Any], summary_
     )
 
 
-def _build_source_card_user_message(
+def build_source_card_user_message(
     source: SourceDocument,
     excerpts: list[SourceChunk],
     summary_char_limit: int,
@@ -140,6 +158,18 @@ def _build_source_card_user_message(
         },
         ensure_ascii=False,
     )
+
+
+def _card_from_payload(source: SourceDocument, payload: dict[str, Any], summary_char_limit: int) -> SourceCard:
+    return source_card_from_payload(source, payload, summary_char_limit)
+
+
+def _build_source_card_user_message(
+    source: SourceDocument,
+    excerpts: list[SourceChunk],
+    summary_char_limit: int,
+) -> str:
+    return build_source_card_user_message(source, excerpts, summary_char_limit)
 
 
 def _append_if_budget(

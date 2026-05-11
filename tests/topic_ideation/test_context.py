@@ -122,3 +122,86 @@ def test_topic_ideation_context_can_budget_large_manifest_and_include_rejections
     assert "src1-chunk-0006" in manifest_context
     assert "src1-chunk-0003" not in manifest_context
     assert payload["rejected_topics"][0]["reason"] == "Narrow the policy angle."
+
+
+def test_manifest_preview_is_trimmed_to_keep_static_context_compact() -> None:
+    """P8: long chunk previews bloat the cacheable static prefix without
+    adding selection signal beyond the heading + first ~60 chars. Trim them
+    to avoid paying the cache-write surcharge on filler text."""
+    task_spec = TaskSpecification(id="task1", version=1, raw_text="Write an essay.")
+    card = SourceCard(
+        source_id="src1",
+        title="Source",
+        source_type="pdf",
+        page_count=5,
+        extraction_method="pypdf",
+        brief_summary="Source.",
+    )
+    long_preview = "The framework requires three steps before any conclusion can be drawn from the analysis " * 4
+    manifest = SourceIndexManifest(
+        source_id="src1",
+        index_path="private.sqlite",
+        total_chunks=1,
+        total_chars=len(long_preview),
+        entries=[
+            SourceIndexEntry(
+                chunk_id="src1-chunk-0001",
+                ordinal=1,
+                page_start=1,
+                page_end=1,
+                char_count=len(long_preview),
+                heading="Methods",
+                preview=long_preview,
+            )
+        ],
+    )
+
+    context = build_topic_ideation_context(task_spec, source_cards=[card], index_manifests=[manifest])
+    payload = json.loads(context)
+    manifest_text = payload["source_index_manifests"][0]["context"]
+    line = next(line for line in manifest_text.splitlines() if "src1-chunk-0001" in line)
+    rendered_preview = line.split("Methods: ", 1)[1]
+
+    assert "Methods" in line  # heading still present
+    assert len(rendered_preview) <= 60
+    assert rendered_preview.endswith("...")
+
+
+def test_rejected_topic_payload_carries_parent_topic_id_for_refinement_feedback() -> None:
+    """Q6: when a refinement is rejected, the parent_topic_id must reach the
+    next round's prompt context so the LLM can decide whether the parent
+    direction itself is dispreferred or just this specific refinement angle."""
+    task_spec = TaskSpecification(id="task1", version=1, raw_text="Write an essay.")
+    card = SourceCard(
+        source_id="src1",
+        title="Source",
+        source_type="pdf",
+        page_count=5,
+        extraction_method="pypdf",
+        brief_summary="Source.",
+    )
+    rejected_with_parent = RejectedTopic(
+        job_id="job1",
+        round_id="round2",
+        topic_id="topic_007",
+        title="Cooling-center equity refinement",
+        reason="Too narrow once we read the source.",
+        parent_topic_id="topic_003",
+    )
+    rejected_without_parent = RejectedTopic(
+        job_id="job1",
+        round_id="round2",
+        topic_id="topic_010",
+        title="Standalone topic",
+        reason="Off-topic.",
+    )
+
+    context = build_topic_ideation_context(
+        task_spec,
+        source_cards=[card],
+        rejected_topics=[rejected_with_parent, rejected_without_parent],
+    )
+    payload = json.loads(context)
+
+    assert payload["rejected_topics"][0]["parent_topic_id"] == "topic_003"
+    assert payload["rejected_topics"][1]["parent_topic_id"] is None

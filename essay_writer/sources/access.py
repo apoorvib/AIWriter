@@ -15,6 +15,7 @@ from essay_writer.sources.lazy_ocr import DefaultPdfPageOcrProvider, PdfPageOcrP
 from essay_writer.sources.map import build_source_map
 from essay_writer.sources.schema import SourceChunk, SourceDocument, SourcePage
 from essay_writer.sources.storage import SourceStore
+from essay_writer.sources.text_quality import is_better_extraction
 
 
 class SourceAccessService:
@@ -149,8 +150,6 @@ class SourceAccessService:
             and unit.pdf_page_start is not None
             and start <= unit.pdf_page_start <= end
         ]
-        if not units:
-            return _warning_packet(locator, f"No stored text found for PDF pages {start}-{end}.")
         requested_pages = set(range(start, end + 1))
         missing_unit_pages = sorted(requested_pages - {unit.pdf_page_start for unit in units})
         missing_text_pages = sorted(
@@ -164,18 +163,23 @@ class SourceAccessService:
         if missing_text_pages:
             warnings.append(f"Missing readable text for physical PDF pages: {missing_text_pages}.")
         text_units = [unit for unit in units if unit.text.strip()]
+        if not text_units:
+            return _warning_packet(locator, f"No readable text for PDF pages {start}-{end}.")
+        included_pages = sorted(unit.pdf_page_start for unit in text_units)
+        actual_start = included_pages[0]
+        actual_end = included_pages[-1]
         return SourceTextPacket(
-            packet_id=f"{locator.source_id}-pdf-pages-{start:04d}-{end:04d}",
+            packet_id=f"{locator.source_id}-pdf-pages-{actual_start:04d}-{actual_end:04d}",
             source_id=locator.source_id,
-            locator=replace(locator, pdf_page_start=start, pdf_page_end=end),
+            locator=replace(locator, pdf_page_start=actual_start, pdf_page_end=actual_end),
             text="\n\n".join(_unit_heading(unit) + unit.text for unit in text_units).strip(),
-            pdf_page_start=start,
-            pdf_page_end=end,
-            printed_page_start=units[0].printed_page_start,
-            printed_page_end=units[-1].printed_page_end,
+            pdf_page_start=actual_start,
+            pdf_page_end=actual_end,
+            printed_page_start=text_units[0].printed_page_start,
+            printed_page_end=text_units[-1].printed_page_end,
             heading_path=[],
-            extraction_method="+".join(sorted({unit.extraction_method for unit in units})),
-            text_quality=_combined_quality(units),
+            extraction_method="+".join(sorted({unit.extraction_method for unit in text_units})),
+            text_quality=_combined_quality(text_units),
             warnings=warnings,
         )
 
@@ -186,6 +190,11 @@ class SourceAccessService:
         unit = next((item for item in source_map.units if item.unit_id == locator.section_id), None)
         if unit is None:
             return _warning_packet(locator, f"Section not found: {locator.section_id}.")
+        if not unit.text.strip():
+            return _warning_packet(
+                locator,
+                f"Section {locator.section_id} has no readable text.",
+            )
         return SourceTextPacket(
             packet_id=unit.unit_id,
             source_id=locator.source_id,
@@ -203,6 +212,8 @@ class SourceAccessService:
         chunk = next((item for item in chunks if item.id == locator.chunk_id), None)
         if chunk is None:
             return _warning_packet(locator, f"Chunk not found: {locator.chunk_id}.")
+        if not chunk.text.strip():
+            return _warning_packet(locator, f"Chunk {locator.chunk_id} has no readable text.")
         return _packet_from_chunk(locator, chunk)
 
     def _ensure_requested_pdf_pages(
@@ -294,6 +305,8 @@ def _unit_heading(unit: SourceUnit) -> str:
 
 def _combined_quality(units: list[SourceUnit]) -> str:
     qualities = {unit.text_quality for unit in units}
+    if "empty" in qualities:
+        return "empty"
     if "low" in qualities:
         return "low"
     if "partial" in qualities:
@@ -312,7 +325,7 @@ def _pages_requiring_ocr(source_map: SourceMap, start: int, end: int) -> list[in
     pages: list[int] = []
     for page_number in range(start, end + 1):
         unit = units_by_page.get(page_number)
-        if unit is None or unit.text_quality in {"low", "partial", "unknown"}:
+        if unit is None or unit.text_quality in {"empty", "low", "partial", "unknown"}:
             pages.append(page_number)
     return pages
 
@@ -324,10 +337,10 @@ def _merge_lazy_ocr_pages(
     current_by_page = {page.page_number: page for page in current_pages}
     changed_pages: list[int] = []
     for ocr_page in ocr_pages:
-        current = current_by_page.get(ocr_page.page_number)
         if not ocr_page.text.strip():
             continue
-        if current is None or ocr_page.char_count > current.char_count:
+        current = current_by_page.get(ocr_page.page_number)
+        if is_better_extraction(ocr_page, current):
             current_by_page[ocr_page.page_number] = ocr_page
             changed_pages.append(ocr_page.page_number)
     return sorted(current_by_page.values(), key=lambda item: item.page_number), sorted(changed_pages)

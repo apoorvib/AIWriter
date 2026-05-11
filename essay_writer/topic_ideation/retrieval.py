@@ -89,53 +89,65 @@ class TopicEvidenceRetriever:
         chunks: list[TopicEvidenceChunk] = []
         seen: set[str] = set()
         warnings: list[str] = []
+        indexes: dict[str, SQLiteChunkIndex] = {}
 
-        for lead in source_leads:
-            manifest = manifests.get(lead.source_id)
-            if manifest is None:
-                warnings.append(f"No index manifest available for source_id={lead.source_id}.")
-                continue
+        try:
+            for lead in source_leads:
+                manifest = manifests.get(lead.source_id)
+                if manifest is None:
+                    warnings.append(f"No index manifest available for source_id={lead.source_id}.")
+                    continue
 
-            for chunk in self._load_explicit_chunks(lead.source_id, lead.chunk_ids, warnings):
-                _append_chunk(
-                    chunks,
-                    seen,
-                    TopicEvidenceChunk(
-                        source_id=chunk.source_id,
-                        chunk_id=chunk.id,
-                        page_start=chunk.page_start,
-                        page_end=chunk.page_end,
-                        text=chunk.text,
-                        score=None,
-                        retrieval_method="manifest_chunk_id",
-                    ),
-                    max_chunks,
-                )
-                if len(chunks) >= max_chunks:
-                    return RetrievedTopicEvidence(topic_id=topic_id, chunks=chunks, warnings=warnings)
-
-            for query in lead.suggested_source_search_queries:
-                with SQLiteChunkIndex(manifest.index_path) as index:
-                    results = index.search(query, limit=per_query_limit)
-                for result in results:
+                for chunk in self._load_explicit_chunks(lead.source_id, lead.chunk_ids, warnings):
                     _append_chunk(
                         chunks,
                         seen,
                         TopicEvidenceChunk(
-                            source_id=result.source_id,
-                            chunk_id=result.chunk_id,
-                            page_start=result.page_start,
-                            page_end=result.page_end,
-                            text=result.text,
-                            score=result.score,
-                            retrieval_method=f"fts:{query}",
+                            source_id=chunk.source_id,
+                            chunk_id=chunk.id,
+                            page_start=chunk.page_start,
+                            page_end=chunk.page_end,
+                            text=chunk.text,
+                            score=None,
+                            retrieval_method="manifest_chunk_id",
                         ),
                         max_chunks,
                     )
                     if len(chunks) >= max_chunks:
                         return RetrievedTopicEvidence(topic_id=topic_id, chunks=chunks, warnings=warnings)
 
-        return RetrievedTopicEvidence(topic_id=topic_id, chunks=chunks, warnings=warnings)
+                if not lead.suggested_source_search_queries:
+                    continue
+
+                index = indexes.get(lead.source_id)
+                if index is None:
+                    index = SQLiteChunkIndex(manifest.index_path)
+                    indexes[lead.source_id] = index
+
+                for query in lead.suggested_source_search_queries:
+                    results = index.search(query, limit=per_query_limit)
+                    for result in results:
+                        _append_chunk(
+                            chunks,
+                            seen,
+                            TopicEvidenceChunk(
+                                source_id=result.source_id,
+                                chunk_id=result.chunk_id,
+                                page_start=result.page_start,
+                                page_end=result.page_end,
+                                text=result.text,
+                                score=result.score,
+                                retrieval_method=f"fts:{query}",
+                            ),
+                            max_chunks,
+                        )
+                        if len(chunks) >= max_chunks:
+                            return RetrievedTopicEvidence(topic_id=topic_id, chunks=chunks, warnings=warnings)
+
+            return RetrievedTopicEvidence(topic_id=topic_id, chunks=chunks, warnings=warnings)
+        finally:
+            for index in indexes.values():
+                index.close()
 
     def _load_explicit_chunks(
         self,

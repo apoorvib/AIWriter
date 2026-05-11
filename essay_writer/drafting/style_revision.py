@@ -96,10 +96,7 @@ class FinalStyleRevisionService:
         )
         content = str(payload.get("content", "")).strip() or draft.content
         risks = _payload_list(payload, "known_risks", max_items=20)
-        weak_spots = [*draft.known_weak_spots]
-        for risk in risks:
-            if risk not in weak_spots:
-                weak_spots.append(risk)
+        weak_spots = risks if risks else list(draft.known_weak_spots)
         return replace(
             draft,
             id=f"draft_{uuid4().hex[:12]}",

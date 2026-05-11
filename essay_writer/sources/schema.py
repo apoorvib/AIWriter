@@ -142,6 +142,18 @@ class SourceIngestionResult:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class SourceMaterializationResult:
+    source: SourceDocument
+    pages: list[SourcePage]
+    chunks: list[SourceChunk]
+    indexed: bool
+    full_text_available: bool
+    index_manifest: SourceIndexManifest | None = None
+    source_map: SourceMap | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
 def artifact_path(root: str | Path, source_id: str, name: str) -> str:
     return str(Path(root) / source_id / name)
 

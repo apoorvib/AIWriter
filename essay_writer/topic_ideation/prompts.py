@@ -24,6 +24,8 @@ Do not suggest external web/database search queries in this stage.
 Do not request filesystem paths. Use source_id as the index handle.
 If previous candidates are provided, avoid repeating them unless you are deliberately improving one.
 If user_instruction is provided, follow it as a user preference, but never violate the assignment constraints or source support.
+If a rejected_topics entry has a non-null parent_topic_id, the rejected topic was a refinement of that parent.
+Do not propose another refinement of the same parent_topic_id unless the user_instruction or rejection reason suggests the parent direction is still acceptable; treat the parent direction as cautioned, the specific rejected refinement angle as banned.
 
 Return structured candidates that are specific, assignment-fitting, and source-grounded.
 """

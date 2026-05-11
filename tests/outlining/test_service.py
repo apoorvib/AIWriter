@@ -98,7 +98,9 @@ def test_outline_prompt_is_style_aware_and_receives_full_source_packet_metadata(
     )
 
     assert "STYLE-AWARE STRUCTURE" in client.calls[0]["system"]
-    context = json.loads(client.calls[0]["user"])
+    blocks = client.calls[0]["user_blocks"]
+    assert blocks[0].cacheable is True
+    context = json.loads(blocks[0].text)
     packet = context["source_packets"][0]
     assert packet["packet_id"] == "src1-pdf-pages-0002-0003"
     assert packet["source_id"] == "src1"
@@ -112,6 +114,127 @@ def test_outline_prompt_is_style_aware_and_receives_full_source_packet_metadata(
     assert packet["text_quality"] == "partial"
     assert packet["warnings"] == ["low confidence"]
     assert packet["text"] == "Full source packet text for outlining."
+
+
+def test_outline_warns_when_required_structure_clause_is_missing() -> None:
+    """Q1: assignment requires sections like 'Methodology' and 'Discussion'.
+    The outline must surface a warning when no section heading or purpose
+    plausibly satisfies a required clause."""
+    from essay_writer.outlining.schema import OutlineSection
+    from essay_writer.outlining.service import validate_outline_coverage
+
+    sections = [
+        OutlineSection(
+            id="section_001",
+            heading="Introduction",
+            purpose="introduce topic",
+            note_ids=["note_001"],
+        ),
+        OutlineSection(
+            id="section_002",
+            heading="Methods Used",
+            purpose="describe research methods",
+            note_ids=["note_001"],
+        ),
+    ]
+    task_spec = TaskSpecification(
+        id="task1",
+        version=1,
+        raw_text="Required: include Methodology and Discussion.",
+        required_structure=["Methodology", "Discussion"],
+    )
+
+    warnings = validate_outline_coverage(
+        sections=sections,
+        task_spec=task_spec,
+        research_plan=_plan(),
+        evidence_map=_evidence_map(),
+    )
+
+    assert any("Discussion" in w for w in warnings)
+    assert not any("Methodology" in w for w in warnings), (
+        "fuzzy match ('Methods Used' vs 'Methodology') should suppress this"
+    )
+
+
+def test_outline_warns_when_required_source_is_skipped() -> None:
+    """Q7: research plan asks for a specific source, outline never cites it."""
+    from essay_writer.outlining.schema import OutlineSection
+    from essay_writer.outlining.service import validate_outline_coverage
+    from essay_writer.sources.access_schema import SourceLocator
+
+    sections = [
+        OutlineSection(
+            id="section_001",
+            heading="Body",
+            purpose="argue thesis",
+            note_ids=["note_001"],  # only uses src1; src2 dropped
+        )
+    ]
+    plan = ResearchPlan(
+        id="research_plan_v001",
+        job_id="job1",
+        selected_topic_id="topic_001",
+        version=1,
+        research_question="?",
+        source_requirements=[],
+        uploaded_source_priorities=[],
+        expected_evidence_categories=[],
+        source_requests=[
+            SourceLocator(source_id="src1", locator_type="pdf_pages", pdf_page_start=1, pdf_page_end=1),
+            SourceLocator(source_id="src2", locator_type="pdf_pages", pdf_page_start=1, pdf_page_end=1),
+        ],
+    )
+
+    warnings = validate_outline_coverage(
+        sections=sections,
+        task_spec=TaskSpecification(id="task1", version=1, raw_text="x"),
+        research_plan=plan,
+        evidence_map=_evidence_map(),
+    )
+
+    assert any("src2" in w for w in warnings)
+    assert not any("src1" in w for w in warnings)
+
+
+def test_outline_warns_when_priority_high_source_is_skipped() -> None:
+    """Q7: priority='high' uploaded source dropped from the outline is
+    a separate (often louder) signal than a generic source_requests miss."""
+    from essay_writer.outlining.schema import OutlineSection
+    from essay_writer.outlining.service import validate_outline_coverage
+    from essay_writer.research_planning.schema import SourceReadingPriority
+
+    sections = [
+        OutlineSection(
+            id="section_001",
+            heading="Body",
+            purpose="argue thesis",
+            note_ids=["note_001"],
+        )
+    ]
+    plan = ResearchPlan(
+        id="research_plan_v001",
+        job_id="job1",
+        selected_topic_id="topic_001",
+        version=1,
+        research_question="?",
+        source_requirements=[],
+        uploaded_source_priorities=[
+            SourceReadingPriority(source_id="src-primary", priority="high", rationale="primary"),
+            SourceReadingPriority(source_id="src-secondary", priority="low", rationale="background"),
+        ],
+        expected_evidence_categories=[],
+    )
+
+    warnings = validate_outline_coverage(
+        sections=sections,
+        task_spec=TaskSpecification(id="task1", version=1, raw_text="x"),
+        research_plan=plan,
+        evidence_map=_evidence_map(),
+    )
+
+    assert any("src-primary" in w and "high" in w for w in warnings)
+    assert not any("src-secondary" in w for w in warnings)
 
 
 def _selected_topic() -> SelectedTopic:

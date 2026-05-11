@@ -198,6 +198,8 @@ def _is_heading_like(line: str) -> bool:
 
 
 def _page_quality(page: SourcePage) -> str:
+    if not page.text.strip():
+        return "empty"
     if page.char_count >= 300:
         return "readable"
     if page.char_count > 0:

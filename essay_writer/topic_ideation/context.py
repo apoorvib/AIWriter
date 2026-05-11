@@ -8,6 +8,70 @@ from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.topic_ideation.schema import CandidateTopic, RejectedTopic
 
 
+def build_topic_ideation_static_context(
+    task_spec: TaskSpecification,
+    *,
+    source_cards: list[SourceCard],
+    index_manifests: list[SourceIndexManifest] | None = None,
+    source_maps: list[SourceMap] | None = None,
+    source_card_max_chars: int = 4_000,
+    index_preview_chars: int = 60,
+    max_manifest_entries: int | None = None,
+    max_source_map_units: int = 120,
+) -> str:
+    """Static-per-job context: task spec + source cards + manifests + maps.
+    Identical bytes across re-ideation rounds so it's safe to mark cacheable."""
+    payload = {
+        "task_specification": _task_spec_payload(task_spec),
+        "source_cards": [
+            {
+                "source_id": card.source_id,
+                "context": card.to_context(max_chars=source_card_max_chars),
+            }
+            for card in source_cards
+        ],
+        "source_index_manifests": [
+            {
+                "source_id": manifest.source_id,
+                "index_handle": manifest.source_id,
+                "context": manifest.to_context(
+                    max_preview_chars=index_preview_chars,
+                    max_entries=max_manifest_entries,
+                ),
+            }
+            for manifest in (index_manifests or [])
+        ],
+        "source_maps": [
+            {
+                "source_id": source_map.source_id,
+                "context": source_map.to_context(max_units=max_source_map_units),
+            }
+            for source_map in (source_maps or [])
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def build_topic_ideation_mutable_context(
+    *,
+    previous_candidates: list[CandidateTopic] | None = None,
+    rejected_topics: list[RejectedTopic] | None = None,
+    user_instruction: str | None = None,
+) -> str:
+    """Round-mutable context: user instruction + previous candidates + rejections.
+    Changes every ideation round and stays out of the cache prefix."""
+    payload = {
+        "user_instruction": user_instruction,
+        "previous_candidates": [
+            _candidate_payload(candidate) for candidate in (previous_candidates or [])
+        ],
+        "rejected_topics": [
+            _rejected_payload(rejected) for rejected in (rejected_topics or [])
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 def build_topic_ideation_context(
     task_spec: TaskSpecification,
     *,
@@ -18,7 +82,7 @@ def build_topic_ideation_context(
     rejected_topics: list[RejectedTopic] | None = None,
     user_instruction: str | None = None,
     source_card_max_chars: int = 4_000,
-    index_preview_chars: int = 180,
+    index_preview_chars: int = 60,
     max_manifest_entries: int | None = None,
     max_source_map_units: int = 120,
 ) -> str:
@@ -122,4 +186,5 @@ def _rejected_payload(rejected: RejectedTopic) -> dict:
         "topic_id": rejected.topic_id,
         "title": rejected.title,
         "reason": rejected.reason,
+        "parent_topic_id": rejected.parent_topic_id,
     }
