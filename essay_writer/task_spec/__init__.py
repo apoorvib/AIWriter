@@ -1,6 +1,6 @@
 """Task specification extraction."""
 
-from essay_writer.task_spec.parser import TaskSpecParser
+from essay_writer.task_spec.parser import TaskSpecParser, stable_task_id, task_spec_from_payload
 from essay_writer.task_spec.schema import (
     AdversarialFlag,
     ChecklistItem,
@@ -14,4 +14,6 @@ __all__ = [
     "TaskSpecParser",
     "TaskSpecStore",
     "TaskSpecification",
+    "stable_task_id",
+    "task_spec_from_payload",
 ]

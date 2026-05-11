@@ -21,8 +21,8 @@ class TaskSpecStore:
         payload = asdict(task_spec)
         serialized = json.dumps(payload, ensure_ascii=True, indent=2)
 
-        if path.exists() and path.read_text(encoding="utf-8") == serialized:
-            return
+        if path.exists():
+            raise FileExistsError(f"task spec version already exists: {path}")
 
         fd, tmp_name = tempfile.mkstemp(prefix=f".v{task_spec.version}.", suffix=".tmp", dir=str(dir_))
         tmp_path = Path(tmp_name)

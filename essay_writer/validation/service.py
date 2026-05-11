@@ -58,7 +58,7 @@ class ValidationService:
             bibliography_candidates,
             source_cards,
         )
-        user_blocks = _build_user_blocks(
+        user_blocks = build_validation_user_blocks(
             draft_text,
             task_spec=task_spec,
             evidence_map=evidence_map,
@@ -78,13 +78,37 @@ class ValidationService:
             draft_id=draft_id,
             task_spec_id=task_spec.id,
             deterministic=det,
-            llm_judgment=_judgment_from_payload(payload),
+            llm_judgment=validation_judgment_from_payload(payload),
             metadata_citation_warnings=metadata_warnings,
             prompt_version=self._prompt_version,
         )
 
 
-def _build_user_blocks(
+def build_validation_user_message(
+    draft_text: str,
+    *,
+    task_spec: TaskSpecification,
+    evidence_map: list[ResearchNote],
+    det: DeterministicCheckResult,
+    bibliography_candidates: list[str],
+    source_cards: list[SourceCard],
+    metadata_warnings: list[CitationMetadataWarning],
+) -> str:
+    return "\n\n".join(
+        block.text
+        for block in build_validation_user_blocks(
+            draft_text,
+            task_spec=task_spec,
+            evidence_map=evidence_map,
+            det=det,
+            bibliography_candidates=bibliography_candidates,
+            source_cards=source_cards,
+            metadata_warnings=metadata_warnings,
+        )
+    )
+
+
+def build_validation_user_blocks(
     draft_text: str,
     *,
     task_spec: TaskSpecification,
@@ -188,7 +212,7 @@ def _build_user_blocks(
     ]
 
 
-def _judgment_from_payload(payload: dict[str, Any]) -> LLMJudgmentResult:
+def validation_judgment_from_payload(payload: dict[str, Any]) -> LLMJudgmentResult:
     unsupported = [
         UnsupportedClaim(
             claim=str(item.get("claim", "")).strip(),
@@ -275,6 +299,31 @@ def _judgment_from_payload(payload: dict[str, Any]) -> LLMJudgmentResult:
         diagnostics=diagnostics,
         revision_suggestions=suggestions,
     )
+
+
+def _build_user_blocks(
+    draft_text: str,
+    *,
+    task_spec: TaskSpecification,
+    evidence_map: list[ResearchNote],
+    det: DeterministicCheckResult,
+    bibliography_candidates: list[str],
+    source_cards: list[SourceCard],
+    metadata_warnings: list[CitationMetadataWarning],
+) -> list[UserBlock]:
+    return build_validation_user_blocks(
+        draft_text,
+        task_spec=task_spec,
+        evidence_map=evidence_map,
+        det=det,
+        bibliography_candidates=bibliography_candidates,
+        source_cards=source_cards,
+        metadata_warnings=metadata_warnings,
+    )
+
+
+def _judgment_from_payload(payload: dict[str, Any]) -> LLMJudgmentResult:
+    return validation_judgment_from_payload(payload)
 
 
 def _bounded_float(value: Any) -> float:

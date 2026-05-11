@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+
 import pytest
 
 from llm.client import LLMConfigurationError
 from llm.mock import MockLLMClient
-from essay_writer.task_spec.parser import TaskSpecParser
+from essay_writer.task_spec.parser import TaskSpecParser, stable_task_id, task_spec_from_payload
+from essay_writer.task_spec.security import scan_adversarial_text
 
 
 def test_parser_requires_llm_client() -> None:
@@ -146,6 +149,43 @@ def test_llm_parser_uses_guarded_prompt_and_filters_adversarial_checklist() -> N
     assert "untrusted assignment" in client.calls[0]["system"]
     assert len(spec.extracted_checklist) == 1
     assert spec.extracted_checklist[0].text == "Use MLA."
+
+
+def test_public_task_spec_converter_matches_parser_wrapper_and_preserves_metadata() -> None:
+    raw = "Write 1200 words.\nUse MLA format."
+    payload = _task_spec_response()
+    deterministic_flags = scan_adversarial_text(raw)
+    parser = TaskSpecParser(parser_version="custom-parser")
+
+    converted = task_spec_from_payload(
+        payload,
+        raw_text=raw,
+        task_id=None,
+        version=2,
+        source_document_ids=["src1"],
+        selected_prompt="Analyze policy.",
+        deterministic_flags=deterministic_flags,
+        parser_version="custom-parser",
+    )
+    wrapped = parser._from_llm_payload(
+        payload,
+        raw_text=raw,
+        task_id=None,
+        version=2,
+        source_document_ids=["src1"],
+        selected_prompt="Analyze policy.",
+        deterministic_flags=deterministic_flags,
+    )
+
+    converted_payload = asdict(converted)
+    wrapped_payload = asdict(wrapped)
+    converted_payload.pop("created_at")
+    wrapped_payload.pop("created_at")
+    assert converted_payload == wrapped_payload
+    assert converted.id == stable_task_id(raw)
+    assert converted.parser_version == "custom-parser"
+    assert converted.source_document_ids == ["src1"]
+    assert converted.selected_prompt == "Analyze policy."
 
 
 def _task_spec_response(

@@ -106,7 +106,7 @@ class ThesisOutlineService:
         version: int,
         model: str | None,
     ) -> ThesisOutline:
-        static_context = _build_outline_user_message(
+        static_context = build_outline_user_message(
             task_spec=task_spec,
             selected_topic=selected_topic,
             research_plan=research_plan,
@@ -123,30 +123,70 @@ class ThesisOutlineService:
             max_tokens=self._max_tokens,
             model=model,
         )
-        sections = _sections_from_payload(payload, task_spec, evidence_map)
-        if not sections:
-            sections = _sections(task_spec, evidence_map)
-        thesis = str(payload.get("working_thesis", "")).strip() or _working_thesis(selected_topic, evidence_map)
-        if thesis and thesis[-1] not in ".!?":
-            thesis += "."
-        warnings = validate_outline_coverage(
-            sections=sections,
+        return thesis_outline_from_payload(
+            payload,
+            job=job,
             task_spec=task_spec,
+            selected_topic=selected_topic,
             research_plan=research_plan,
             evidence_map=evidence_map,
-        )
-        return ThesisOutline(
-            id=f"thesis_outline_v{version:03d}",
-            job_id=job.id,
-            selected_topic_id=selected_topic.topic_id,
-            research_plan_id=research_plan.id,
-            evidence_map_id=evidence_map.id,
             version=version,
-            working_thesis=thesis,
-            sections=sections,
-            warnings=warnings,
             prompt_version=self._prompt_version,
         )
+
+
+def build_outline_user_message(
+    *,
+    task_spec: TaskSpecification,
+    selected_topic: SelectedTopic,
+    research_plan: ResearchPlan,
+    evidence_map: EvidenceMap,
+    source_packets: list[SourceTextPacket],
+) -> str:
+    return _build_outline_user_message(
+        task_spec=task_spec,
+        selected_topic=selected_topic,
+        research_plan=research_plan,
+        evidence_map=evidence_map,
+        source_packets=source_packets,
+    )
+
+
+def thesis_outline_from_payload(
+    payload: dict[str, Any],
+    *,
+    job: EssayJob,
+    task_spec: TaskSpecification,
+    selected_topic: SelectedTopic,
+    research_plan: ResearchPlan,
+    evidence_map: EvidenceMap,
+    version: int,
+    prompt_version: str = "thesis-outline-v1",
+) -> ThesisOutline:
+    sections = _sections_from_payload(payload, task_spec, evidence_map)
+    if not sections:
+        sections = _sections(task_spec, evidence_map)
+    thesis = str(payload.get("working_thesis", "")).strip() or _working_thesis(selected_topic, evidence_map)
+    if thesis and thesis[-1] not in ".!?":
+        thesis += "."
+    warnings = validate_outline_coverage(
+        sections=sections,
+        task_spec=task_spec,
+        research_plan=research_plan,
+        evidence_map=evidence_map,
+    )
+    return ThesisOutline(
+        id=f"thesis_outline_v{version:03d}",
+        job_id=job.id,
+        selected_topic_id=selected_topic.topic_id,
+        research_plan_id=research_plan.id,
+        evidence_map_id=evidence_map.id,
+        version=version,
+        working_thesis=thesis,
+        sections=sections,
+        warnings=warnings,
+        prompt_version=prompt_version,
+    )
 
 
 def _build_outline_user_message(

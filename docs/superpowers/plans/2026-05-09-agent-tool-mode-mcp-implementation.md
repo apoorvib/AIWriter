@@ -1234,6 +1234,10 @@ new materialization tests pass
 
 ## Task 5: Add Source Card Prepare/Submit/Commit Cycle
 
+**Review fixes:** Completed on 2026-05-10. Existing-card reuse with an `agent_run_id` now attaches committed source/source-card list refs for recovery, and the no-hidden-API boundary allows the pure source-card user-message helper while still banning `build_source_card` calls/imports.
+
+**Quality fixes:** Completed on 2026-05-10. Direct source-card payload commits are now deterministic/idempotent for the same source and payload, direct commit validation errors report `commit_source_card`, and the local schema fallback rejects unsupported `additionalProperties` values with the agent-tools install hint.
+
 **Files:**
 
 - Modify: `essay_writer/sources/summary.py`
@@ -1242,7 +1246,7 @@ new materialization tests pass
 - Test: `tests/agent_tools/test_source_card_tools.py`
 - Test: `tests/sources/test_summary.py`
 
-- [ ] **Step 1: Write source-card cycle tests**
+- [x] **Step 1: Write source-card cycle tests**
 
 Create `tests/agent_tools/test_source_card_tools.py`:
 
@@ -1322,7 +1326,7 @@ def test_commit_source_card_retry_returns_already_committed() -> None:
     assert second.data["already_committed"] is True
 ```
 
-- [ ] **Step 2: Expose pure source-card helpers**
+- [x] **Step 2: Expose pure source-card helpers**
 
 Modify `essay_writer/sources/summary.py`:
 
@@ -1341,7 +1345,7 @@ def build_source_card_user_message(
 
 Update existing tests to assert the public helper emits the same JSON shape. Keep `_card_from_payload` and `_build_source_card_user_message` as compatibility wrappers or update internal calls to the new public names.
 
-- [ ] **Step 3: Implement `prepare_source_card`**
+- [x] **Step 3: Implement `prepare_source_card`**
 
 `prepare_source_card(source_id, agent_run_id=None, reuse_existing=True)` should:
 
@@ -1354,7 +1358,7 @@ Update existing tests to assert the public helper emits the same JSON shape. Kee
 7. Set `delegation.recommended=True` when selected excerpt chars exceed 8,000 or there is more than one pending source-card packet in the run.
 8. Attach the packet to the run if `agent_run_id` is supplied.
 
-- [ ] **Step 4: Implement `submit_work_result`**
+- [x] **Step 4: Implement `submit_work_result`**
 
 `submit_work_result` belongs to the general facade and is used by every prepare/commit stage. It should:
 
@@ -1367,7 +1371,7 @@ Update existing tests to assert the public helper emits the same JSON shape. Kee
 
 If `jsonschema` is not installed, return a structured error that tells the user to install `.[agent-tools]`; do not silently accept unchecked payloads.
 
-- [ ] **Step 5: Implement `commit_source_card`**
+- [x] **Step 5: Implement `commit_source_card`**
 
 `commit_source_card` should:
 
@@ -1380,7 +1384,7 @@ If `jsonschema` is not installed, return a structured error that tells the user 
 7. Mark duplicate commit retries as `already_committed=True`.
 8. Attach commit refs to run state if supplied.
 
-- [ ] **Step 6: Run focused tests**
+- [x] **Step 6: Run focused tests**
 
 Run:
 
@@ -1398,6 +1402,8 @@ existing summary tests pass
 
 ## Task 6: Add Task Spec Prepare/Commit Cycle
 
+**Review fixes:** Completed on 2026-05-10. Task-spec commits now avoid rewriting existing versions on same-result retry, reject conflicting same-id/version results before saving, clean pending/completed run recovery state when committed with a late `agent_run_id`, return structured errors for malformed deterministic flag context, and strengthen no-hidden-API detection for `TaskSpecParser.parse` usage.
+
 **Files:**
 
 - Modify: `essay_writer/task_spec/parser.py`
@@ -1405,7 +1411,7 @@ existing summary tests pass
 - Test: `tests/agent_tools/test_task_spec_tools.py`
 - Test: `tests/task_spec/test_parser.py`
 
-- [ ] **Step 1: Write task-spec cycle tests**
+- [x] **Step 1: Write task-spec cycle tests**
 
 Create `tests/agent_tools/test_task_spec_tools.py`:
 
@@ -1475,7 +1481,7 @@ def test_prepare_submit_commit_task_spec_merges_deterministic_flags() -> None:
     assert "adversarial_text_detected" in task_spec.risk_flags
 ```
 
-- [ ] **Step 2: Extract public task-spec converter**
+- [x] **Step 2: Extract public task-spec converter**
 
 Modify `essay_writer/task_spec/parser.py`:
 
@@ -1556,7 +1562,7 @@ def task_spec_from_payload(
 
 Move the current `_from_llm_payload` logic into this function. Keep `TaskSpecParser._from_llm_payload` as a wrapper that calls the new function so Pipeline Mode tests keep passing.
 
-- [ ] **Step 3: Implement `prepare_task_spec`**
+- [x] **Step 3: Implement `prepare_task_spec`**
 
 `prepare_task_spec(raw_text, task_id=None, source_document_ids=None, selected_prompt=None, agent_run_id=None)` should:
 
@@ -1566,7 +1572,7 @@ Move the current `_from_llm_payload` logic into this function. Keep `TaskSpecPar
 4. Persist `source_document_ids`, `selected_prompt`, and intended `task_id` in `artifact_refs`.
 5. Recommend no subagent by default because assignment text is usually small and globally important.
 
-- [ ] **Step 4: Implement `commit_task_spec`**
+- [x] **Step 4: Implement `commit_task_spec`**
 
 `commit_task_spec` should:
 
@@ -1577,7 +1583,7 @@ Move the current `_from_llm_payload` logic into this function. Keep `TaskSpecPar
 5. If `blocking_questions` exist, set run `blocked_on="task_specification"`.
 6. Return `task_spec_id`, `version`, `blocking_questions`, and `next_suggested_tools`.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run:
 
@@ -1595,12 +1601,14 @@ existing parser/security tests pass
 
 ## Task 7: Add Job Creation And Recovery-Aware Artifact Summaries
 
+**Status:** Done on 2026-05-10. Implemented job creation from committed task/source artifacts, idempotent job retries, compact recovery/read summaries, and callable-tool availability updates.
+
 **Files:**
 
 - Modify: `essay_writer/agent_tools/facade.py`
 - Test: `tests/agent_tools/test_job_and_recovery_tools.py`
 
-- [ ] **Step 1: Add job creation tests**
+- [x] **Step 1: Add job creation tests**
 
 Append tests:
 
@@ -1629,7 +1637,7 @@ assert summary.data["job"]["status"] == "sources_ready"
 assert recovered.data["artifact_refs"]["job_id"] == "job1"
 ```
 
-- [ ] **Step 2: Implement `create_job_from_artifacts`**
+- [x] **Step 2: Implement `create_job_from_artifacts`**
 
 `create_job_from_artifacts(task_spec_id, source_ids, job_id=None, agent_run_id=None)` should:
 
@@ -1643,7 +1651,7 @@ assert recovered.data["artifact_refs"]["job_id"] == "job1"
    - `source_ids`
 6. Return `next_suggested_tools=["prepare_topics"]`.
 
-- [ ] **Step 3: Implement read/summary tools**
+- [x] **Step 3: Implement read/summary tools**
 
 Add facade methods:
 
@@ -1674,7 +1682,7 @@ get_work_result(work_result_id)
 }
 ```
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -1698,7 +1706,7 @@ existing workflow tests pass
 - Test: `tests/agent_tools/test_source_packet_tools.py`
 - Test: `tests/sources/test_source_access.py`
 
-- [ ] **Step 1: Write source packet tests**
+- [x] **Step 1: Write source packet tests**
 
 Create `tests/agent_tools/test_source_packet_tools.py`:
 
@@ -1751,7 +1759,7 @@ def test_resolve_source_requests_persists_bundle() -> None:
     assert bundle.packet_payloads[0]["source_id"] == "src1"
 ```
 
-- [ ] **Step 2: Implement helper serialization**
+- [x] **Step 2: Implement helper serialization**
 
 In `facade.py` or a small private module under `agent_tools`, add converters:
 
@@ -1804,7 +1812,7 @@ text_quality
 warnings
 ```
 
-- [ ] **Step 3: Implement read tools**
+- [x] **Step 3: Implement read tools**
 
 Add facade methods:
 
@@ -1817,7 +1825,7 @@ get_source_packet_bundle(source_packet_bundle_id)
 
 `read_source_packet` returns one packet directly and does not persist a bundle. `resolve_source_requests` persists a `SourcePacketBundle` and returns its ID.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -1843,7 +1851,7 @@ existing source access tests pass
 - Test: `tests/topic_ideation/test_service.py`
 - Test: `tests/topic_ideation/test_context.py`
 
-- [ ] **Step 1: Write topic tests**
+- [x] **Step 1: Write topic tests**
 
 Create `tests/agent_tools/test_topic_tools.py` with:
 
@@ -1893,7 +1901,7 @@ def test_prepare_commit_topics_records_round_and_blocks_for_selection() -> None:
     assert selected.next_suggested_tools == ["create_research_plan"]
 ```
 
-- [ ] **Step 2: Extract public topic helpers**
+- [x] **Step 2: Extract public topic helpers**
 
 In `essay_writer/topic_ideation/service.py`, expose:
 
@@ -1908,7 +1916,7 @@ def build_topic_ideation_user_blocks(
     rejected_topics: list[RejectedTopic] | None = None,
     user_instruction: str | None = None,
     max_candidates: int = 8,
-) -> list[PromptBlock]:
+) -> list[TopicPromptBlock]:
     static_context = build_topic_ideation_static_context(
         task_spec,
         source_cards=source_cards,
@@ -1922,8 +1930,8 @@ def build_topic_ideation_user_blocks(
         user_instruction=user_instruction,
     )
     return [
-        PromptBlock(text=static_context, cacheable=True),
-        PromptBlock(text=_build_mutable_user_message(mutable_context, max_candidates), cacheable=False),
+        TopicPromptBlock(text=static_context, cacheable=True),
+        TopicPromptBlock(text=_build_mutable_user_message(mutable_context, max_candidates), cacheable=False),
     ]
 
 
@@ -1944,7 +1952,7 @@ def topic_ideation_result_from_payload(
 
 Keep the existing private functions as wrappers or update service use.
 
-- [ ] **Step 3: Implement topic facade methods**
+- [x] **Step 3: Implement topic facade methods**
 
 Add:
 
@@ -1974,7 +1982,7 @@ recommended=false
 reason="topic selection is a global planning step"
 ```
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -1990,6 +1998,10 @@ topic Agent Tool Mode tests pass
 existing topic/workflow tests pass
 ```
 
+**Status:** Done on 2026-05-11. Implemented topic preparation/commit, topic selection/rejection, pure prompt/result helpers, and focused tests.
+
+**Quality fixes:** Completed on 2026-05-11. Topic helper prompt blocks are now service-local `TopicPromptBlock` values so `topic_ideation` does not depend on `agent_tools`; `commit_topics` idempotency only reuses an existing round for the same committed `work_result_id`; direct payload commits validate job task/source/text/card readiness before writing packets or results; malformed/non-positive `max_candidates` context returns structured `invalid_max_candidates` errors. Regression coverage was added for distinct one-candidate payloads with the same generated `topic_001` id, no-write direct readiness failures, and malformed packet context.
+
 ## Task 10: Add Research Plan, Source Resolution, And Research Notes Cycle
 
 **Files:**
@@ -2000,7 +2012,7 @@ existing topic/workflow tests pass
 - Test: `tests/research_planning/test_service.py`
 - Test: `tests/research/test_service.py`
 
-- [ ] **Step 1: Write research tests**
+- [x] **Step 1: Write research tests**
 
 Create `tests/agent_tools/test_research_tools.py`:
 
@@ -2057,7 +2069,7 @@ def test_create_research_plan_and_commit_research_notes_validates_quotes() -> No
 
 Add a test where the quote is absent from the packet text and assert commit succeeds with a warning and drops the quote, matching current `FinalTopicResearchService` behavior.
 
-- [ ] **Step 2: Extract public research helpers**
+- [x] **Step 2: Extract public research helpers**
 
 In `essay_writer/research/service.py`, expose:
 
@@ -2087,7 +2099,7 @@ topic_evidence_chunks_from_packets(source_packets: list[SourceTextPacket]) -> li
 
 When implementing, replace each one-line signature body with the current private helper body: `_build_user_message`, `_result_from_payload`, and `_packet_chunks` respectively.
 
-- [ ] **Step 3: Implement deterministic `create_research_plan`**
+- [x] **Step 3: Implement deterministic `create_research_plan`**
 
 Use `ResearchPlanningService.create_plan`, `ResearchPlanStore.save`, and `EssayWorkflow.record_research_plan_complete`.
 
@@ -2114,7 +2126,7 @@ Return:
 }
 ```
 
-- [ ] **Step 4: Implement research notes prepare/commit**
+- [x] **Step 4: Implement research notes prepare/commit**
 
 `prepare_research_notes` should:
 
@@ -2132,7 +2144,7 @@ Return:
 4. Call `EssayWorkflow.record_research_complete`.
 5. Link commit record and run artifact refs.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run:
 
@@ -2148,6 +2160,8 @@ research Agent Tool Mode tests pass
 existing planning/research tests pass
 ```
 
+**Status:** Done on 2026-05-11. Implemented deterministic research-plan creation, source request resolution packet IDs, research-notes prepare/submit/commit, public research prompt/conversion helpers, quote grounding through the existing converter, source-bundle scope checks, run recovery refs, and callable-tool registration for `create_research_plan`, `prepare_research_notes`, and `commit_research_notes`.
+
 ## Task 11: Add Outline Prepare/Commit Cycle
 
 **Files:**
@@ -2157,7 +2171,7 @@ existing planning/research tests pass
 - Test: `tests/agent_tools/test_outline_draft_validation_tools.py`
 - Test: `tests/outlining/test_service.py`
 
-- [ ] **Step 1: Write outline tests**
+- [x] **Step 1: Write outline tests**
 
 In `tests/agent_tools/test_outline_draft_validation_tools.py`, start with:
 
@@ -2190,7 +2204,7 @@ def test_prepare_commit_outline_records_outline_ready() -> None:
     assert committed.next_suggested_tools == ["prepare_draft"]
 ```
 
-- [ ] **Step 2: Extract public outline helpers**
+- [x] **Step 2: Extract public outline helpers**
 
 In `essay_writer/outlining/service.py`, expose:
 
@@ -2246,7 +2260,7 @@ def thesis_outline_from_payload(
 
 The converter should reuse `_sections_from_payload`, `_sections`, and `_working_thesis`.
 
-- [ ] **Step 3: Implement outline facade methods**
+- [x] **Step 3: Implement outline facade methods**
 
 `prepare_outline(job_id, source_packet_bundle_id=None, agent_run_id=None)` should load latest research plan and evidence map and use the source packet bundle from the research packet when available.
 
@@ -2257,7 +2271,7 @@ The converter should reuse `_sections_from_payload`, `_sections`, and `_working_
 3. Call `EssayWorkflow.record_outline_ready`.
 4. Return `outline_id` and `next_suggested_tools=["prepare_draft"]`.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -2273,6 +2287,8 @@ outline Agent Tool Mode test passes
 existing outlining tests pass
 ```
 
+**Status:** Done on 2026-05-11. Implemented public outline prompt/conversion helpers, `prepare_outline`, `commit_outline`, outline packet/commit persistence, latest research source-bundle reuse, deterministic note-id validation through the existing converter, run recovery refs, and callable-tool registration for outline tools.
+
 ## Task 12: Add Draft And Revision Prepare/Commit Cycles
 
 **Files:**
@@ -2284,7 +2300,7 @@ existing outlining tests pass
 - Test: `tests/drafting/test_service.py`
 - Test: `tests/drafting/test_revision.py`
 
-- [ ] **Step 1: Add draft commit tests**
+- [x] **Step 1: Add draft commit tests**
 
 Append:
 
@@ -2318,7 +2334,7 @@ def test_prepare_commit_draft_records_validation_ready() -> None:
     assert committed.next_suggested_tools == ["prepare_validation"]
 ```
 
-- [ ] **Step 2: Extract public draft helpers**
+- [x] **Step 2: Extract public draft helpers**
 
 In `essay_writer/drafting/service.py`, expose:
 
@@ -2328,7 +2344,7 @@ In `essay_writer/drafting/revision.py`, expose:
 
 Expose `build_revision_user_blocks` with the same parameters as `_build_revision_blocks`, and expose `revised_draft_from_payload` with the same parameters as `_draft_from_payload` in `essay_writer/drafting/revision.py`. Keep the existing private names as wrappers for Pipeline Mode compatibility.
 
-- [ ] **Step 3: Implement `prepare_draft` and `commit_draft`**
+- [x] **Step 3: Implement `prepare_draft` and `commit_draft`**
 
 `prepare_draft(job_id, source_packet_bundle_id=None, agent_run_id=None)` should:
 
@@ -2344,13 +2360,13 @@ Expose `build_revision_user_blocks` with the same parameters as `_build_revision
 3. Save with `DraftStore.save`.
 4. Call `EssayWorkflow.record_draft_ready`.
 
-- [ ] **Step 4: Implement `prepare_revision` and `commit_revision`**
+- [x] **Step 4: Implement `prepare_revision` and `commit_revision`**
 
 `prepare_revision(job_id, source_draft_id=None, validation_version=None, user_instruction=None, selected_lenses=None, agent_run_id=None)` should load prior draft, validation report, task spec, selected topic, evidence map, outline, and packet bundle.
 
 `commit_revision` should convert with `revised_draft_from_payload`, set `origin="system_revision"`, save the next draft version, and call `record_draft_ready`.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run:
 
@@ -2366,6 +2382,8 @@ draft Agent Tool Mode tests pass
 existing drafting tests pass
 ```
 
+**Status:** Done on 2026-05-11. Implemented public draft and revision conversion/prompt helpers, `prepare_draft`, `commit_draft`, `prepare_revision`, `commit_revision`, draft/revision packet and commit persistence, source-bundle reuse, note-id validation, parent-draft linkage for system revisions, run recovery refs, and callable-tool registration for draft/revision tools.
+
 ## Task 13: Add Validation, Deterministic Checks, User Edit, And Export Tools
 
 **Files:**
@@ -2377,7 +2395,7 @@ existing drafting tests pass
 - Test: `tests/validation/test_service.py`
 - Test: `tests/exporting/test_service_storage.py`
 
-- [ ] **Step 1: Add validation and export tests**
+- [x] **Step 1: Add validation and export tests**
 
 Append validation test:
 
@@ -2424,7 +2442,7 @@ def test_export_markdown_persists_export_and_updates_job() -> None:
     assert "# " in exported.data["preview"]
 ```
 
-- [ ] **Step 2: Extract public validation helpers**
+- [x] **Step 2: Extract public validation helpers**
 
 In `essay_writer/validation/service.py`, expose:
 
@@ -2456,7 +2474,7 @@ def validation_judgment_from_payload(payload: dict[str, Any]) -> LLMJudgmentResu
     return _judgment_from_payload(payload)
 ```
 
-- [ ] **Step 3: Implement validation facade methods**
+- [x] **Step 3: Implement validation facade methods**
 
 `run_deterministic_checks(draft_text_or_id, job_id=None)` should expose deterministic checks directly.
 
@@ -2477,7 +2495,7 @@ def validation_judgment_from_payload(payload: dict[str, Any]) -> LLMJudgmentResu
 5. Call `EssayWorkflow.record_validation_complete`.
 6. Return `next_suggested_tools=["export_markdown"]` if passes, else `["prepare_revision"]`.
 
-- [ ] **Step 4: Implement user edit and export**
+- [x] **Step 4: Implement user edit and export**
 
 Add facade methods:
 
@@ -2492,7 +2510,7 @@ For `save_user_edit`, use the same versioning semantics as `ManualRevisionServic
 
 For export, use `FinalExportService.create_markdown_export`, `FinalExportStore.save`, and `EssayWorkflow.record_final_export_ready`.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run:
 
@@ -2508,6 +2526,8 @@ validation/export Agent Tool Mode tests pass
 existing validation/export tests pass
 ```
 
+**Status:** Done on 2026-05-11. Implemented public validation prompt/judgment helpers, deterministic check exposure, validation prepare/commit, user draft edits, draft read/list tools, markdown export, validation/export packet and commit persistence, validation-to-revision/export routing, run recovery refs, and callable-tool registration for validation/export/edit tools.
+
 ## Task 14: Add MCP Server Wrapper
 
 **Files:**
@@ -2516,7 +2536,7 @@ existing validation/export tests pass
 - Modify: `pyproject.toml`
 - Test: `tests/agent_tools/test_mcp_server.py`
 
-- [ ] **Step 1: Add dependency and script**
+- [x] **Step 1: Add dependency and script**
 
 Modify `pyproject.toml`:
 
@@ -2533,7 +2553,7 @@ essay-agent-tools = "essay_writer.agent_tools.server:main"
 
 Keep the existing `pdf-extract` script. If `mcp` needs a minimum version during implementation, determine it by checking the installed SDK or package index in that implementation session before pinning a lower bound. Do not guess a version from memory.
 
-- [ ] **Step 2: Write MCP server smoke tests**
+- [x] **Step 2: Write MCP server smoke tests**
 
 Create `tests/agent_tools/test_mcp_server.py`:
 
@@ -2554,7 +2574,7 @@ def test_mcp_dependency_is_optional_for_plain_facade_tests() -> None:
 
 If `mcp` is installed in the test environment, add a test that builds the server object and inspects tool names. If it is not installed, that specific test should skip with `pytest.skip("mcp package is not installed")`.
 
-- [ ] **Step 3: Implement server**
+- [x] **Step 3: Implement server**
 
 `essay_writer/agent_tools/server.py` should:
 
@@ -2600,7 +2620,7 @@ def main() -> None:
 
 Use plain dict/list/string arguments in MCP handlers. Convert to dataclasses inside the facade.
 
-- [ ] **Step 4: Run server tests**
+- [x] **Step 4: Run server tests**
 
 Run:
 
@@ -2616,6 +2636,8 @@ server module import passes
 boundary tests still pass
 ```
 
+**Status:** Done on 2026-05-11. Added optional `agent-tools` dependency extra, `essay-agent-tools` script, lazy-import MCP server module, MCP prompt, wrappers for the implemented facade tool surface, and server smoke tests that skip live server construction when `mcp` is not installed.
+
 ## Task 15: Add Docs, MCP Example Config, And Full Agent Tool Test Sweep
 
 **Files:**
@@ -2625,7 +2647,7 @@ boundary tests still pass
 - Modify: `README.md`
 - Modify: `session-log.md`
 
-- [ ] **Step 1: Add MCP example**
+- [x] **Step 1: Add MCP example**
 
 Create `.mcp.example.json`:
 
@@ -2643,7 +2665,7 @@ Create `.mcp.example.json`:
 }
 ```
 
-- [ ] **Step 2: Add usage doc**
+- [x] **Step 2: Add usage doc**
 
 Create `docs/agent-tool-mode-mcp.md` with:
 
@@ -2674,7 +2696,7 @@ Use `.mcp.example.json` as the starting point for local client configuration.
 Start by calling `get_harness_instructions`. Then start or recover an agent run. For every model-reasoning stage, use the prepare/submit/commit cycle.
 ```
 
-- [ ] **Step 3: Update README**
+- [x] **Step 3: Update README**
 
 Add a short section after "Web App Usage":
 
@@ -2698,7 +2720,7 @@ ESSAY_DATA_DIR=./data python -m essay_writer.agent_tools.server
 See `docs/agent-tool-mode-mcp.md` and `.mcp.example.json`.
 ```
 
-- [ ] **Step 4: Run full focused verification**
+- [x] **Step 4: Run full focused verification**
 
 Run:
 
@@ -2719,7 +2741,7 @@ compileall exits with code 0
 git diff --check exits with code 0
 ```
 
-- [ ] **Step 5: Add session log entry**
+- [x] **Step 5: Add session log entry**
 
 Append to `session-log.md`:
 
@@ -2773,6 +2795,8 @@ Caveats:
 ```
 
 The implementation session must replace the final result and caveat guidance with actual observed results before ending.
+
+**Status:** Done on 2026-05-11. Added MCP example config, usage docs, README Agent Tool Mode instructions, and final verification. The final sweep also restored `TaskSpecStore.save` immutability after the focused workflow suite caught an overwrite-regression. Observed results: `pytest tests\agent_tools -q` passed 92 with 1 skipped; source ingestion/access tests passed 23; focused existing essay workflow tests passed 145 after the storage fix; `python -m compileall essay_writer tests\agent_tools` exited 0; `git diff --check` exited 0 with LF-to-CRLF notices.
 
 ## Acceptance Criteria
 

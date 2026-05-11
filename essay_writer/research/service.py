@@ -89,6 +89,61 @@ class FinalTopicResearchService:
         )
 
 
+def build_final_topic_research_user_message(
+    job: EssayJob,
+    task_spec: TaskSpecification,
+    selected_topic: SelectedTopic,
+    chunks: list[TopicEvidenceChunk],
+    max_notes: int,
+) -> str:
+    return (
+        _build_static_research_context(job, task_spec, selected_topic, chunks)
+        + _build_mutable_research_message(max_notes)
+    )
+
+
+def final_topic_research_result_from_payload(
+    *,
+    job: EssayJob,
+    selected_topic: SelectedTopic,
+    chunks: list[TopicEvidenceChunk],
+    payload: dict[str, Any],
+    evidence_map_version: int,
+    prompt_version: str = "final-topic-research-v1",
+    max_notes: int = 80,
+) -> FinalTopicResearchResult:
+    return _result_from_payload(
+        job=job,
+        selected_topic=selected_topic,
+        chunks=chunks,
+        payload=payload,
+        evidence_map_version=evidence_map_version,
+        prompt_version=prompt_version,
+        max_notes=max_notes,
+    )
+
+
+def topic_evidence_chunks_from_packets(
+    source_packets: list[SourceTextPacket],
+) -> list[TopicEvidenceChunk]:
+    chunks: list[TopicEvidenceChunk] = []
+    for packet in source_packets:
+        if not packet.text.strip():
+            continue
+        chunks.append(
+            TopicEvidenceChunk(
+                source_id=packet.source_id,
+                chunk_id=packet.packet_id,
+                page_start=packet.pdf_page_start or 1,
+                page_end=packet.pdf_page_end or packet.pdf_page_start or 1,
+                text=packet.text,
+                score=None,
+                retrieval_method=f"source_packet:{packet.locator.locator_type}",
+            )
+        )
+    return chunks
+
+
 def _build_static_research_context(
     job: EssayJob,
     task_spec: TaskSpecification,
@@ -327,22 +382,7 @@ def _dedupe_chunks_by_content(chunks: list[TopicEvidenceChunk]) -> list[TopicEvi
 
 
 def _packet_chunks(source_packets: list[SourceTextPacket]) -> list[TopicEvidenceChunk]:
-    chunks: list[TopicEvidenceChunk] = []
-    for packet in source_packets:
-        if not packet.text.strip():
-            continue
-        chunks.append(
-            TopicEvidenceChunk(
-                source_id=packet.source_id,
-                chunk_id=packet.packet_id,
-                page_start=packet.pdf_page_start or 1,
-                page_end=packet.pdf_page_end or packet.pdf_page_start or 1,
-                text=packet.text,
-                score=None,
-                retrieval_method=f"source_packet:{packet.locator.locator_type}",
-            )
-        )
-    return chunks
+    return topic_evidence_chunks_from_packets(source_packets)
 
 
 def _empty_result(

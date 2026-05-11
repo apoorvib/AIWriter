@@ -56,7 +56,7 @@ class DraftService:
             max_tokens=self._max_tokens,
             model=model,
         )
-        return _draft_from_payload(
+        return draft_from_payload(
             payload,
             job=job,
             selected_topic=selected_topic,
@@ -194,7 +194,7 @@ def _source_packets_payload(source_packets: list[SourceTextPacket]) -> list[dict
     ]
 
 
-def _draft_from_payload(
+def draft_from_payload(
     payload: dict[str, Any],
     *,
     job: EssayJob,
@@ -227,6 +227,27 @@ def _draft_from_payload(
         known_weak_spots=_payload_list(payload, "known_weak_spots", max_items=20),
         origin="generated",
         created_by="system",
+        prompt_version=prompt_version,
+    )
+
+
+def _draft_from_payload(
+    payload: dict[str, Any],
+    *,
+    job: EssayJob,
+    selected_topic: SelectedTopic,
+    task_spec: TaskSpecification,
+    outline: ThesisOutline | None,
+    version: int,
+    prompt_version: str,
+) -> EssayDraft:
+    return draft_from_payload(
+        payload,
+        job=job,
+        selected_topic=selected_topic,
+        task_spec=task_spec,
+        outline=outline,
+        version=version,
         prompt_version=prompt_version,
     )
 

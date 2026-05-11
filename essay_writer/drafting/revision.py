@@ -54,7 +54,7 @@ class DraftRevisionService:
     ) -> EssayDraft:
         payload = self._llm.chat_json(
             system=DRAFTING_SYSTEM_PROMPT,
-            user=_build_revision_blocks(
+            user=build_revision_user_blocks(
                 task_spec=task_spec,
                 selected_topic=selected_topic,
                 evidence_map=evidence_map,
@@ -71,7 +71,7 @@ class DraftRevisionService:
             max_tokens=self._max_tokens,
             model=model,
         )
-        revised = _draft_from_payload(
+        revised = revised_draft_from_payload(
             payload,
             job=job,
             selected_topic=selected_topic,
@@ -91,7 +91,7 @@ class DraftRevisionService:
         )
 
 
-def _build_revision_blocks(
+def build_revision_user_blocks(
     *,
     task_spec: TaskSpecification,
     selected_topic: SelectedTopic,
@@ -223,6 +223,35 @@ def _build_revision_blocks(
     ]
 
 
+def _build_revision_blocks(
+    *,
+    task_spec: TaskSpecification,
+    selected_topic: SelectedTopic,
+    evidence_map: EvidenceMap,
+    outline: ThesisOutline,
+    previous_draft: EssayDraft,
+    validation: ValidationReport,
+    source_packets: list[SourceTextPacket],
+    writing_style_payload: WritingStylePayload | None,
+    tone_alignment: ToneAlignmentReport | None,
+    user_instruction: str | None,
+    change_summary: list[str],
+) -> list[UserBlock]:
+    return build_revision_user_blocks(
+        task_spec=task_spec,
+        selected_topic=selected_topic,
+        evidence_map=evidence_map,
+        outline=outline,
+        previous_draft=previous_draft,
+        validation=validation,
+        source_packets=source_packets,
+        writing_style_payload=writing_style_payload,
+        tone_alignment=tone_alignment,
+        user_instruction=user_instruction,
+        change_summary=change_summary,
+    )
+
+
 def _deterministic_style_payload(validation: ValidationReport) -> dict[str, Any]:
     det = validation.deterministic
     return {
@@ -245,7 +274,7 @@ def _deterministic_style_payload(validation: ValidationReport) -> dict[str, Any]
     }
 
 
-def _draft_from_payload(
+def revised_draft_from_payload(
     payload: dict[str, Any],
     *,
     job: EssayJob,
@@ -276,6 +305,27 @@ def _draft_from_payload(
         section_source_map=section_source_map,
         bibliography_candidates=_payload_list(payload, "bibliography_candidates", max_items=50),
         known_weak_spots=_payload_list(payload, "known_weak_spots", max_items=20),
+        prompt_version=prompt_version,
+    )
+
+
+def _draft_from_payload(
+    payload: dict[str, Any],
+    *,
+    job: EssayJob,
+    selected_topic: SelectedTopic,
+    task_spec: TaskSpecification,
+    outline: ThesisOutline,
+    version: int,
+    prompt_version: str,
+) -> EssayDraft:
+    return revised_draft_from_payload(
+        payload,
+        job=job,
+        selected_topic=selected_topic,
+        task_spec=task_spec,
+        outline=outline,
+        version=version,
         prompt_version=prompt_version,
     )
 

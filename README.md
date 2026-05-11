@@ -64,6 +64,29 @@ npm run dev
 The frontend runs at `http://127.0.0.1:3527` by default and proxies `/api`
 requests to `http://127.0.0.1:8629`. Vite preview uses
 `http://127.0.0.1:4627`.
+
+## Agent Tool Mode MCP Usage
+
+Agent Tool Mode exposes the essay workflow as local MCP tools for harnesses
+such as Claude Code and Codex. In this mode, the app does not make hidden LLM
+API calls for reasoning stages. The harness reads prepared work packets,
+produces JSON with its own model, and commits validated artifacts back to the
+app.
+
+Install optional dependencies:
+
+```bash
+pip install -e ".[agent-tools]"
+```
+
+Run the MCP server:
+
+```bash
+ESSAY_DATA_DIR=./data python -m essay_writer.agent_tools.server
+```
+
+See `docs/agent-tool-mode-mcp.md` and `.mcp.example.json`.
+
 The app supports source uploads for `.pdf`, `.docx`, `.txt`, `.md`,
 `.markdown`, and `.notes` files. Assignment text can be pasted or extracted
 from the same document types.
