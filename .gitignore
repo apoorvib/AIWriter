@@ -24,3 +24,4 @@ web-*.err
 data/
 legacy_skills/
 testpdfs/
+.mcp.json

@@ -8,7 +8,35 @@
       "Bash(git commit *)",
       "Bash(where python *)",
       "Bash(C:/Users/Apoorv/miniforge3/python.exe -m pytest tests/llm tests/drafting tests/manual_revision --ignore=tests/llm/test_backend_model_config.py --tb=short)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "mcp__essaywriter__start_agent_run",
+      "mcp__essaywriter__ingest_source_file",
+      "mcp__essaywriter__prepare_source_card",
+      "mcp__essaywriter__submit_work_result",
+      "mcp__essaywriter__commit_source_card",
+      "mcp__essaywriter__prepare_task_spec",
+      "mcp__essaywriter__commit_task_spec",
+      "mcp__essaywriter__create_job_from_artifacts",
+      "mcp__essaywriter__prepare_topics",
+      "mcp__essaywriter__commit_topics",
+      "mcp__essaywriter__select_topic",
+      "mcp__essaywriter__create_research_plan",
+      "mcp__essaywriter__resolve_source_requests",
+      "mcp__essaywriter__prepare_research_notes",
+      "mcp__essaywriter__commit_research_notes",
+      "mcp__essaywriter__prepare_outline",
+      "mcp__essaywriter__commit_outline",
+      "mcp__essaywriter__prepare_draft",
+      "PowerShell($j = Get-Content \"C:\\\\Users\\\\Apoorv\\\\.claude\\\\projects\\\\C--Apoorv-Startups-EssayWriter-AIWriter\\\\a681698f-3086-4c80-8cad-df93b020ceb2\\\\tool-results\\\\mcp-essaywriter-prepare_draft-1778995825285.txt\" -Raw | ConvertFrom-Json; $j.data.work_packet_id; \"----\"; $j.data.response_schema | ConvertTo-Json -Depth 20; \"----\"; $j.data.next_suggested_tools -join \",\")",
+      "mcp__essaywriter__commit_draft",
+      "mcp__essaywriter__prepare_validation",
+      "mcp__essaywriter__commit_validation",
+      "mcp__essaywriter__export_markdown",
+      "PowerShell($j = Get-Content \"C:\\\\Users\\\\Apoorv\\\\.claude\\\\projects\\\\C--Apoorv-Startups-EssayWriter-AIWriter\\\\a681698f-3086-4c80-8cad-df93b020ceb2\\\\tool-results\\\\mcp-essaywriter-prepare_draft-1778995825285.txt\" -Raw | ConvertFrom-Json; \"system_prompt length \\(chars\\): $\\($j.data.system_prompt.Length\\)\"; \"system_prompt starts with:\"; $j.data.system_prompt.Substring\\(0, 400\\); \"...\"; \"system_prompt ends with:\"; $j.data.system_prompt.Substring\\($j.data.system_prompt.Length - 400\\))"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "essaywriter"
+  ]
 }

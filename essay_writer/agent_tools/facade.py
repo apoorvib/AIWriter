@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from uuid import uuid4
 
 from essay_writer.agent_tools.config import AgentToolConfig
 from essay_writer.agent_tools.run_store import AgentRunStore
@@ -22,6 +23,12 @@ from essay_writer.agent_tools.source_materialization import SourceMaterializatio
 from essay_writer.agent_tools.stores import AgentStoreBundle
 from essay_writer.agent_tools.work_store import AgentWorkStore
 from essay_writer.drafting.prompts import DRAFTING_SCHEMA, DRAFTING_SYSTEM_PROMPT
+from essay_writer.drafting.schema import utc_now_iso
+from essay_writer.drafting.style_revision import (
+    STYLE_REVISION_SCHEMA,
+    STYLE_REVISION_SYSTEM_PROMPT,
+    build_style_revision_user_blocks,
+)
 from essay_writer.exporting.service import FinalExportService
 from essay_writer.jobs import TopicSelectionError
 from essay_writer.outlining.service import OUTLINE_SCHEMA, OUTLINE_SYSTEM_PROMPT
@@ -89,6 +96,8 @@ CURRENTLY_CALLABLE_TOOLS = [
     "commit_outline",
     "prepare_draft",
     "commit_draft",
+    "prepare_style_revision",
+    "commit_style_revision",
     "prepare_revision",
     "commit_revision",
     "run_deterministic_checks",
@@ -3121,6 +3130,389 @@ class AgentToolFacade:
                 artifact_refs=artifact_refs,
             )
 
+        next_tools = ["prepare_style_revision", "prepare_validation"]
+        if agent_run_id is not None:
+            self.run_store.attach_work_result(
+                agent_run_id,
+                result.work_result_id,
+                work_packet_id=packet.work_packet_id,
+                next_suggested_tools=next_tools,
+            )
+            self.run_store.attach_commit(
+                agent_run_id,
+                dict(commit.artifact_refs),
+                next_suggested_tools=next_tools,
+            )
+            self.run_store.checkpoint(
+                agent_run_id,
+                current_phase="style_revision",
+                decision="draft_committed",
+                next_suggested_tools=next_tools,
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="commit_draft",
+            data={
+                "commit_id": commit.commit_id,
+                "work_result_id": result.work_result_id,
+                "job_id": packet_job_id,
+                "draft_id": draft.id,
+                "draft": asdict(draft),
+                "artifact_refs": dict(commit.artifact_refs),
+                "already_committed": already_committed,
+                "next_suggested_tools": next_tools,
+            },
+            next_suggested_tools=next_tools,
+        )
+
+    def prepare_style_revision(
+        self,
+        job_id: str,
+        source_draft_id: str | None = None,
+        *,
+        source_packet_bundle_id: str | None = None,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        if agent_run_id is not None:
+            try:
+                self.run_store.load_run(agent_run_id)
+            except (KeyError, FileNotFoundError) as exc:
+                return _missing_run_result("prepare_style_revision", agent_run_id, exc)
+        try:
+            job = self.stores.workflow.load_job(job_id)
+        except KeyError as exc:
+            return _error_result(
+                "prepare_style_revision",
+                code="job_not_found",
+                message=f"EssayJob not found: {job_id}",
+                exc=exc,
+            )
+        if job.task_spec_id is None:
+            return _error_result_with_next(
+                "prepare_style_revision",
+                code="job_task_spec_missing",
+                message=f"job {job_id} does not have a committed task_spec_id",
+                exc=ValueError("task_spec_id"),
+                next_suggested_tools=["prepare_task_spec"],
+            )
+        try:
+            task_spec = self.stores.task_store.load_latest(str(job.task_spec_id))
+            research_result = self.stores.research_store.load_latest(job_id)
+            outline = self.stores.outline_store.load_latest(job_id)
+            previous_draft = _load_draft_for_job(
+                self.stores,
+                job_id=job_id,
+                draft_id=source_draft_id,
+            )
+        except (KeyError, FileNotFoundError, ValueError) as exc:
+            return _error_result_with_next(
+                "prepare_style_revision",
+                code="style_revision_artifacts_missing",
+                message=f"job {job_id} is missing style-revision prerequisite artifacts",
+                exc=exc,
+                next_suggested_tools=["prepare_draft"],
+            )
+
+        effective_bundle_id = source_packet_bundle_id or _latest_source_packet_bundle_id_for_stage(
+            self.work_store,
+            scope=f"job:{job_id}",
+            stage="draft",
+        )
+        if effective_bundle_id is None:
+            effective_bundle_id = _latest_source_packet_bundle_id_for_stage(
+                self.work_store,
+                scope=f"job:{job_id}",
+                stage="outline",
+            )
+        source_packets: list[SourceTextPacket] = []
+        if effective_bundle_id is not None:
+            try:
+                bundle = self.work_store.load_source_packet_bundle(effective_bundle_id)
+            except (KeyError, FileNotFoundError) as exc:
+                return _error_result_with_next(
+                    "prepare_style_revision",
+                    code="source_packet_bundle_not_found",
+                    message=f"SourcePacketBundle not found: {effective_bundle_id}",
+                    exc=exc,
+                    next_suggested_tools=["resolve_source_requests"],
+                )
+            if bundle.scope != f"job:{job_id}":
+                return _error_result(
+                    "prepare_style_revision",
+                    code="source_packet_bundle_job_mismatch",
+                    message=(
+                        f"source packet bundle {effective_bundle_id} does not belong to job {job_id}"
+                    ),
+                    exc=ValueError(effective_bundle_id),
+                )
+            packets_result = _source_text_packets_from_bundle(
+                bundle,
+                tool_name="prepare_style_revision",
+            )
+            if isinstance(packets_result, ToolResult):
+                return packets_result
+            source_packets = packets_result
+
+        det = run_validation_deterministic_checks(previous_draft.content)
+        user_blocks = build_style_revision_user_blocks(
+            task_spec=task_spec,
+            draft=previous_draft,
+            outline=outline,
+            evidence_map=research_result.evidence_map,
+            source_packets=source_packets,
+            det=det,
+            writing_style_payload=None,
+        )
+        prompt_blocks = [
+            PromptBlock(text=block.text, cacheable=block.cacheable)
+            for block in user_blocks
+        ]
+        packet_id = timestamp_id(
+            "workpkt",
+            "job",
+            job_id,
+            "style_revision",
+            short_hash(
+                [
+                    previous_draft.id,
+                    previous_draft.version,
+                    effective_bundle_id,
+                    [block.text for block in prompt_blocks],
+                ]
+            ),
+        )
+        artifact_refs = {
+            "job_id": job_id,
+            "task_spec_id": task_spec.id,
+            "evidence_map_id": research_result.evidence_map.id,
+            "outline_id": outline.id,
+            "source_draft_id": previous_draft.id,
+            "source_draft_version": previous_draft.version,
+        }
+        if effective_bundle_id is not None:
+            artifact_refs["source_packet_bundle_id"] = effective_bundle_id
+        packet = self.work_store.save_packet(
+            WorkPacket(
+                work_packet_id=packet_id,
+                stage="style_revision",
+                scope=f"job:{job_id}",
+                instructions=(
+                    "Rewrite the supplied draft as a prose-only style pass guided by the anti-AI "
+                    "writing skill embedded in the system_prompt. Preserve meaning, facts, citations, "
+                    "source grounding, section_source_map, and bibliography_candidates. "
+                    "Return JSON matching response_schema; do not commit it."
+                ),
+                system_prompt=STYLE_REVISION_SYSTEM_PROMPT,
+                prompt_blocks=prompt_blocks,
+                response_schema=dict(STYLE_REVISION_SCHEMA),
+                context={
+                    "job_id": job_id,
+                    "task_spec_id": task_spec.id,
+                    "selected_topic_id": previous_draft.selected_topic_id,
+                    "evidence_map_id": research_result.evidence_map.id,
+                    "outline_id": outline.id,
+                    "source_draft_id": previous_draft.id,
+                    "source_draft_version": previous_draft.version,
+                    "source_packet_bundle_id": effective_bundle_id,
+                    "deterministic": asdict(det),
+                },
+                artifact_refs=artifact_refs,
+                commit_tool="commit_style_revision",
+                delegation=DelegationHint(
+                    recommended=False,
+                    reason=(
+                        "style revision rewrites the whole draft as prose; the orchestrator "
+                        "must apply the embedded anti-AI skill end-to-end"
+                    ),
+                    allowed_tools=["submit_work_result"],
+                    return_contract=(
+                        "Return one JSON object matching response_schema. Do not commit it; "
+                        "the orchestrator will submit and commit the result."
+                    ),
+                ),
+            )
+        )
+        if agent_run_id is not None:
+            self.run_store.attach_work_packet(
+                agent_run_id,
+                packet.work_packet_id,
+                current_phase="style_revision",
+                next_suggested_tools=["submit_work_result"],
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="prepare_style_revision",
+            data={
+                "work_packet_id": packet.work_packet_id,
+                "stage": packet.stage,
+                "job_id": job_id,
+                "source_draft_id": previous_draft.id,
+                "source_draft_version": previous_draft.version,
+                "commit_tool": packet.commit_tool,
+                "delegation": asdict(packet.delegation),
+                "response_schema": packet.response_schema,
+                "system_prompt": packet.system_prompt,
+                "prompt_blocks": [asdict(block) for block in packet.prompt_blocks],
+                "instructions": packet.instructions,
+                "artifact_refs": dict(packet.artifact_refs),
+                "deterministic": asdict(det),
+                "next_suggested_tools": ["submit_work_result"],
+            },
+            next_suggested_tools=["submit_work_result"],
+        )
+
+    def commit_style_revision(
+        self,
+        work_result_id: str,
+        *,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        if agent_run_id is not None:
+            try:
+                self.run_store.load_run(agent_run_id)
+            except (KeyError, FileNotFoundError) as exc:
+                return _missing_run_result("commit_style_revision", agent_run_id, exc)
+        try:
+            result = self.work_store.load_result(work_result_id)
+            packet = self.work_store.load_packet(result.work_packet_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return _error_result(
+                "commit_style_revision",
+                code="work_result_not_found",
+                message=f"WorkResult not found or incomplete: {work_result_id}",
+                exc=exc,
+            )
+        if packet.commit_tool != "commit_style_revision":
+            return _error_result(
+                "commit_style_revision",
+                code="wrong_commit_tool",
+                message=f"expected commit_style_revision packet, got {packet.commit_tool}",
+                exc=ValueError(packet.commit_tool),
+            )
+        validation_error = _validate_work_payload(
+            result.payload,
+            STYLE_REVISION_SCHEMA,
+            tool_name="commit_style_revision",
+        )
+        if validation_error is not None:
+            return validation_error
+        packet_job_id = packet.context.get("job_id") or packet.artifact_refs.get("job_id")
+        if not isinstance(packet_job_id, str) or not packet_job_id:
+            return _error_result(
+                "commit_style_revision",
+                code="job_id_missing",
+                message="style-revision packet is missing job_id",
+                exc=ValueError("job_id"),
+            )
+        try:
+            source_draft_id = str(packet.context["source_draft_id"])
+            previous_draft = self.stores.draft_store.find_by_id(packet_job_id, source_draft_id)
+        except (KeyError, FileNotFoundError, ValueError) as exc:
+            return _error_result_with_next(
+                "commit_style_revision",
+                code="style_revision_artifacts_missing",
+                message=(
+                    f"job {packet_job_id} is missing style-revision prerequisite artifacts"
+                ),
+                exc=exc,
+                next_suggested_tools=["prepare_style_revision"],
+            )
+
+        scope = f"job:{packet_job_id}"
+        existing_commit = next(
+            (
+                commit
+                for commit in self.work_store.list_commits(scope=scope, stage="style_revision")
+                if commit.work_result_id == result.work_result_id
+            ),
+            None,
+        )
+        already_committed = existing_commit is not None
+        if existing_commit is not None:
+            draft_version = existing_commit.artifact_refs.get("draft_version")
+            if isinstance(draft_version, int):
+                try:
+                    draft = self.stores.draft_store.load(packet_job_id, draft_version)
+                except KeyError as exc:
+                    return _error_result(
+                        "commit_style_revision",
+                        code="style_revision_commit_artifact_missing",
+                        message="Committed style-revision artifact is missing",
+                        exc=exc,
+                    )
+            else:
+                return _error_result(
+                    "commit_style_revision",
+                    code="style_revision_commit_artifact_missing",
+                    message="Committed style-revision artifact is missing draft_version",
+                    exc=KeyError(existing_commit.commit_id),
+                )
+            commit = existing_commit
+        else:
+            content = str(result.payload.get("content", "")).strip()
+            if not content:
+                return _error_result(
+                    "commit_style_revision",
+                    code="style_revision_empty_content",
+                    message="style-revision payload must include non-empty rewritten content",
+                    exc=ValueError("content"),
+                )
+            risks = [
+                str(item).strip()
+                for item in result.payload.get("known_risks", [])
+                if isinstance(item, (str, int, float)) and str(item).strip()
+            ]
+            weak_spots = risks if risks else list(previous_draft.known_weak_spots)
+            draft_version = self.stores.draft_store.next_version(packet_job_id)
+            draft = replace(
+                previous_draft,
+                id=f"draft_{uuid4().hex[:12]}",
+                version=draft_version,
+                content=content,
+                known_weak_spots=weak_spots,
+                origin="style_revision",
+                created_by="system",
+                parent_draft_id=previous_draft.id,
+                parent_export_id=None,
+                manual_request_id=None,
+                user_instruction=None,
+                selected_lenses=[],
+                prompt_version="drafting-style-revision-v1",
+                created_at=utc_now_iso(),
+            )
+            try:
+                self.stores.draft_store.save(draft)
+                self.stores.workflow.record_draft_ready(
+                    job_id=packet_job_id,
+                    draft=draft,
+                )
+            except (FileExistsError, TopicSelectionError) as exc:
+                return _error_result(
+                    "commit_style_revision",
+                    code="style_revision_commit_failed",
+                    message=str(exc),
+                    exc=exc,
+                )
+            artifact_refs = {
+                "job_id": packet_job_id,
+                "evidence_map_id": str(packet.context.get("evidence_map_id", "")),
+                "outline_id": str(packet.context.get("outline_id", "")),
+                "source_draft_id": previous_draft.id,
+                "source_draft_version": previous_draft.version,
+                "draft_id": draft.id,
+                "draft_version": draft_version,
+            }
+            source_packet_bundle_id = packet.context.get("source_packet_bundle_id")
+            if isinstance(source_packet_bundle_id, str) and source_packet_bundle_id:
+                artifact_refs["source_packet_bundle_id"] = source_packet_bundle_id
+            commit = self.work_store.save_commit(
+                scope=scope,
+                stage="style_revision",
+                work_packet_id=packet.work_packet_id,
+                work_result_id=result.work_result_id,
+                artifact_refs=artifact_refs,
+            )
+
         next_tools = ["prepare_validation"]
         if agent_run_id is not None:
             self.run_store.attach_work_result(
@@ -3137,12 +3529,12 @@ class AgentToolFacade:
             self.run_store.checkpoint(
                 agent_run_id,
                 current_phase="validation",
-                decision="draft_committed",
+                decision="style_revision_committed",
                 next_suggested_tools=next_tools,
             )
         return ToolResult(
             ok=True,
-            tool_name="commit_draft",
+            tool_name="commit_style_revision",
             data={
                 "commit_id": commit.commit_id,
                 "work_result_id": result.work_result_id,

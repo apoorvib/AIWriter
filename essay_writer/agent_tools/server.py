@@ -78,14 +78,12 @@ def build_server(data_dir: str | Path | None = None) -> Any:
     @app.tool()
     def prepare_source_card(
         source_id: str,
-        selected_excerpt_chars: int = 12000,
         agent_run_id: str | None = None,
         reuse_existing: bool = True,
     ) -> dict[str, object]:
         return result(
             facade.prepare_source_card(
                 source_id,
-                selected_excerpt_chars=selected_excerpt_chars,
                 agent_run_id=agent_run_id,
                 reuse_existing=reuse_existing,
             )
@@ -132,16 +130,12 @@ def build_server(data_dir: str | Path | None = None) -> Any:
 
     @app.tool()
     def commit_task_spec(
-        work_result_id: str | None = None,
-        payload: dict[str, object] | None = None,
-        raw_text: str | None = None,
+        work_result_id: str,
         agent_run_id: str | None = None,
     ) -> dict[str, object]:
         return result(
             facade.commit_task_spec(
                 work_result_id=work_result_id,
-                payload=payload,
-                raw_text=raw_text,
                 agent_run_id=agent_run_id,
             )
         )
@@ -308,6 +302,31 @@ def build_server(data_dir: str | Path | None = None) -> Any:
     @app.tool()
     def commit_draft(work_result_id: str, agent_run_id: str | None = None) -> dict[str, object]:
         return result(facade.commit_draft(work_result_id, agent_run_id=agent_run_id))
+
+    @app.tool()
+    def prepare_style_revision(
+        job_id: str,
+        source_draft_id: str | None = None,
+        source_packet_bundle_id: str | None = None,
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        return result(
+            facade.prepare_style_revision(
+                job_id,
+                source_draft_id=source_draft_id,
+                source_packet_bundle_id=source_packet_bundle_id,
+                agent_run_id=agent_run_id,
+            )
+        )
+
+    @app.tool()
+    def commit_style_revision(
+        work_result_id: str,
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        return result(
+            facade.commit_style_revision(work_result_id, agent_run_id=agent_run_id)
+        )
 
     @app.tool()
     def prepare_revision(

@@ -2,7 +2,23 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any
+
+
+_QUOTE_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_for_quote_match(text: str) -> str:
+    """Normalize text for tolerant quote-containment checks.
+
+    PDF extraction frequently leaves ligatures (ﬁ, ﬀ, ﬂ, …) and stray newlines
+    inside otherwise-verbatim quotations. Author-supplied quotes are usually
+    typed without those artifacts. NFKC decomposes ligatures into ASCII letters
+    and we collapse runs of whitespace so the two sides can be compared on
+    semantic content rather than byte-equality.
+    """
+    return _QUOTE_WHITESPACE_RE.sub(" ", unicodedata.normalize("NFKC", text)).strip()
 
 from llm.client import LLMClient, UserBlock
 from essay_writer.jobs.schema import EssayJob
@@ -310,8 +326,11 @@ def _note_from_payload(
     quote = item.get("quote")
     quote_text = None if quote is None else str(quote).strip()
     if quote_text and quote_text not in chunk.text:
-        warnings.append(f"Dropped quote for {note_id} because it was not found in chunk {chunk.chunk_id}.")
-        quote_text = None
+        if _normalize_for_quote_match(quote_text) in _normalize_for_quote_match(chunk.text):
+            pass
+        else:
+            warnings.append(f"Dropped quote for {note_id} because it was not found in chunk {chunk.chunk_id}.")
+            quote_text = None
     page_start = int(item.get("page_start", chunk.page_start))
     page_end = int(item.get("page_end", chunk.page_end))
     if page_start != chunk.page_start or page_end != chunk.page_end:

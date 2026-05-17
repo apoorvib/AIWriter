@@ -2835,3 +2835,31 @@ Caveats:
 - Files changed: `.mcp.example.json`, `docs/agent-tool-mode-mcp.md`, `README.md`, `essay_writer/task_spec/storage.py`, `docs/superpowers/plans/2026-05-09-agent-tool-mode-mcp-implementation.md`, `session-log.md`.
 - Tests/commands run: `pytest tests\task_spec\test_storage.py tests\agent_tools\test_task_spec_tools.py -q` (11 passed, known pytest cache warning); `pytest tests\task_spec tests\topic_ideation tests\research_planning tests\research tests\outlining tests\drafting tests\validation tests\exporting tests\jobs\test_workflow.py -q` (145 passed, known pytest cache warning); `pytest tests\agent_tools -q` (92 passed, 1 skipped because `mcp` is not installed, known pytest cache warning); `pytest tests\sources\test_ingestion.py tests\sources\test_summary.py tests\sources\test_source_access.py -q` (23 passed, known pytest cache warning); `python -m compileall essay_writer tests\agent_tools` (passed); `git diff --check` (passed with LF-to-CRLF notices).
 - Caveats/follow-ups: `mcp` is not installed in this environment, so the live MCP server construction test remains skipped until `pip install -e ".[agent-tools]"` is run. Pytest still reports the known `.pytest_cache` permission warning in this Windows environment.
+
+## 2026-05-16 - Codex - VS Code Virtual Environment Auto-Activation
+
+- Summary: Added VS Code workspace settings to select the repo-local `.venv` interpreter and enable Python terminal environment activation for current and new integrated terminals.
+- Files changed: `.vscode/settings.json`, `session-log.md`.
+- Tests/commands run: `Get-Content .vscode\settings.json` (verified settings); `python -m json.tool .vscode\settings.json` (valid JSON); `git diff --check -- .vscode\settings.json session-log.md` (passed).
+- Caveats/follow-ups: Applies to VS Code/Codex integrated terminals with the Python extension; plain external `cmd.exe` windows still need manual activation or a shell hook.
+
+## 2026-05-16 - Codex - VS Code Command Prompt Venv Activation Fix
+
+- Summary: Replaced Python-extension-only terminal activation with a workspace Command Prompt profile that calls `.venv\Scripts\activate.bat` when a new integrated terminal opens.
+- Files changed: `.vscode/settings.json`, `session-log.md`.
+- Tests/commands run: `Test-Path .venv\Scripts\activate.bat`; `cmd.exe /v:on /d /s /c "call C:\Apoorv\Startups\EssayWriter\AIWriter\.venv\Scripts\activate.bat && echo !VIRTUAL_ENV! && where python"` (confirmed `.venv` and `.venv\Scripts\python.exe`); `python -m json.tool .vscode\settings.json`.
+- Caveats/follow-ups: Existing VS Code terminals must be closed and a new integrated terminal opened; if VS Code already has another workspace/user default terminal override, choose `Command Prompt (.venv)` from the terminal profile picker.
+
+## 2026-05-16 - Codex - VS Code Cmd Quoting Fix
+
+- Summary: Moved Command Prompt activation into `.vscode\activate-venv.cmd` to avoid VS Code/cmd nested-quote parsing and updated the terminal profile to run that wrapper.
+- Files changed: `.vscode/settings.json`, `.vscode/activate-venv.cmd`, `session-log.md`.
+- Tests/commands run: `python -m json.tool .vscode\settings.json`; `cmd.exe /v:on /d /s /c "call .vscode\activate-venv.cmd && echo !VIRTUAL_ENV! && where python"`; `cmd.exe /v:on /d /s /c "call C:\Apoorv\Startups\EssayWriter\AIWriter\.vscode\activate-venv.cmd && echo !VIRTUAL_ENV! && where python"` (both confirmed `.venv` and `.venv\Scripts\python.exe` first).
+- Caveats/follow-ups: Existing integrated terminals must be closed; open a new terminal with the `Command Prompt (.venv)` profile after VS Code reloads workspace settings.
+
+## 2026-05-16 - Codex - VS Code PowerShell Venv Profile
+
+- Summary: Replaced the Command Prompt terminal profile with a PowerShell profile that activates `.venv\Scripts\Activate.ps1`, preserving PowerShell aliases such as `ls`.
+- Files changed: `.vscode/settings.json`, `.vscode/activate-venv.cmd`, `session-log.md`.
+- Tests/commands run: `Test-Path .venv\Scripts\Activate.ps1`; `python -m json.tool .vscode\settings.json`; `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '& "C:\Apoorv\Startups\EssayWriter\AIWriter\.venv\Scripts\Activate.ps1"; Write-Output $env:VIRTUAL_ENV; (Get-Command python).Source; (Get-Alias ls).Definition'` (confirmed `.venv`, `.venv\Scripts\python.exe`, and `ls` alias to `Get-ChildItem`).
+- Caveats/follow-ups: Existing integrated terminals must be closed or the VS Code window reloaded before the new `PowerShell (.venv)` default profile is used.

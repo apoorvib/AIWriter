@@ -143,6 +143,71 @@ def test_final_topic_research_drops_invalid_chunk_and_bad_quote_references() -> 
     assert any("Corrected page range" in warning for warning in result.report.warnings)
 
 
+def test_research_accepts_quote_with_pdf_ligatures_and_line_breaks() -> None:
+    """PDF extraction emits Unicode ligatures (ﬁ, ﬀ) and stray line breaks
+    inside otherwise-verbatim text. A quote that matches the chunk after NFKC
+    normalization and whitespace collapse should be kept, not dropped."""
+    client = MockLLMClient(
+        responses=[
+            {
+                "notes": [
+                    {
+                        "source_id": "src1",
+                        "chunk_id": "chunk1",
+                        "page_start": 2,
+                        "page_end": 3,
+                        "claim": "Findings affect renters.",
+                        "quote": "Findings affect renters in older housing.",
+                        "paraphrase": "Renters in older stock bear the burden.",
+                        "relevance": "Grounds the housing-inequality angle.",
+                        "supports_topic": True,
+                        "evidence_type": "argument",
+                        "tags": [],
+                        "confidence": 0.9,
+                    }
+                ],
+                "evidence_groups": [
+                    {
+                        "label": "Housing",
+                        "purpose": "thesis_support",
+                        "note_ids": ["note_001"],
+                        "synthesis": "Housing framing.",
+                    }
+                ],
+                "gaps": [],
+                "conflicts": [],
+                "warnings": [],
+            }
+        ]
+    )
+
+    evidence = RetrievedTopicEvidence(
+        topic_id="topic_001",
+        chunks=[
+            TopicEvidenceChunk(
+                source_id="src1",
+                chunk_id="chunk1",
+                page_start=2,
+                page_end=3,
+                text="Findings aﬀect renters\nin older housing. Cooling centers are unevenly distributed.",
+                score=0.1,
+            )
+        ],
+    )
+
+    result = FinalTopicResearchService(client).extract(
+        job=_job(),
+        task_spec=_task_spec(),
+        selected_topic=_selected_topic(),
+        retrieved_evidence=[evidence],
+    )
+
+    assert len(result.evidence_map.notes) == 1
+    note = result.evidence_map.notes[0]
+    assert note.quote == "Findings affect renters in older housing."
+    assert not any("not found in chunk" in warning for warning in result.report.warnings)
+
+
 def test_research_drops_literal_duplicate_notes() -> None:
     """Q4: the LLM occasionally emits the same claim twice for the same
     chunk under different paraphrases. Literal-claim dedup catches the

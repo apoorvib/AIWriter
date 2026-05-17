@@ -5,7 +5,7 @@ from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
-from llm.client import LLMClient
+from llm.client import LLMClient, UserBlock
 from essay_writer.drafting.anti_ai_skill import ANTI_AI_SKILL_DOCUMENT
 from essay_writer.drafting.schema import EssayDraft
 from essay_writer.jobs.schema import EssayJob
@@ -14,6 +14,7 @@ from essay_writer.research.schema import EvidenceMap
 from essay_writer.sources.access_schema import SourceTextPacket
 from essay_writer.task_spec.schema import TaskSpecification
 from essay_writer.validation.checks import run_deterministic_checks
+from essay_writer.validation.schema import DeterministicCheckResult
 from essay_writer.writing_style.prompts import build_writing_style_prompt_block
 from essay_writer.writing_style.schema import WritingStylePayload
 
@@ -114,6 +115,62 @@ class FinalStyleRevisionService:
         )
 
 
+def build_style_revision_static_context_json(
+    *,
+    task_spec: TaskSpecification,
+    draft: EssayDraft,
+    outline: ThesisOutline,
+    evidence_map: EvidenceMap,
+    source_packets: list[SourceTextPacket],
+    det: DeterministicCheckResult,
+) -> str:
+    """Serialize the static style-revision context as a JSON string.
+
+    Shared between Pipeline Mode (`FinalStyleRevisionService`) and Agent Tool
+    Mode (`prepare_style_revision`) so both paths submit identical prompts to
+    the LLM. Field order is fixed; do not reorder without invalidating the
+    Anthropic prompt cache."""
+    context = _style_revision_context(
+        task_spec=task_spec,
+        draft=draft,
+        outline=outline,
+        evidence_map=evidence_map,
+        source_packets=source_packets,
+        det=det,
+    )
+    return json.dumps(context, ensure_ascii=False)
+
+
+def build_style_revision_user_blocks(
+    *,
+    task_spec: TaskSpecification,
+    draft: EssayDraft,
+    outline: ThesisOutline,
+    evidence_map: EvidenceMap,
+    source_packets: list[SourceTextPacket],
+    det: DeterministicCheckResult,
+    writing_style_payload: WritingStylePayload | None,
+) -> list[UserBlock]:
+    """Split the style-revision user message into a cacheable static block plus
+    an optional writing-style suffix block. Mirrors `build_drafting_user_blocks`
+    so prompt caching behavior matches between drafting and the style pass."""
+    static_json = build_style_revision_static_context_json(
+        task_spec=task_spec,
+        draft=draft,
+        outline=outline,
+        evidence_map=evidence_map,
+        source_packets=source_packets,
+        det=det,
+    )
+    if writing_style_payload is None:
+        return [UserBlock(text=static_json, cacheable=True)]
+    suffix = f"\n\n{build_writing_style_prompt_block(writing_style_payload)}"
+    return [
+        UserBlock(text=static_json, cacheable=True),
+        UserBlock(text=suffix, cacheable=False),
+    ]
+
+
 def _build_user_message(
     *,
     task_spec: TaskSpecification,
@@ -124,6 +181,27 @@ def _build_user_message(
     writing_style_payload: WritingStylePayload | None,
 ) -> str:
     det = run_deterministic_checks(draft.content)
+    blocks = build_style_revision_user_blocks(
+        task_spec=task_spec,
+        draft=draft,
+        outline=outline,
+        evidence_map=evidence_map,
+        source_packets=source_packets,
+        det=det,
+        writing_style_payload=writing_style_payload,
+    )
+    return "".join(block.text for block in blocks)
+
+
+def _style_revision_context(
+    *,
+    task_spec: TaskSpecification,
+    draft: EssayDraft,
+    outline: ThesisOutline,
+    evidence_map: EvidenceMap,
+    source_packets: list[SourceTextPacket],
+    det: DeterministicCheckResult,
+) -> dict[str, Any]:
     context = {
         "task_spec": {
             "essay_type": task_spec.essay_type,
@@ -219,10 +297,7 @@ def _build_user_message(
             "known_weak_spots": draft.known_weak_spots,
         },
     }
-    context_json = json.dumps(context, ensure_ascii=False)
-    if writing_style_payload is None:
-        return context_json
-    return f"{context_json}\n\n{build_writing_style_prompt_block(writing_style_payload)}"
+    return context
 
 
 def _payload_list(payload: dict[str, Any], key: str, *, max_items: int) -> list[str]:

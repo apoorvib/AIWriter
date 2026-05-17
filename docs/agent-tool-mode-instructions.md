@@ -9,11 +9,12 @@ You are orchestrating EssayWriter through local Agent Tool Mode tools.
 3. Start or recover an AgentRun before doing stateful work.
 4. Treat persisted AgentRun state as authoritative and chat memory as advisory.
 5. For model-reasoning stages, call `prepare_*`, produce JSON matching `response_schema`, call `submit_work_result`, then call the named `commit_*` tool.
-6. Prefer `work_result_id` for commits.
-7. Never invent source IDs, page numbers, note IDs, packet IDs, work packet IDs, work result IDs, draft IDs, validation IDs, or export IDs.
-8. If `blocked_on` is present, ask the user to resolve it before continuing.
-9. If context was compacted or you are unsure what happened, call `recover_agent_run` before taking another state-changing action.
-10. If a work packet has `delegation.recommended=true` and your harness supports subagents, delegate the packet unless the user disabled subagents or the packet is small enough to handle directly.
+6. **For every `prepare_*` work packet, the `system_prompt` field returned by the tool IS the system message you MUST use when generating the JSON. Do not summarize it, skip it, paraphrase it, or substitute your own.** The `prompt_blocks` array contains the user message(s) in order. `response_schema` defines only the output shape. Skipping `system_prompt` silently bypasses the prompt engineering the workflow depends on — grounding rules, source-trust boundaries, anti-AI writing rules, and stage-specific output contracts. If you cannot or will not honor a packet's `system_prompt`, stop and report it instead of producing a result.
+7. Prefer `work_result_id` for commits.
+8. Never invent source IDs, page numbers, note IDs, packet IDs, work packet IDs, work result IDs, draft IDs, validation IDs, or export IDs.
+9. If `blocked_on` is present, ask the user to resolve it before continuing.
+10. If context was compacted or you are unsure what happened, call `recover_agent_run` before taking another state-changing action.
+11. If a work packet has `delegation.recommended=true` and your harness supports subagents, delegate the packet unless the user disabled subagents or the packet is small enough to handle directly. When delegating, the subagent must also use the packet's `system_prompt` verbatim — pass it through, do not strip it.
 
 ## Normal Flow
 
@@ -47,11 +48,16 @@ This is the target workflow surface. During partial implementation, call only to
 26. `prepare_draft`
 27. `submit_work_result`
 28. `commit_draft`
-29. `prepare_validation`
+29. `prepare_style_revision`
 30. `submit_work_result`
-31. `commit_validation`
-32. `export_markdown`
+31. `commit_style_revision`
+32. `prepare_validation`
+33. `submit_work_result`
+34. `commit_validation`
+35. `export_markdown`
+
+The `prepare_style_revision` → `commit_style_revision` pair is the prose-only anti-AI rewrite pass. Its `system_prompt` embeds the full anti-AI writing skill; skipping this step or generating the rewrite under your own system instructions will produce text that reads as machine-generated. Skip it only when the user has explicitly opted out (for example, a research note where the AI-flavored register is acceptable). If skipped, `commit_draft` is followed directly by `prepare_validation` against the unrevised draft.
 
 ## Subagents
 
-Use subagents for source-card packets, deep source reading, web-research capture, topic feasibility checks, and independent validation lenses. Keep final synthesis, final thesis choice, draft commits, validation commits, revision commits, and export under the main orchestrator unless a future bounded-write packet explicitly allows otherwise.
+Use subagents for source-card packets, deep source reading, web-research capture, topic feasibility checks, and independent validation lenses. Keep final synthesis, final thesis choice, draft commits, style-revision commits, validation commits, revision commits, and export under the main orchestrator unless a future bounded-write packet explicitly allows otherwise.
