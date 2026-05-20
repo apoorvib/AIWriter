@@ -17,6 +17,10 @@ from essay_writer.task_spec.storage import TaskSpecStore
 from essay_writer.topic_ideation.retrieval import TopicEvidenceRetriever
 from essay_writer.topic_ideation.storage import TopicRoundStore
 from essay_writer.validation.storage import ValidationStore
+from essay_writer.writing_style.storage import (
+    HumanWritingSampleStore,
+    WritingStyleContentStore,
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,8 @@ class AgentStoreBundle:
     draft_store: DraftStore
     validation_store: ValidationStore
     export_store: FinalExportStore
+    writing_style_sample_store: HumanWritingSampleStore
+    writing_style_content_store: WritingStyleContentStore
 
     @classmethod
     def from_data_dir(cls, data_dir: str | Path) -> "AgentStoreBundle":
@@ -67,4 +73,10 @@ class AgentStoreBundle:
             draft_store=DraftStore(root / "drafts"),
             validation_store=ValidationStore(root / "validations"),
             export_store=FinalExportStore(root / "exports"),
+            writing_style_sample_store=HumanWritingSampleStore(
+                root / "writing_style" / "samples"
+            ),
+            writing_style_content_store=WritingStyleContentStore(
+                root / "writing_style" / "content"
+            ),
         )

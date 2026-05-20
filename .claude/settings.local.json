@@ -32,7 +32,8 @@
       "mcp__essaywriter__prepare_validation",
       "mcp__essaywriter__commit_validation",
       "mcp__essaywriter__export_markdown",
-      "PowerShell($j = Get-Content \"C:\\\\Users\\\\Apoorv\\\\.claude\\\\projects\\\\C--Apoorv-Startups-EssayWriter-AIWriter\\\\a681698f-3086-4c80-8cad-df93b020ceb2\\\\tool-results\\\\mcp-essaywriter-prepare_draft-1778995825285.txt\" -Raw | ConvertFrom-Json; \"system_prompt length \\(chars\\): $\\($j.data.system_prompt.Length\\)\"; \"system_prompt starts with:\"; $j.data.system_prompt.Substring\\(0, 400\\); \"...\"; \"system_prompt ends with:\"; $j.data.system_prompt.Substring\\($j.data.system_prompt.Length - 400\\))"
+      "PowerShell($j = Get-Content \"C:\\\\Users\\\\Apoorv\\\\.claude\\\\projects\\\\C--Apoorv-Startups-EssayWriter-AIWriter\\\\a681698f-3086-4c80-8cad-df93b020ceb2\\\\tool-results\\\\mcp-essaywriter-prepare_draft-1778995825285.txt\" -Raw | ConvertFrom-Json; \"system_prompt length \\(chars\\): $\\($j.data.system_prompt.Length\\)\"; \"system_prompt starts with:\"; $j.data.system_prompt.Substring\\(0, 400\\); \"...\"; \"system_prompt ends with:\"; $j.data.system_prompt.Substring\\($j.data.system_prompt.Length - 400\\))",
+      "Skill(superpowers:test-driven-development)"
     ]
   },
   "enableAllProjectMcpServers": true,

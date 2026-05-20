@@ -27,37 +27,125 @@ This is the target workflow surface. During partial implementation, call only to
 5. produce source-card JSON
 6. `submit_work_result`
 7. `commit_source_card`
-8. `prepare_task_spec`
-9. produce task-spec JSON
-10. `submit_work_result`
-11. `commit_task_spec`
-12. `create_job_from_artifacts`
-13. `prepare_topics`
-14. `submit_work_result`
-15. `commit_topics`
-16. ask the user to select or reject a topic
-17. `select_topic` or `reject_topic`
-18. `create_research_plan`
-19. `resolve_source_requests`
-20. `prepare_research_notes`
-21. `submit_work_result`
-22. `commit_research_notes`
-23. `prepare_outline`
-24. `submit_work_result`
-25. `commit_outline`
-26. `prepare_draft`
+8. (recommended) `ingest_writing_style_sample` for each user writing sample
+9. (recommended) `prepare_writing_style_content`
+10. (recommended) produce writing-style-content JSON
+11. (recommended) `submit_work_result`
+12. (recommended) `commit_writing_style_content`
+13. `prepare_task_spec`
+14. produce task-spec JSON
+15. `submit_work_result`
+16. `commit_task_spec`
+17. `create_job_from_artifacts`
+18. (if writing-style content exists) `attach_writing_style_to_job`
+19. `prepare_topics`
+20. `submit_work_result`
+21. `commit_topics`
+22. ask the user to select or reject a topic
+23. `select_topic` or `reject_topic`
+24. `create_research_plan`
+25. `resolve_source_requests`
+26. `prepare_research_notes`
 27. `submit_work_result`
-28. `commit_draft`
-29. `prepare_style_revision`
+28. `commit_research_notes`
+29. `prepare_outline`
 30. `submit_work_result`
-31. `commit_style_revision`
-32. `prepare_validation`
+31. `commit_outline`
+32. `prepare_draft`
 33. `submit_work_result`
-34. `commit_validation`
-35. `export_markdown`
-36. after the user confirms the essay is good: optionally `cleanup_agent_run`
+34. `commit_draft`
+35. `prepare_style_revision`
+36. if the response includes `windowing.mode == "windowed"`: for each window
+    index returned, call `prepare_style_revision_window`, `submit_work_result`,
+    and collect the `work_result_id`s. Otherwise produce a single
+    style-revision JSON and `submit_work_result`.
+37. `commit_style_revision` (pass the single `work_result_id` for short
+    drafts, or the ordered list of per-window `work_result_id`s for windowed
+    drafts)
+38. if `commit_style_revision` returns a hard-tier rejection, re-prepare and
+    re-submit only the windows it names, then call `commit_style_revision`
+    again with the updated `work_result_id`s
+39. `prepare_validation`
+40. `submit_work_result`
+41. `commit_validation`
+42. if `commit_validation` reports failure: `prepare_revision` →
+    `submit_work_result` → `commit_revision`, then loop back to
+    `prepare_validation`
+43. `export_markdown`
+44. after the user confirms the essay is good: optionally `cleanup_agent_run`
 
-The `prepare_style_revision` → `commit_style_revision` pair is the prose-only anti-AI rewrite pass. Its `system_prompt` embeds the full anti-AI writing skill; skipping this step or generating the rewrite under your own system instructions will produce text that reads as machine-generated. Skip it only when the user has explicitly opted out (for example, a research note where the AI-flavored register is acceptable). If skipped, `commit_draft` is followed directly by `prepare_validation` against the unrevised draft.
+### Writing-style ingestion (voice calibration)
+
+The anti-AI writing skill explicitly requires that the rewrite match the user's
+authentic voice rather than a generic "human-sounding" target. If the user has
+not provided writing samples, ask for one or two short samples (a paragraph
+each from a different context — a different class, a personal email, a
+journal entry) before drafting.
+
+Where the user should put the files:
+
+- `ingest_writing_style_sample(path)` accepts any absolute or relative path,
+  so the user can keep samples anywhere the process can read.
+- Recommended convention: `<repo-root>/inputs/writing_style/` (mirrors the
+  pattern used for source documents). Not enforced.
+- Supported formats: PDF, DOCX, TXT, MD.
+- The original file is copied into the app's data directory on ingest, so
+  the user can move or delete the source after a successful ingest.
+- Samples are stored under `${ESSAY_DATA_DIR}/writing_style/samples/` and
+  survive across jobs. A user who ingested a sample for a previous job does
+  not need to re-ingest it.
+
+Run `ingest_writing_style_sample` for each sample, then
+`prepare_writing_style_content` + `commit_writing_style_content`, then
+`attach_writing_style_to_job` after `create_job_from_artifacts`. Once a job
+has attached writing-style content, every subsequent `prepare_draft`,
+`prepare_style_revision`, `prepare_style_revision_window`, and
+`prepare_revision` packet will carry the rendered style block in its
+`prompt_blocks`. If no sample is available, proceed anyway and warn the user
+that the anti-AI pass will run without voice calibration.
+
+### Windowed style revision (long drafts)
+
+`prepare_style_revision` automatically switches to a windowed flow for drafts
+above the configured length threshold (currently ~1200 words). The response
+will contain `windowing.mode == "windowed"` plus a `windowing.windows` array
+describing each window's paragraph range and word count. You must call
+`prepare_style_revision_window` for every window index in that array — do not
+skip any. Each window packet carries the full anti-AI skill in its
+`system_prompt`, the window prose, transition paragraphs on either side
+(when present), and a window-level deterministic check result. Generate one
+JSON object per window matching `STYLE_REVISION_SCHEMA`, submit each via
+`submit_work_result`, and then pass the ordered list of resulting
+`work_result_id`s to `commit_style_revision`.
+
+For short drafts the response will not contain a windowing plan; treat
+`prepare_style_revision` as a single packet exactly like the older flow.
+
+### Hard-tier rejection at commit
+
+`commit_style_revision` and `commit_revision` run hard-tier deterministic
+checks against the assembled output before persisting a new draft. If any
+of the following are present, commit rejects:
+
+- em dashes (U+2014)
+- decorative en-dash or hyphen pauses
+- tier-1 flagged vocabulary (delve, leverage, robust, utilize, foster, etc.)
+- bad conclusion openers ("In conclusion," "In summary," "Overall,")
+- signposting phrases ("Having examined…", "Let's now turn to…", etc.)
+- triplet + contrastive-negation combos
+
+A hard-tier rejection response includes the offending counts and (for windowed
+revisions) the window indices that produced them, plus
+`next_suggested_tools`. Fix the flagged patterns in the relevant window(s)
+only and re-submit; do not re-do windows that were already accepted.
+
+The `prepare_style_revision` → `commit_style_revision` pair is the prose-only
+anti-AI rewrite pass. Its `system_prompt` embeds the full anti-AI writing
+skill; skipping this step or generating the rewrite under your own system
+instructions will produce text that reads as machine-generated. Skip it only
+when the user has explicitly opted out (for example, a research note where the
+AI-flavored register is acceptable). If skipped, `commit_draft` is followed
+directly by `prepare_validation` against the unrevised draft.
 
 ## Cleanup after a successful run
 
@@ -69,7 +157,7 @@ After `export_markdown` returns and the user has explicitly confirmed the essay 
 4. If the user is unsure, default to `scope="workflow_logs"` (the safest tier). Never default to `"all_except_export"` without an explicit user choice.
 
 Scopes:
-- `workflow_logs` (default): deletes agent-run events, agent-run checkpoints, work packets, work results, work commits, and source-packet bundles for this run. Preserves the agent-run record, the job, all drafts, all exports, validation reports, outlines, research, topics, task specs, and uploaded source files.
+- `workflow_logs` (default): deletes agent-run events, agent-run checkpoints, work packets, work results, work commits, and source-packet bundles for this run. Preserves the agent-run record, the job, all drafts, all exports, validation reports, outlines, research, topics, task specs, uploaded source files, and ingested writing-style samples plus their derived writing-style content.
 - `intermediate_artifacts`: also deletes research plans, topics, evidence maps / research reports, outlines, validation reports, and older draft versions. Preserves the latest draft, exports, task specs, sources, the job record, and the agent-run record.
 - `all_except_export`: also deletes all drafts, the job record, and the agent-run record. Preserves exports, task specs, and uploaded sources. Use only when the user explicitly says they only want to keep the final exported markdown.
 

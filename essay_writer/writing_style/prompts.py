@@ -103,6 +103,16 @@ def build_writing_style_prompt_block(payload: WritingStylePayload) -> str:
         "Do not copy facts, examples, citations, claims, or domain content from them unless the essay's actual sources independently support that material.",
         "These samples are style exemplars only.",
         "",
+        "<precedence>",
+        "Voice wins over generic anti-AI heuristics for soft-tier rules: sentence length, paragraph length variance,",
+        "participial-phrase rate, contrastive-negation rate, triplet clustering, tier-2 vocabulary, hedging, copula choice.",
+        "If the user's samples show a habit, preserve it even when an anti-AI heuristic would push the other way.",
+        "Hard-tier rules still apply regardless of voice: no em dashes, no en-dash or decorative-hyphen pauses,",
+        "no tier-1 vocabulary (delve, leverage, robust, utilize, etc.), no signposting phrases,",
+        "no \"In conclusion,\" / \"In summary,\" / \"Overall,\" conclusion openers,",
+        "and no triplet-list + contrastive-negation combo.",
+        "</precedence>",
+        "",
         "<style_guidance>",
     ]
     lines.extend(f"- {item}" for item in content.guidance)

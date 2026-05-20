@@ -30,6 +30,15 @@ from essay_writer.drafting.style_revision import (
     STYLE_REVISION_SYSTEM_PROMPT,
     build_style_revision_user_blocks,
 )
+from essay_writer.drafting.windowing import (
+    DEFAULT_TARGET_WINDOW_WORDS,
+    DEFAULT_WINDOWED_REVISION_WORD_THRESHOLD,
+    StyleRevisionWindow,
+    assemble_window_outputs,
+    plan_style_revision_windows,
+    should_window_style_revision,
+    split_paragraphs,
+)
 from essay_writer.exporting.service import FinalExportService
 from essay_writer.jobs import TopicSelectionError
 from essay_writer.outlining.service import OUTLINE_SCHEMA, OUTLINE_SYSTEM_PROMPT
@@ -83,6 +92,10 @@ CURRENTLY_CALLABLE_TOOLS = [
     "prepare_source_card",
     "submit_work_result",
     "commit_source_card",
+    "ingest_writing_style_sample",
+    "prepare_writing_style_content",
+    "commit_writing_style_content",
+    "attach_writing_style_to_job",
     "prepare_task_spec",
     "commit_task_spec",
     "create_job_from_artifacts",
@@ -853,6 +866,437 @@ class AgentToolFacade:
             data=data,
             warnings=list(result.warnings),
             next_suggested_tools=["prepare_source_card"],
+        )
+
+    def ingest_writing_style_sample(
+        self,
+        sample_path: str | Path,
+        *,
+        title: str | None = None,
+        sample_id: str | None = None,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        path = Path(sample_path)
+        if not path.exists():
+            return _error_result(
+                "ingest_writing_style_sample",
+                code="writing_style_sample_not_found",
+                message=f"writing style sample not found: {path}",
+                exc=FileNotFoundError(path),
+            )
+        if not path.is_file():
+            return _error_result(
+                "ingest_writing_style_sample",
+                code="writing_style_sample_not_file",
+                message=f"writing style sample is not a file: {path}",
+                exc=IsADirectoryError(path),
+            )
+        suffix = path.suffix.lower()
+        if suffix not in _SUPPORTED_WRITING_STYLE_SUFFIXES:
+            return _error_result(
+                "ingest_writing_style_sample",
+                code="unsupported_writing_style_sample_type",
+                message=(
+                    f"unsupported writing style sample type: {suffix or '<none>'}; "
+                    f"supported suffixes: {', '.join(sorted(_SUPPORTED_WRITING_STYLE_SUFFIXES))}"
+                ),
+                exc=ValueError(suffix),
+            )
+        run = None
+        if agent_run_id is not None:
+            try:
+                run = self.run_store.load_run(agent_run_id)
+            except (KeyError, FileNotFoundError) as exc:
+                return _missing_run_result("ingest_writing_style_sample", agent_run_id, exc)
+
+        from essay_writer.writing_style.ingestion import (
+            HumanWritingSampleIngestionService,
+        )
+
+        service = HumanWritingSampleIngestionService(
+            self.stores.writing_style_sample_store,
+            reader=self.source_materializer._document_reader,
+        )
+        try:
+            sample = service.ingest(path, title=title, sample_id=sample_id)
+        except FileNotFoundError as exc:
+            return _error_result(
+                "ingest_writing_style_sample",
+                code="writing_style_sample_not_found",
+                message=str(exc),
+                exc=exc,
+            )
+
+        data = {
+            "sample_id": sample.id,
+            "title": sample.title,
+            "source_filename": sample.source_filename,
+            "source_type": sample.source_type,
+            "page_count": sample.page_count,
+            "word_count": sample.word_count,
+            "char_count": sample.char_count,
+            "extraction_method": sample.extraction_method,
+            "warnings": list(sample.warnings),
+            "artifact_dir": sample.artifact_dir,
+            "next_suggested_tools": ["prepare_writing_style_content"],
+        }
+        if agent_run_id is not None and run is not None:
+            existing_ids = list(run.artifact_refs.get("writing_style_sample_ids", []))
+            if sample.id not in existing_ids:
+                existing_ids.append(sample.id)
+            self.run_store.update_run(
+                replace(
+                    run,
+                    artifact_refs={
+                        **run.artifact_refs,
+                        "writing_style_sample_ids": existing_ids,
+                    },
+                    next_suggested_tools=["prepare_writing_style_content"],
+                )
+            )
+            self.run_store.append_event(
+                agent_run_id,
+                "writing_style_sample_ingested",
+                "Ingested writing-style sample.",
+                data={"sample_id": sample.id, "word_count": sample.word_count},
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="ingest_writing_style_sample",
+            data=data,
+            warnings=list(sample.warnings),
+            next_suggested_tools=["prepare_writing_style_content"],
+        )
+
+    def prepare_writing_style_content(
+        self,
+        sample_ids: list[str],
+        *,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        if not sample_ids:
+            return _error_result(
+                "prepare_writing_style_content",
+                code="writing_style_sample_ids_empty",
+                message="at least one writing-style sample_id is required",
+                exc=ValueError("sample_ids"),
+            )
+        run = None
+        if agent_run_id is not None:
+            try:
+                run = self.run_store.load_run(agent_run_id)
+            except (KeyError, FileNotFoundError) as exc:
+                return _missing_run_result(
+                    "prepare_writing_style_content", agent_run_id, exc
+                )
+        try:
+            prompt_samples = self.stores.writing_style_sample_store.load_prompt_samples(
+                list(sample_ids)
+            )
+        except (KeyError, FileNotFoundError) as exc:
+            return _error_result_with_next(
+                "prepare_writing_style_content",
+                code="writing_style_sample_not_found",
+                message=f"writing-style sample not found: {exc}",
+                exc=exc,
+                next_suggested_tools=["ingest_writing_style_sample"],
+            )
+
+        from essay_writer.writing_style.prompts import (
+            WRITING_STYLE_CONTENT_SCHEMA,
+            WRITING_STYLE_CONTENT_SYSTEM_PROMPT,
+            build_writing_style_user_message,
+        )
+
+        user_message = build_writing_style_user_message(prompt_samples)
+        packet_id = timestamp_id(
+            "workpkt",
+            "writing_style",
+            "content",
+            short_hash([sample.sample_id for sample in prompt_samples]),
+        )
+        artifact_refs = {
+            "writing_style_sample_ids": [sample.sample_id for sample in prompt_samples],
+        }
+        packet = self.work_store.save_packet(
+            WorkPacket(
+                work_packet_id=packet_id,
+                stage="writing_style_content",
+                scope="writing_style",
+                instructions=(
+                    "Analyze the user's writing samples and produce tone and style guidance JSON "
+                    "matching response_schema. Treat the samples as style exemplars only; do not "
+                    "copy facts, citations, or claims from them."
+                ),
+                system_prompt=WRITING_STYLE_CONTENT_SYSTEM_PROMPT,
+                prompt_blocks=[PromptBlock(text=user_message, cacheable=True)],
+                response_schema=dict(WRITING_STYLE_CONTENT_SCHEMA),
+                context={
+                    "sample_ids": [sample.sample_id for sample in prompt_samples],
+                    "sample_fingerprints": [sample.cleaned_text_hash for sample in prompt_samples],
+                },
+                artifact_refs=artifact_refs,
+                commit_tool="commit_writing_style_content",
+                delegation=DelegationHint(
+                    recommended=False,
+                    reason=(
+                        "writing-style content generation is a small, self-contained reasoning task"
+                    ),
+                    allowed_tools=["submit_work_result"],
+                    return_contract=(
+                        "Return one JSON object matching response_schema. Do not commit it; "
+                        "the orchestrator will submit and commit the result."
+                    ),
+                ),
+            )
+        )
+        if agent_run_id is not None:
+            self.run_store.attach_work_packet(
+                agent_run_id,
+                packet.work_packet_id,
+                current_phase="writing_style",
+                next_suggested_tools=["submit_work_result"],
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="prepare_writing_style_content",
+            data={
+                "work_packet_id": packet.work_packet_id,
+                "stage": packet.stage,
+                "commit_tool": packet.commit_tool,
+                "delegation": asdict(packet.delegation),
+                "response_schema": packet.response_schema,
+                "system_prompt": packet.system_prompt,
+                "prompt": user_message,
+                "prompt_blocks": [asdict(block) for block in packet.prompt_blocks],
+                "instructions": packet.instructions,
+                "artifact_refs": dict(packet.artifact_refs),
+                "next_suggested_tools": ["submit_work_result"],
+            },
+            next_suggested_tools=["submit_work_result"],
+        )
+
+    def commit_writing_style_content(
+        self,
+        *,
+        work_result_id: str,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        if agent_run_id is not None:
+            try:
+                self.run_store.load_run(agent_run_id)
+            except (KeyError, FileNotFoundError) as exc:
+                return _missing_run_result(
+                    "commit_writing_style_content", agent_run_id, exc
+                )
+        try:
+            result = self.work_store.load_result(work_result_id)
+            packet = self.work_store.load_packet(result.work_packet_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return _error_result(
+                "commit_writing_style_content",
+                code="work_result_not_found",
+                message=f"WorkResult not found or incomplete: {work_result_id}",
+                exc=exc,
+            )
+        if packet.stage != "writing_style_content":
+            return _error_result(
+                "commit_writing_style_content",
+                code="wrong_work_packet_stage",
+                message=f"expected writing_style_content packet, got {packet.stage}",
+                exc=ValueError(packet.stage),
+            )
+
+        from essay_writer.writing_style.prompts import WRITING_STYLE_CONTENT_SCHEMA
+        from essay_writer.writing_style.service import (
+            _content_from_payload,
+            build_sample_fingerprint,
+        )
+        from essay_writer.writing_style.storage import (
+            stable_writing_style_content_id,
+        )
+
+        validation_error = _validate_work_payload(
+            result.payload,
+            WRITING_STYLE_CONTENT_SCHEMA,
+            tool_name="commit_writing_style_content",
+        )
+        if validation_error is not None:
+            return validation_error
+
+        sample_ids = list(packet.artifact_refs.get("writing_style_sample_ids", []))
+        if not sample_ids:
+            return _error_result(
+                "commit_writing_style_content",
+                code="writing_style_sample_ids_missing",
+                message="packet is missing artifact_refs.writing_style_sample_ids",
+                exc=ValueError("sample_ids"),
+            )
+        try:
+            prompt_samples = self.stores.writing_style_sample_store.load_prompt_samples(
+                sample_ids
+            )
+        except (KeyError, FileNotFoundError) as exc:
+            return _error_result(
+                "commit_writing_style_content",
+                code="writing_style_sample_not_found",
+                message=f"writing-style sample not found: {exc}",
+                exc=exc,
+            )
+
+        generator_version = "writing-style-content-v1"
+        sample_fingerprint = build_sample_fingerprint(
+            prompt_samples, generator_version=generator_version
+        )
+        content_id = stable_writing_style_content_id(sample_fingerprint)
+        scope = "writing_style"
+        artifact_refs = {
+            "writing_style_content_id": content_id,
+            "writing_style_sample_ids": sample_ids,
+        }
+
+        existing_commit = next(
+            (
+                commit
+                for commit in self.work_store.list_commits(
+                    scope=scope, stage="writing_style_content"
+                )
+                if commit.work_result_id == result.work_result_id
+            ),
+            None,
+        )
+        already_committed = existing_commit is not None
+
+        if not already_committed:
+            content = _content_from_payload(
+                result.payload,
+                sample_ids=sample_ids,
+                sample_fingerprint=sample_fingerprint,
+                version=1,
+                content_id=content_id,
+                generator_model="harness",
+                generator_version=generator_version,
+            )
+            try:
+                self.stores.writing_style_content_store.save(content)
+            except FileExistsError:
+                # another run already wrote this exact content; treat as success
+                pass
+            self.work_store.save_commit(
+                scope=scope,
+                stage="writing_style_content",
+                work_packet_id=packet.work_packet_id,
+                work_result_id=result.work_result_id,
+                artifact_refs=artifact_refs,
+            )
+
+        if agent_run_id is not None:
+            self.run_store.attach_commit(
+                agent_run_id,
+                artifact_refs,
+                next_suggested_tools=["attach_writing_style_to_job"],
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="commit_writing_style_content",
+            data={
+                "content_id": content_id,
+                "sample_ids": sample_ids,
+                "already_committed": already_committed,
+                "artifact_refs": artifact_refs,
+                "next_suggested_tools": ["attach_writing_style_to_job"],
+            },
+            next_suggested_tools=["attach_writing_style_to_job"],
+        )
+
+    def _load_writing_style_payload_for_job(self, job_id: str):
+        """Return the WritingStylePayload attached to this job, or None.
+
+        Failures to load the content (missing files, schema drift) are treated
+        as 'no payload' rather than hard errors so a downstream prepare tool
+        still works without voice calibration. Use this helper everywhere a
+        prepare tool needs to thread a writing-style block into prompt_blocks.
+        """
+        from essay_writer.writing_style.service import build_writing_style_payload
+
+        try:
+            job = self.stores.workflow.load_job(job_id)
+        except (KeyError, FileNotFoundError):
+            return None
+        if not job.writing_style_content_id:
+            return None
+        try:
+            content = self.stores.writing_style_content_store.load(
+                job.writing_style_content_id
+            )
+        except (KeyError, FileNotFoundError):
+            return None
+        try:
+            samples = self.stores.writing_style_sample_store.load_prompt_samples(
+                list(content.sample_ids)
+            )
+        except (KeyError, FileNotFoundError):
+            samples = []
+        return build_writing_style_payload(content, samples)
+
+    def attach_writing_style_to_job(
+        self,
+        *,
+        job_id: str,
+        content_id: str,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        if agent_run_id is not None:
+            try:
+                self.run_store.load_run(agent_run_id)
+            except (KeyError, FileNotFoundError) as exc:
+                return _missing_run_result(
+                    "attach_writing_style_to_job", agent_run_id, exc
+                )
+        try:
+            content = self.stores.writing_style_content_store.load(content_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return _error_result(
+                "attach_writing_style_to_job",
+                code="writing_style_content_not_found",
+                message=f"WritingStyleContent not found: {content_id}",
+                exc=exc,
+            )
+        try:
+            updated_job = self.stores.workflow.attach_writing_style(
+                job_id=job_id,
+                sample_ids=list(content.sample_ids),
+                content_id=content_id,
+            )
+        except (KeyError, FileNotFoundError) as exc:
+            return _error_result(
+                "attach_writing_style_to_job",
+                code="job_not_found",
+                message=f"EssayJob not found: {job_id}",
+                exc=exc,
+            )
+        artifact_refs = {
+            "job_id": updated_job.id,
+            "writing_style_content_id": content_id,
+            "writing_style_sample_ids": list(content.sample_ids),
+        }
+        if agent_run_id is not None:
+            self.run_store.attach_commit(
+                agent_run_id,
+                artifact_refs,
+                next_suggested_tools=["prepare_topics"],
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="attach_writing_style_to_job",
+            data={
+                "job_id": updated_job.id,
+                "writing_style_content_id": content_id,
+                "writing_style_sample_ids": list(content.sample_ids),
+                "artifact_refs": artifact_refs,
+                "next_suggested_tools": ["prepare_topics"],
+            },
+            next_suggested_tools=["prepare_topics"],
         )
 
     def prepare_source_card(
@@ -2907,13 +3351,14 @@ class AgentToolFacade:
 
         from essay_writer.drafting.service import build_drafting_user_blocks
 
+        writing_style_payload = self._load_writing_style_payload_for_job(job_id)
         user_blocks = build_drafting_user_blocks(
             task_spec,
             selected_topic,
             research_result.evidence_map,
             outline,
             source_packets,
-            None,
+            writing_style_payload,
         )
         prompt_blocks = [
             PromptBlock(text=block.text, cacheable=block.cacheable)
@@ -3258,6 +3703,46 @@ class AgentToolFacade:
             source_packets = packets_result
 
         det = run_validation_deterministic_checks(previous_draft.content)
+        writing_style_payload = self._load_writing_style_payload_for_job(job_id)
+        artifact_refs = {
+            "job_id": job_id,
+            "task_spec_id": task_spec.id,
+            "evidence_map_id": research_result.evidence_map.id,
+            "outline_id": outline.id,
+            "source_draft_id": previous_draft.id,
+            "source_draft_version": previous_draft.version,
+        }
+        if effective_bundle_id is not None:
+            artifact_refs["source_packet_bundle_id"] = effective_bundle_id
+
+        common_context = {
+            "job_id": job_id,
+            "task_spec_id": task_spec.id,
+            "selected_topic_id": previous_draft.selected_topic_id,
+            "evidence_map_id": research_result.evidence_map.id,
+            "outline_id": outline.id,
+            "source_draft_id": previous_draft.id,
+            "source_draft_version": previous_draft.version,
+            "source_packet_bundle_id": effective_bundle_id,
+            "deterministic": asdict(det),
+        }
+
+        if should_window_style_revision(previous_draft.content):
+            return self._prepare_windowed_style_revision_plan(
+                job_id=job_id,
+                previous_draft=previous_draft,
+                task_spec=task_spec,
+                outline=outline,
+                evidence_map=research_result.evidence_map,
+                source_packets=source_packets,
+                source_packet_bundle_id=effective_bundle_id,
+                writing_style_payload=writing_style_payload,
+                det=det,
+                artifact_refs=artifact_refs,
+                common_context=common_context,
+                agent_run_id=agent_run_id,
+            )
+
         user_blocks = build_style_revision_user_blocks(
             task_spec=task_spec,
             draft=previous_draft,
@@ -3265,7 +3750,7 @@ class AgentToolFacade:
             evidence_map=research_result.evidence_map,
             source_packets=source_packets,
             det=det,
-            writing_style_payload=None,
+            writing_style_payload=writing_style_payload,
         )
         prompt_blocks = [
             PromptBlock(text=block.text, cacheable=block.cacheable)
@@ -3285,16 +3770,6 @@ class AgentToolFacade:
                 ]
             ),
         )
-        artifact_refs = {
-            "job_id": job_id,
-            "task_spec_id": task_spec.id,
-            "evidence_map_id": research_result.evidence_map.id,
-            "outline_id": outline.id,
-            "source_draft_id": previous_draft.id,
-            "source_draft_version": previous_draft.version,
-        }
-        if effective_bundle_id is not None:
-            artifact_refs["source_packet_bundle_id"] = effective_bundle_id
         packet = self.work_store.save_packet(
             WorkPacket(
                 work_packet_id=packet_id,
@@ -3309,17 +3784,7 @@ class AgentToolFacade:
                 system_prompt=STYLE_REVISION_SYSTEM_PROMPT,
                 prompt_blocks=prompt_blocks,
                 response_schema=dict(STYLE_REVISION_SCHEMA),
-                context={
-                    "job_id": job_id,
-                    "task_spec_id": task_spec.id,
-                    "selected_topic_id": previous_draft.selected_topic_id,
-                    "evidence_map_id": research_result.evidence_map.id,
-                    "outline_id": outline.id,
-                    "source_draft_id": previous_draft.id,
-                    "source_draft_version": previous_draft.version,
-                    "source_packet_bundle_id": effective_bundle_id,
-                    "deterministic": asdict(det),
-                },
+                context=common_context,
                 artifact_refs=artifact_refs,
                 commit_tool="commit_style_revision",
                 delegation=DelegationHint(
@@ -3360,14 +3825,113 @@ class AgentToolFacade:
                 "instructions": packet.instructions,
                 "artifact_refs": dict(packet.artifact_refs),
                 "deterministic": asdict(det),
+                "windowing": {"mode": "single"},
                 "next_suggested_tools": ["submit_work_result"],
             },
             next_suggested_tools=["submit_work_result"],
         )
 
-    def commit_style_revision(
+    def _prepare_windowed_style_revision_plan(
         self,
-        work_result_id: str,
+        *,
+        job_id: str,
+        previous_draft,
+        task_spec,
+        outline,
+        evidence_map,
+        source_packets,
+        source_packet_bundle_id,
+        writing_style_payload,
+        det,
+        artifact_refs: dict,
+        common_context: dict,
+        agent_run_id: str | None,
+    ) -> ToolResult:
+        windows = plan_style_revision_windows(previous_draft.content)
+        windows_payload = [window.as_dict() for window in windows]
+        parent_packet_id = timestamp_id(
+            "workpkt",
+            "job",
+            job_id,
+            "style_revision_plan",
+            short_hash(
+                [
+                    previous_draft.id,
+                    previous_draft.version,
+                    source_packet_bundle_id,
+                    windows_payload,
+                ]
+            ),
+        )
+        parent_context = {
+            **common_context,
+            "windowing": {
+                "mode": "windowed",
+                "target_window_words": DEFAULT_TARGET_WINDOW_WORDS,
+                "threshold_words": DEFAULT_WINDOWED_REVISION_WORD_THRESHOLD,
+                "total_windows": len(windows),
+                "windows": windows_payload,
+            },
+        }
+        parent_packet = self.work_store.save_packet(
+            WorkPacket(
+                work_packet_id=parent_packet_id,
+                stage="style_revision_plan",
+                scope=f"job:{job_id}",
+                instructions=(
+                    "Long draft detected. The style-revision pass is split into windows. "
+                    "Call prepare_style_revision_window for each window index in "
+                    "windowing.windows, submit each result, then call commit_style_revision "
+                    "with the ordered list of work_result_ids."
+                ),
+                system_prompt=STYLE_REVISION_SYSTEM_PROMPT,
+                prompt_blocks=[],
+                response_schema={},
+                context=parent_context,
+                artifact_refs=artifact_refs,
+                commit_tool=None,
+                delegation=DelegationHint(
+                    recommended=False,
+                    reason="windowed style revision is orchestrated by the main agent",
+                    allowed_tools=["prepare_style_revision_window"],
+                    return_contract=None,
+                ),
+            )
+        )
+        if agent_run_id is not None:
+            self.run_store.attach_work_packet(
+                agent_run_id,
+                parent_packet.work_packet_id,
+                current_phase="style_revision",
+                next_suggested_tools=["prepare_style_revision_window"],
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="prepare_style_revision",
+            data={
+                "parent_packet_id": parent_packet.work_packet_id,
+                "stage": parent_packet.stage,
+                "job_id": job_id,
+                "source_draft_id": previous_draft.id,
+                "source_draft_version": previous_draft.version,
+                "windowing": {
+                    "mode": "windowed",
+                    "total_windows": len(windows),
+                    "windows": windows_payload,
+                    "threshold_words": DEFAULT_WINDOWED_REVISION_WORD_THRESHOLD,
+                    "target_window_words": DEFAULT_TARGET_WINDOW_WORDS,
+                },
+                "deterministic": asdict(det),
+                "artifact_refs": dict(artifact_refs),
+                "next_suggested_tools": ["prepare_style_revision_window"],
+            },
+            next_suggested_tools=["prepare_style_revision_window"],
+        )
+
+    def prepare_style_revision_window(
+        self,
+        parent_packet_id: str,
+        window_index: int,
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
@@ -3375,7 +3939,210 @@ class AgentToolFacade:
             try:
                 self.run_store.load_run(agent_run_id)
             except (KeyError, FileNotFoundError) as exc:
+                return _missing_run_result(
+                    "prepare_style_revision_window", agent_run_id, exc
+                )
+        try:
+            parent_packet = self.work_store.load_packet(parent_packet_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return _error_result(
+                "prepare_style_revision_window",
+                code="parent_packet_not_found",
+                message=f"parent work packet not found: {parent_packet_id}",
+                exc=exc,
+            )
+        if parent_packet.stage != "style_revision_plan":
+            return _error_result(
+                "prepare_style_revision_window",
+                code="wrong_parent_packet_stage",
+                message=(
+                    "parent packet is not a style_revision_plan packet; got "
+                    f"{parent_packet.stage}"
+                ),
+                exc=ValueError(parent_packet.stage),
+            )
+        windowing = parent_packet.context.get("windowing") or {}
+        windows_payload = list(windowing.get("windows", []))
+        total = len(windows_payload)
+        if not 0 <= window_index < total:
+            return _error_result(
+                "prepare_style_revision_window",
+                code="window_index_out_of_range",
+                message=f"window_index {window_index} is out of range (total={total})",
+                exc=ValueError(window_index),
+            )
+        window_meta = windows_payload[window_index]
+        packet_job_id = parent_packet.context.get("job_id")
+        if not isinstance(packet_job_id, str) or not packet_job_id:
+            return _error_result(
+                "prepare_style_revision_window",
+                code="job_id_missing",
+                message="parent style_revision_plan packet is missing job_id",
+                exc=ValueError("job_id"),
+            )
+        source_draft_id = parent_packet.context.get("source_draft_id")
+        if not isinstance(source_draft_id, str) or not source_draft_id:
+            return _error_result(
+                "prepare_style_revision_window",
+                code="source_draft_id_missing",
+                message="parent style_revision_plan packet is missing source_draft_id",
+                exc=ValueError("source_draft_id"),
+            )
+        try:
+            previous_draft = self.stores.draft_store.find_by_id(packet_job_id, source_draft_id)
+        except (KeyError, FileNotFoundError, ValueError) as exc:
+            return _error_result_with_next(
+                "prepare_style_revision_window",
+                code="style_revision_artifacts_missing",
+                message=f"job {packet_job_id} is missing the source draft for windowed revision",
+                exc=exc,
+                next_suggested_tools=["prepare_style_revision"],
+            )
+
+        paragraphs = split_paragraphs(previous_draft.content)
+        start = int(window_meta["paragraph_start"])
+        end = int(window_meta["paragraph_end"])
+        window_text = "\n\n".join(paragraphs[start:end])
+        prev_paragraph = paragraphs[start - 1] if start > 0 else None
+        next_paragraph = paragraphs[end] if end < len(paragraphs) else None
+        window_det = run_validation_deterministic_checks(window_text)
+
+        instructions = (
+            f"You are rewriting WINDOW {window_index + 1} of {total} of a long essay's prose-only "
+            "style pass. Return JSON whose 'content' field contains ONLY the revised text for this "
+            "window's paragraphs, in the same paragraph order. Do not output text for other windows. "
+            "Preserve every claim, citation, and quoted source phrase in this window. Apply the "
+            "anti-AI skill in the system_prompt verbatim. If a writing-style block was attached to "
+            "the job, the user's voice wins over soft-tier heuristics (hard-tier rules still apply)."
+        )
+        window_user_payload = {
+            "window_index": window_index,
+            "total_windows": total,
+            "paragraph_start": start,
+            "paragraph_end": end,
+            "window_word_count": int(window_meta.get("word_count", len(window_text.split()))),
+            "previous_window_last_paragraph": prev_paragraph,
+            "next_window_first_paragraph": next_paragraph,
+            "window_text": window_text,
+            "window_deterministic_findings": asdict(window_det),
+        }
+        import json as _json
+
+        prompt_blocks = [
+            PromptBlock(text=_json.dumps(window_user_payload, ensure_ascii=False), cacheable=False)
+        ]
+        writing_style_payload = self._load_writing_style_payload_for_job(packet_job_id)
+        if writing_style_payload is not None:
+            from essay_writer.writing_style.prompts import (
+                build_writing_style_prompt_block,
+            )
+
+            prompt_blocks.append(
+                PromptBlock(
+                    text="\n\n" + build_writing_style_prompt_block(writing_style_payload),
+                    cacheable=False,
+                )
+            )
+        packet_id = timestamp_id(
+            "workpkt",
+            "job",
+            packet_job_id,
+            "style_revision_window",
+            short_hash([parent_packet_id, window_index, window_text]),
+        )
+        artifact_refs = {
+            **dict(parent_packet.artifact_refs),
+            "parent_packet_id": parent_packet_id,
+            "window_index": window_index,
+        }
+        packet = self.work_store.save_packet(
+            WorkPacket(
+                work_packet_id=packet_id,
+                stage="style_revision_window",
+                scope=f"job:{packet_job_id}",
+                instructions=instructions,
+                system_prompt=STYLE_REVISION_SYSTEM_PROMPT,
+                prompt_blocks=prompt_blocks,
+                response_schema=dict(STYLE_REVISION_SCHEMA),
+                context={
+                    **dict(parent_packet.context),
+                    "parent_packet_id": parent_packet_id,
+                    "window_index": window_index,
+                    "paragraph_start": start,
+                    "paragraph_end": end,
+                    "window_word_count": window_user_payload["window_word_count"],
+                },
+                artifact_refs=artifact_refs,
+                commit_tool="commit_style_revision",
+                delegation=DelegationHint(
+                    recommended=False,
+                    reason=(
+                        "each window is part of a coordinated rewrite; the main agent must "
+                        "submit results in order"
+                    ),
+                    allowed_tools=["submit_work_result"],
+                    return_contract=(
+                        "Return one JSON object matching response_schema. content must contain "
+                        "ONLY this window's revised paragraphs."
+                    ),
+                ),
+            )
+        )
+        if agent_run_id is not None:
+            self.run_store.attach_work_packet(
+                agent_run_id,
+                packet.work_packet_id,
+                current_phase="style_revision",
+                next_suggested_tools=["submit_work_result"],
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="prepare_style_revision_window",
+            data={
+                "work_packet_id": packet.work_packet_id,
+                "stage": packet.stage,
+                "parent_packet_id": parent_packet_id,
+                "window_index": window_index,
+                "total_windows": total,
+                "paragraph_start": start,
+                "paragraph_end": end,
+                "commit_tool": packet.commit_tool,
+                "delegation": asdict(packet.delegation),
+                "response_schema": packet.response_schema,
+                "system_prompt": packet.system_prompt,
+                "prompt_blocks": [asdict(block) for block in packet.prompt_blocks],
+                "instructions": packet.instructions,
+                "artifact_refs": dict(packet.artifact_refs),
+                "deterministic": asdict(window_det),
+                "next_suggested_tools": ["submit_work_result"],
+            },
+            next_suggested_tools=["submit_work_result"],
+        )
+
+    def commit_style_revision(
+        self,
+        work_result_id: str | None = None,
+        *,
+        work_result_ids: list[str] | None = None,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        if agent_run_id is not None:
+            try:
+                self.run_store.load_run(agent_run_id)
+            except (KeyError, FileNotFoundError) as exc:
                 return _missing_run_result("commit_style_revision", agent_run_id, exc)
+        if work_result_ids:
+            return self._commit_windowed_style_revision(
+                work_result_ids=list(work_result_ids),
+                agent_run_id=agent_run_id,
+            )
+        if not work_result_id:
+            return _error_result(
+                "commit_style_revision",
+                code="work_result_id_required",
+                message="commit_style_revision requires work_result_id (single) or work_result_ids (windowed)",
+                exc=ValueError("work_result_id"),
+            )
         try:
             result = self.work_store.load_result(work_result_id)
             packet = self.work_store.load_packet(result.work_packet_id)
@@ -3460,6 +4227,27 @@ class AgentToolFacade:
                     code="style_revision_empty_content",
                     message="style-revision payload must include non-empty rewritten content",
                     exc=ValueError("content"),
+                )
+            content_det = run_validation_deterministic_checks(content)
+            violations = hard_tier_anti_ai_violations(content_det)
+            if violations:
+                return ToolResult(
+                    ok=False,
+                    tool_name="commit_style_revision",
+                    data={
+                        "anti_ai_violations": violations,
+                        "deterministic": asdict(content_det),
+                        "next_suggested_tools": ["prepare_style_revision"],
+                    },
+                    error=ToolError(
+                        code="anti_ai_hard_tier_violation",
+                        message=(
+                            "style-revision output violates hard-tier anti-AI rules; "
+                            "see anti_ai_violations for the specific patterns"
+                        ),
+                        detail={"violations": violations},
+                    ),
+                    next_suggested_tools=["prepare_style_revision"],
                 )
             risks = [
                 str(item).strip()
@@ -3547,6 +4335,309 @@ class AgentToolFacade:
                 "draft": asdict(draft),
                 "artifact_refs": dict(commit.artifact_refs),
                 "already_committed": already_committed,
+                "next_suggested_tools": next_tools,
+            },
+            next_suggested_tools=next_tools,
+        )
+
+    def _commit_windowed_style_revision(
+        self,
+        *,
+        work_result_ids: list[str],
+        agent_run_id: str | None,
+    ) -> ToolResult:
+        if not work_result_ids:
+            return _error_result(
+                "commit_style_revision",
+                code="work_result_ids_empty",
+                message="commit_style_revision windowed path requires non-empty work_result_ids",
+                exc=ValueError("work_result_ids"),
+            )
+        # Load each result + packet and verify they all belong to the same parent plan
+        loaded: list[tuple[object, object]] = []
+        parent_packet_id: str | None = None
+        packet_job_id: str | None = None
+        for work_result_id in work_result_ids:
+            try:
+                result = self.work_store.load_result(work_result_id)
+                packet = self.work_store.load_packet(result.work_packet_id)
+            except (KeyError, FileNotFoundError) as exc:
+                return _error_result(
+                    "commit_style_revision",
+                    code="work_result_not_found",
+                    message=f"WorkResult not found or incomplete: {work_result_id}",
+                    exc=exc,
+                )
+            if packet.stage != "style_revision_window":
+                return _error_result(
+                    "commit_style_revision",
+                    code="wrong_work_packet_stage",
+                    message=(
+                        "commit_style_revision windowed path requires style_revision_window "
+                        f"packets; got {packet.stage}"
+                    ),
+                    exc=ValueError(packet.stage),
+                )
+            this_parent = packet.context.get("parent_packet_id")
+            this_job = packet.context.get("job_id")
+            if not isinstance(this_parent, str) or not this_parent:
+                return _error_result(
+                    "commit_style_revision",
+                    code="parent_packet_id_missing",
+                    message="style_revision_window packet is missing parent_packet_id",
+                    exc=ValueError("parent_packet_id"),
+                )
+            if parent_packet_id is None:
+                parent_packet_id = this_parent
+                packet_job_id = this_job if isinstance(this_job, str) else None
+            elif this_parent != parent_packet_id:
+                return _error_result(
+                    "commit_style_revision",
+                    code="window_results_from_different_plans",
+                    message="all windowed work_result_ids must share one parent_packet_id",
+                    exc=ValueError(this_parent),
+                )
+            loaded.append((result, packet))
+
+        try:
+            parent_packet = self.work_store.load_packet(parent_packet_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return _error_result(
+                "commit_style_revision",
+                code="parent_packet_not_found",
+                message=f"parent style_revision_plan packet not found: {parent_packet_id}",
+                exc=exc,
+            )
+        windowing = parent_packet.context.get("windowing") or {}
+        total_windows = int(windowing.get("total_windows", 0))
+        if total_windows == 0:
+            return _error_result(
+                "commit_style_revision",
+                code="window_plan_invalid",
+                message="parent style_revision_plan packet has no windows",
+                exc=ValueError("windowing"),
+            )
+
+        # Validate each payload against the per-window schema
+        for result, _packet in loaded:
+            validation_error = _validate_work_payload(
+                result.payload,
+                STYLE_REVISION_SCHEMA,
+                tool_name="commit_style_revision",
+            )
+            if validation_error is not None:
+                return validation_error
+
+        # Sort by window_index
+        ordered = sorted(loaded, key=lambda pair: int(pair[1].context.get("window_index", -1)))
+        seen_indices = [int(packet.context.get("window_index", -1)) for _r, packet in ordered]
+        expected_indices = list(range(total_windows))
+        if seen_indices != expected_indices:
+            return _error_result(
+                "commit_style_revision",
+                code="window_results_incomplete_or_duplicated",
+                message=(
+                    f"windowed commit requires exactly one result per window 0..{total_windows - 1}; "
+                    f"got {seen_indices}"
+                ),
+                exc=ValueError("work_result_ids"),
+            )
+
+        if packet_job_id is None or not packet_job_id:
+            return _error_result(
+                "commit_style_revision",
+                code="job_id_missing",
+                message="windowed style_revision packets are missing job_id",
+                exc=ValueError("job_id"),
+            )
+
+        source_draft_id_obj = parent_packet.context.get("source_draft_id")
+        if not isinstance(source_draft_id_obj, str) or not source_draft_id_obj:
+            return _error_result(
+                "commit_style_revision",
+                code="source_draft_id_missing",
+                message="parent style_revision_plan packet is missing source_draft_id",
+                exc=ValueError("source_draft_id"),
+            )
+        try:
+            previous_draft = self.stores.draft_store.find_by_id(packet_job_id, source_draft_id_obj)
+        except (KeyError, FileNotFoundError, ValueError) as exc:
+            return _error_result_with_next(
+                "commit_style_revision",
+                code="style_revision_artifacts_missing",
+                message=f"job {packet_job_id} is missing the source draft for windowed revision",
+                exc=exc,
+                next_suggested_tools=["prepare_style_revision"],
+            )
+
+        scope = f"job:{packet_job_id}"
+        commit_signature_hash = short_hash(
+            [result.work_result_id for result, _packet in ordered]
+        )
+        # idempotency: same set of result ids already produced a commit
+        existing_commit = next(
+            (
+                commit
+                for commit in self.work_store.list_commits(scope=scope, stage="style_revision")
+                if commit.artifact_refs.get("window_signature_hash") == commit_signature_hash
+            ),
+            None,
+        )
+        already_committed = existing_commit is not None
+        if existing_commit is not None:
+            draft_version = existing_commit.artifact_refs.get("draft_version")
+            if not isinstance(draft_version, int):
+                return _error_result(
+                    "commit_style_revision",
+                    code="style_revision_commit_artifact_missing",
+                    message="Committed windowed style-revision artifact is missing draft_version",
+                    exc=KeyError(existing_commit.commit_id),
+                )
+            try:
+                draft = self.stores.draft_store.load(packet_job_id, draft_version)
+            except KeyError as exc:
+                return _error_result(
+                    "commit_style_revision",
+                    code="style_revision_commit_artifact_missing",
+                    message="Committed windowed style-revision artifact is missing",
+                    exc=exc,
+                )
+            commit_record = existing_commit
+        else:
+            window_texts = [
+                str(result.payload.get("content", "")).strip()
+                for result, _packet in ordered
+            ]
+            if any(not text for text in window_texts):
+                missing = [idx for idx, text in enumerate(window_texts) if not text]
+                return _error_result(
+                    "commit_style_revision",
+                    code="style_revision_empty_content",
+                    message=(
+                        f"windowed style-revision is missing content for window indices: {missing}"
+                    ),
+                    exc=ValueError("content"),
+                )
+
+            per_window_violations: list[dict[str, object]] = []
+            for idx, text in enumerate(window_texts):
+                violations = hard_tier_anti_ai_violations(
+                    run_validation_deterministic_checks(text)
+                )
+                if violations:
+                    per_window_violations.append(
+                        {"window_index": idx, "violations": violations}
+                    )
+            if per_window_violations:
+                offending_indices = [
+                    entry["window_index"] for entry in per_window_violations
+                ]
+                return ToolResult(
+                    ok=False,
+                    tool_name="commit_style_revision",
+                    data={
+                        "offending_window_indices": offending_indices,
+                        "per_window_violations": per_window_violations,
+                        "next_suggested_tools": ["prepare_style_revision_window"],
+                    },
+                    error=ToolError(
+                        code="anti_ai_hard_tier_violation",
+                        message=(
+                            "windowed style-revision output violates hard-tier anti-AI rules; "
+                            "re-prepare and re-submit only the offending windows"
+                        ),
+                        detail={"per_window_violations": per_window_violations},
+                    ),
+                    next_suggested_tools=["prepare_style_revision_window"],
+                )
+
+            assembled = assemble_window_outputs(window_texts)
+            risks: list[str] = []
+            for result, _packet in ordered:
+                for item in result.payload.get("known_risks", []):
+                    if isinstance(item, (str, int, float)) and str(item).strip():
+                        risks.append(str(item).strip())
+            weak_spots = risks if risks else list(previous_draft.known_weak_spots)
+            draft_version = self.stores.draft_store.next_version(packet_job_id)
+            draft = replace(
+                previous_draft,
+                id=f"draft_{uuid4().hex[:12]}",
+                version=draft_version,
+                content=assembled,
+                known_weak_spots=weak_spots,
+                origin="style_revision",
+                created_by="system",
+                parent_draft_id=previous_draft.id,
+                parent_export_id=None,
+                manual_request_id=None,
+                user_instruction=None,
+                selected_lenses=[],
+                prompt_version="drafting-style-revision-windowed-v1",
+                created_at=utc_now_iso(),
+            )
+            try:
+                self.stores.draft_store.save(draft)
+                self.stores.workflow.record_draft_ready(
+                    job_id=packet_job_id,
+                    draft=draft,
+                )
+            except (FileExistsError, TopicSelectionError) as exc:
+                return _error_result(
+                    "commit_style_revision",
+                    code="style_revision_commit_failed",
+                    message=str(exc),
+                    exc=exc,
+                )
+            artifact_refs = {
+                "job_id": packet_job_id,
+                "source_draft_id": previous_draft.id,
+                "source_draft_version": previous_draft.version,
+                "draft_id": draft.id,
+                "draft_version": draft_version,
+                "parent_packet_id": parent_packet_id,
+                "total_windows": total_windows,
+                "window_signature_hash": commit_signature_hash,
+            }
+            commit_record = self.work_store.save_commit(
+                scope=scope,
+                stage="style_revision",
+                work_packet_id=parent_packet_id,
+                work_result_id=ordered[0][0].work_result_id,
+                artifact_refs=artifact_refs,
+            )
+
+        next_tools = ["prepare_validation"]
+        if agent_run_id is not None:
+            for result, _packet in ordered:
+                self.run_store.attach_work_result(
+                    agent_run_id,
+                    result.work_result_id,
+                    work_packet_id=result.work_packet_id,
+                    next_suggested_tools=next_tools,
+                )
+            self.run_store.attach_commit(
+                agent_run_id,
+                dict(commit_record.artifact_refs),
+                next_suggested_tools=next_tools,
+            )
+            self.run_store.checkpoint(
+                agent_run_id,
+                current_phase="validation",
+                decision="style_revision_windowed_committed",
+                next_suggested_tools=next_tools,
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="commit_style_revision",
+            data={
+                "commit_id": commit_record.commit_id,
+                "work_result_ids": [result.work_result_id for result, _packet in ordered],
+                "job_id": packet_job_id,
+                "draft_id": draft.id,
+                "draft": asdict(draft),
+                "artifact_refs": dict(commit_record.artifact_refs),
+                "already_committed": already_committed,
+                "windowing": {"mode": "windowed", "total_windows": total_windows},
                 "next_suggested_tools": next_tools,
             },
             next_suggested_tools=next_tools,
@@ -3647,6 +4738,7 @@ class AgentToolFacade:
         from essay_writer.drafting.revision import build_revision_user_blocks
 
         effective_lenses = [str(item) for item in (selected_lenses or [])]
+        writing_style_payload = self._load_writing_style_payload_for_job(job_id)
         user_blocks = build_revision_user_blocks(
             task_spec=task_spec,
             selected_topic=selected_topic,
@@ -3655,7 +4747,7 @@ class AgentToolFacade:
             previous_draft=previous_draft,
             validation=validation,
             source_packets=source_packets,
-            writing_style_payload=None,
+            writing_style_payload=writing_style_payload,
             tone_alignment=None,
             user_instruction=user_instruction,
             change_summary=[],
@@ -3857,6 +4949,30 @@ class AgentToolFacade:
             commit = existing_commit
         else:
             from essay_writer.drafting.revision import revised_draft_from_payload
+
+            revised_content = str(result.payload.get("content", "")).strip()
+            if revised_content:
+                revision_det = run_validation_deterministic_checks(revised_content)
+                revision_violations = hard_tier_anti_ai_violations(revision_det)
+                if revision_violations:
+                    return ToolResult(
+                        ok=False,
+                        tool_name="commit_revision",
+                        data={
+                            "anti_ai_violations": revision_violations,
+                            "deterministic": asdict(revision_det),
+                            "next_suggested_tools": ["prepare_revision"],
+                        },
+                        error=ToolError(
+                            code="anti_ai_hard_tier_violation",
+                            message=(
+                                "revision output violates hard-tier anti-AI rules; "
+                                "see anti_ai_violations for the specific patterns"
+                            ),
+                            detail={"violations": revision_violations},
+                        ),
+                        next_suggested_tools=["prepare_revision"],
+                    )
 
             draft_version = self.stores.draft_store.next_version(packet_job_id)
             draft = revised_draft_from_payload(
@@ -5397,6 +6513,54 @@ def _repo_root() -> Path:
 
 
 _SUPPORTED_SOURCE_SUFFIXES = {".pdf", ".docx", ".txt", ".md", ".markdown", ".notes"}
+_SUPPORTED_WRITING_STYLE_SUFFIXES = {".pdf", ".docx", ".txt", ".md", ".markdown"}
+
+
+def hard_tier_anti_ai_violations(det: DeterministicCheckResult) -> list[dict[str, object]]:
+    """Return a list of hard-tier anti-AI violations found by the deterministic
+    checker. The list mirrors the enumerated hard-tier rules in
+    DRAFTING_SYSTEM_PROMPT and STYLE_REVISION_SYSTEM_PROMPT, so prompt and gate
+    stay coupled: anything banned in the prompt is also rejected at commit
+    time.
+
+    Returns an empty list when the text passes. Each entry is a structured
+    record naming the rule and the specific evidence (count or hits) so the
+    rejection response is actionable for the harness.
+    """
+    violations: list[dict[str, object]] = []
+    if det.em_dash_count > 0:
+        violations.append({"rule": "em_dash", "count": det.em_dash_count})
+    if det.decorative_hyphen_pause_count > 0:
+        violations.append(
+            {
+                "rule": "decorative_hyphen_pause",
+                "count": det.decorative_hyphen_pause_count,
+            }
+        )
+    if det.tier1_vocab_hits:
+        violations.append(
+            {
+                "rule": "tier1_vocabulary",
+                "hits": [
+                    {"word": hit.word, "count": hit.count}
+                    for hit in det.tier1_vocab_hits
+                ],
+            }
+        )
+    if det.bad_conclusion_opener:
+        violations.append({"rule": "bad_conclusion_opener"})
+    if det.signposting_hits:
+        violations.append(
+            {"rule": "signposting", "phrases": list(det.signposting_hits)}
+        )
+    if det.triplet_contrastive_combo_count > 0:
+        violations.append(
+            {
+                "rule": "triplet_contrastive_combo",
+                "count": det.triplet_contrastive_combo_count,
+            }
+        )
+    return violations
 
 
 def _source_materialization_data(

@@ -24,6 +24,31 @@ STYLE_REVISION_SYSTEM_PROMPT = f"""You perform a final prose-only style pass on 
 The goal is to reduce AI-like prose patterns while preserving the draft's meaning, factual claims,
 citations, source grounding, section source map, and bibliography candidates.
 
+PRECEDENCE: VOICE WINS OVER GENERIC ANTI-AI RULES
+If a writing_style_samples block is supplied in the user message, the user's authentic voice wins over
+generic anti-AI heuristics for everything in the SOFT TIER below. Do not flatten the user's real prose
+habits to hit a statistical target. If the samples show long conjunction-heavy sentences, preserve that.
+If they show frequent participial phrases, keep them. If they show triplet lists in the user's voice,
+keep them.
+The following HARD TIER rules ALWAYS apply, regardless of any habits visible in the user's samples:
+- never use em dashes (U+2014). Zero. Not one.
+- never use en dashes as pauses (U+2013). Hyphens only inside required spellings, citations, URLs.
+- never use decorative hyphen pauses (" - " between words for rhythm).
+- never use the high-risk vocabulary list: delve, tapestry, landscape (metaphorical), realm, embark,
+  multifaceted, pivotal, underscores, showcasing, highlighting, emphasizing, foster, leverage, utilize,
+  facilitate, enhance, streamline, elevate, robust, seamless.
+- never open the conclusion with "In conclusion," "In summary," "To summarize," "To conclude," or
+  "Overall,".
+- never use signposting phrases like "Let's now turn to," "Having examined," "This brings us to,"
+  "As we have seen," "Building on this idea," "With this in mind," "Another key aspect is."
+- never combine a three-item list with contrastive negation in the same neighborhood
+  (e.g. "it's not X, Y, or Z, it's W"). Zero instances.
+SOFT TIER (voice wins when there is a real habit in the samples): sentence length variance / burstiness,
+paragraph length variance, participial phrase rate, contrastive negation rate, triplet clustering,
+tier-2 vocabulary (crucial, vital, comprehensive, intricate, nuanced, noteworthy, etc.), hedging frequency,
+copula choice (is/are vs serves as/functions as), filler-phrase density.
+If no writing_style_samples block is supplied, fall back to the anti-AI skill defaults for the soft tier.
+
 Hard constraints:
 - Do not add facts, examples, citations, source names, quotes, page numbers, or statistics.
 - Do not remove required source-backed claims.

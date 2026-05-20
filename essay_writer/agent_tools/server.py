@@ -125,6 +125,60 @@ def build_server(data_dir: str | Path | None = None) -> Any:
         )
 
     @app.tool()
+    def ingest_writing_style_sample(
+        sample_path: str,
+        title: str | None = None,
+        sample_id: str | None = None,
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        return result(
+            facade.ingest_writing_style_sample(
+                sample_path,
+                title=title,
+                sample_id=sample_id,
+                agent_run_id=agent_run_id,
+            )
+        )
+
+    @app.tool()
+    def prepare_writing_style_content(
+        sample_ids: list[str],
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        return result(
+            facade.prepare_writing_style_content(
+                sample_ids,
+                agent_run_id=agent_run_id,
+            )
+        )
+
+    @app.tool()
+    def commit_writing_style_content(
+        work_result_id: str,
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        return result(
+            facade.commit_writing_style_content(
+                work_result_id=work_result_id,
+                agent_run_id=agent_run_id,
+            )
+        )
+
+    @app.tool()
+    def attach_writing_style_to_job(
+        job_id: str,
+        content_id: str,
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        return result(
+            facade.attach_writing_style_to_job(
+                job_id=job_id,
+                content_id=content_id,
+                agent_run_id=agent_run_id,
+            )
+        )
+
+    @app.tool()
     def prepare_task_spec(raw_text: str, agent_run_id: str | None = None) -> dict[str, object]:
         return result(facade.prepare_task_spec(raw_text, agent_run_id=agent_run_id))
 

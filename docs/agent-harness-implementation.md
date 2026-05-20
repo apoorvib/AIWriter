@@ -206,7 +206,9 @@ Initial deterministic action tools:
 
 ```text
 ingest_source_file
+ingest_writing_style_sample
 create_job_from_artifacts
+attach_writing_style_to_job
 select_topic
 reject_topic
 create_research_plan
@@ -222,11 +224,14 @@ Initial prepare tools:
 
 ```text
 prepare_source_card
+prepare_writing_style_content
 prepare_task_spec
 prepare_topics
 prepare_research_notes
 prepare_outline
 prepare_draft
+prepare_style_revision
+prepare_style_revision_window
 prepare_validation
 prepare_revision
 ```
@@ -235,11 +240,13 @@ Initial commit tools:
 
 ```text
 commit_source_card
+commit_writing_style_content
 commit_task_spec
 commit_topics
 commit_research_notes
 commit_outline
 commit_draft
+commit_style_revision
 commit_validation
 commit_revision
 ```
@@ -925,6 +932,262 @@ without giving a subagent the whole job context.
 This keeps delegation a strong default for expensive separable work while
 preserving portability and user control.
 
+## Writing Style Ingestion And Voice Calibration
+
+The anti-AI detection skill explicitly requires that the rewrite match the user's
+authentic voice rather than a generic "human-sounding" target. Pipeline Mode
+already supports this via `essay_writer/writing_style/` and threads a
+`WritingStylePayload` into drafting, style revision, and revision. Agent Tool
+Mode must expose the same capability through MCP tools.
+
+Pipeline Mode's `WritingStyleContentService.generate` calls an app LLM client,
+which Agent Tool Mode forbids. Split that step into deterministic ingestion plus
+harness-owned style-content generation, mirroring source ingestion.
+
+### Where Users Put Their Style Documents
+
+`ingest_writing_style_sample(path)` accepts any absolute or relative file path.
+The user can keep their writing samples anywhere they like; the path is the
+only contract. The deterministic ingestion service copies the original file
+into the app's per-sample artifact directory, so the original location does
+not need to be stable after ingestion.
+
+Recommended convention (not enforced):
+
+```text
+<repo-root>/inputs/writing_style/
+  my-philosophy-paper.pdf
+  cover-letter-2025.docx
+  journal-entry.txt
+```
+
+Mirroring the convention used for source documents keeps the layout
+predictable for users running through Claude Code or Codex, but any path the
+process can read is acceptable. The MCP server should validate that the path
+exists and that the suffix is supported (PDF, DOCX, TXT, MD).
+
+After ingestion the app owns the artifact under the configured data
+directory:
+
+```text
+${ESSAY_DATA_DIR}/writing_style/samples/{sample_id}/
+  sample.json             # HumanWritingSample dataclass
+  original.<ext>          # copied source file
+  extracted_text.txt
+  cleaned_text.txt
+
+${ESSAY_DATA_DIR}/writing_style/content/
+  {content_id}.json       # WritingStyleContent derived from one or more samples
+```
+
+These artifacts survive across jobs. A user who has ingested a sample once
+does not need to re-ingest it for a new job; `attach_writing_style_to_job`
+references existing `content_id`s. Writing-style samples are scoped above
+the job (one user, many jobs) and the `workflow_logs` cleanup tier preserves
+them.
+
+### Recommended Writing Style Flow
+
+```text
+1. ingest_writing_style_sample(path)
+   -> deterministic extraction and normalization via
+      HumanWritingSampleIngestionService (already LLM-free)
+   -> persists HumanWritingSample under data/writing_style/samples/
+   -> returns sample_id
+
+2. prepare_writing_style_content(sample_ids)
+   -> work packet:
+      system_prompt = WRITING_STYLE_CONTENT_SYSTEM_PROMPT
+      prompt_blocks = cleaned sample text
+      response_schema = WRITING_STYLE_CONTENT_SCHEMA
+      commit_tool = "commit_writing_style_content"
+
+3. harness writes WritingStyleContent JSON
+
+4. commit_writing_style_content(work_result_id)
+   -> validates schema, persists WritingStyleContent under
+      data/writing_style/content/, returns content_id
+
+5. attach_writing_style_to_job(job_id, content_id)
+   -> stores the content_id reference on EssayJob so subsequent
+      prepare_draft / prepare_style_revision / prepare_revision can load it
+```
+
+Once a job has an attached writing-style content, prepare tools must:
+
+- load the latest `WritingStyleContent` and its source samples via
+  `build_writing_style_payload`
+- append the rendered `build_writing_style_prompt_block(...)` as a
+  non-cacheable suffix block to the existing user blocks (the static cacheable
+  block stays byte-stable for prompt caching)
+- pass `writing_style_payload` instead of `None` everywhere the facade
+  currently hard-codes `None`
+
+### Conflict Resolution: Anti-AI vs Voice
+
+When a generic anti-AI rule conflicts with a habit visible in the user's
+samples, the user's voice wins unless the pattern is unambiguously
+machine-like. The skill document already says this; the system prompts already
+say this. The harness must apply the same precedence when rewriting.
+
+Tone-alignment as a separate dedicated stage (`prepare_tone_alignment` /
+`commit_tone_alignment`) is out of scope for the first slice. The writing-style
+payload alone gives the harness enough signal to preserve voice during drafting
+and style revision. A dedicated tone-alignment pass can be added later if the
+voice/anti-AI conflict cases need explicit structured reconciliation.
+
+## Windowed Style Revision
+
+Long drafts expose two LLM weaknesses that hurt the anti-AI rewrite pass:
+
+- attention tapers across the output, so opening paragraphs get heavy
+  revision and middle paragraphs get skimmed
+- the rewrite tends to flatten regional voice variation that the skill
+  actually wants (the last third of a long essay should read slightly looser
+  than the first third)
+
+`prepare_style_revision` should detect long drafts and switch to a windowed
+flow. Short drafts continue to use a single packet, which keeps the existing
+behavior for typical assignments.
+
+### Threshold And Window Sizing
+
+Recommended defaults:
+
+- single-packet path: draft word count <= 1200 words
+- windowed path: word count > 1200 words
+- target window size: ~400 words, snapped to paragraph boundaries (never
+  split a paragraph mid-flow)
+- typical layout for a 2000-word draft: 5 windows of roughly 400 words each
+
+Window sizes should remain configurable; the threshold and target size are
+heuristics, not contracts.
+
+### Tool Surface
+
+```text
+prepare_style_revision(job_id, source_draft_id)
+  if word_count <= threshold:
+    return existing single-packet work packet (unchanged behavior)
+  else:
+    return a parent packet describing the windowing plan:
+      windowing = {
+        mode: "windowed",
+        total_windows: N,
+        windows: [
+          { index: 0, paragraph_range: [0, 3], word_count: 412 },
+          { index: 1, paragraph_range: [3, 7], word_count: 398 },
+          ...
+        ]
+      }
+    next_suggested_tools = ["prepare_style_revision_window"]
+
+prepare_style_revision_window(parent_packet_id, window_index)
+  returns a per-window work packet:
+    system_prompt = STYLE_REVISION_SYSTEM_PROMPT (full anti-AI skill inlined)
+    prompt_blocks =
+      static: task_spec, outline, evidence map (cacheable, byte-identical
+              across windows so prompt caching hits)
+      mutable:
+        window prose (this window only)
+        previous-window last paragraph (for transition continuity, if index > 0)
+        next-window first paragraph (for downstream awareness, if not last)
+        thesis statement
+        window-level deterministic check result
+          run_deterministic_checks(window_text) -> the same DeterministicCheckResult
+          structure already used for the whole-draft check; no new per-paragraph
+          infrastructure required
+    response_schema = STYLE_REVISION_SCHEMA
+    commit_tool = "commit_style_revision"
+    context.window = { parent_packet_id, window_index, paragraph_range }
+
+commit_style_revision(work_result_ids = [w0, w1, ..., wN-1])
+  if N == 1:
+    behaves like current commit_style_revision
+  else:
+    deterministic assembly:
+      concatenate window outputs in paragraph order
+      run run_deterministic_checks on the full assembled prose
+      apply hard-tier gates (see "Hard-Tier Deterministic Gates" below)
+    on hard-tier failure:
+      return rejection naming the offending window indices and the
+      specific deterministic counts that failed
+      next_suggested_tools = ["prepare_style_revision_window"]
+      with hints { window_index, retry_reason }
+    on success:
+      write a new EssayDraft v_n+1 with origin="style_revision_windowed"
+      record the contributing work_result_ids in the draft's lineage
+```
+
+### Window Context Budget
+
+Each window packet stays well under any practical model context:
+
+- anti-AI skill (system prompt): ~7K tokens
+- static cacheable block (task spec + outline + evidence map): variable but
+  reused across windows, so cached
+- this window's prose: ~700 tokens for 400 words
+- prev/next transition paragraphs: ~300 tokens
+- window deterministic findings: ~200 tokens
+
+The harness's own context (chat) does not need to carry prior window outputs
+between calls. Work results live in `AgentWorkStore`; the orchestrator chains
+windows by passing `work_result_id`s into `commit_style_revision`. Treat
+windowed style revision as the canonical example of "persisted state is
+authoritative, chat memory is advisory."
+
+### Why Not Window The Initial Draft
+
+Initial drafting should remain a single packet. Windowed drafting risks loss
+of argument arc, citation/evidence collisions between sections, and weakened
+thesis development. Style revision is safe to window because the section
+source map, claims, citations, and bibliography candidates are already frozen
+by the time `prepare_style_revision` runs. The windowed pass only rewrites
+prose shape.
+
+## Hard-Tier Deterministic Gates
+
+Some anti-AI patterns have essentially no legitimate academic use. Commit
+tools should reject results that contain them, regardless of writing-style
+payload, instead of relying on the harness to have applied the skill
+correctly.
+
+Hard-tier patterns (commit rejects if any are present):
+
+- `em_dash_count > 0`
+- `en_dash_count` used as pause (the deterministic checker already counts
+  decorative en-dash usage separately from required spelling/citation
+  contexts)
+- `decorative_hyphen_pause_count > 0`
+- any `tier1_vocab_hits` (delve, leverage, robust, utilize, foster, etc.)
+- `bad_conclusion_opener == True`
+- any `signposting_hits`
+- `triplet_contrastive_combo_count > 0`
+
+Soft-tier patterns (warn, do not reject; calibrate against the user's
+writing-style sample when one is attached):
+
+- `participial_phrase_rate`
+- `contrastive_negation_count`
+- `clustered_triplet_count`
+- `mechanical_burstiness_count`
+- `paragraph_length_variance_warning`
+- tier-2 vocabulary
+
+Hard-tier gates should fire at:
+
+- `commit_style_revision` (both single-packet and windowed assembled output)
+- `commit_revision` (validation-driven revision)
+- `commit_draft` is debatable; the immediate style-revision pass exists
+  specifically to catch these patterns, so blocking at `commit_draft` would
+  make drafts hard to land. Recommend WARN at `commit_draft`, REJECT at
+  `commit_style_revision` and `commit_revision`.
+
+Rejection responses should include the specific counts that triggered the
+gate plus structured next_suggested_tools, so the harness can re-prepare
+either the whole revision (single-packet path) or only the offending windows
+(windowed path).
+
 ## Commit Validation
 
 Commit tools are the safety boundary.
@@ -1038,8 +1301,11 @@ Recommended full agent-driven sequence:
 ```text
 ingest_source_file
 prepare_source_card -> commit_source_card
+ingest_writing_style_sample  (optional but recommended)
+prepare_writing_style_content -> commit_writing_style_content  (optional)
 prepare_task_spec -> commit_task_spec
 create_job_from_artifacts
+attach_writing_style_to_job  (if writing-style content exists)
 prepare_topics -> commit_topics
 select_topic
 create_research_plan
@@ -1047,9 +1313,16 @@ resolve_source_requests
 prepare_research_notes -> commit_research_notes
 prepare_outline -> commit_outline
 prepare_draft -> commit_draft
+prepare_style_revision -> [optional fan-out via prepare_style_revision_window] -> commit_style_revision
 prepare_validation -> commit_validation
+(if validation fails) prepare_revision -> commit_revision
 export_markdown
 ```
+
+Writing-style ingestion is optional but strongly recommended: without it, the
+anti-AI rewrite has no voice anchor and tends to converge on a generic
+"human-sounding" register that is itself detectable. The harness should offer
+to ingest samples when the user has not provided any.
 
 The MCP server can return `next_suggested_tools`, but the harness decides what
 to do next. This preserves the interactive benefit of Claude Code/Codex while
@@ -1205,6 +1478,59 @@ Tests:
 - outline note IDs must exist
 - draft lineage is stored
 
+### Phase 5b: Writing Style Ingestion And Voice Calibration
+
+Add user-voice support so drafting and revision stop running blind.
+
+Deliverables:
+
+- `ingest_writing_style_sample` (deterministic; wraps
+  `HumanWritingSampleIngestionService`)
+- `prepare_writing_style_content` / `commit_writing_style_content`
+- `attach_writing_style_to_job`
+- facade plumbing so `prepare_draft`, `prepare_style_revision`,
+  `prepare_style_revision_window`, and `prepare_revision` load the latest
+  attached `WritingStyleContent` and pass a real `WritingStylePayload`
+  instead of `None`
+- the same `WritingStylePayload` should flow into Pipeline Mode through the
+  existing `MvpWorkflowRunner` plumbing (already supported)
+
+Tests:
+
+- PDF/DOCX/TXT/MD writing samples ingest without LLM calls
+- writing-style content commits validate against `WRITING_STYLE_CONTENT_SCHEMA`
+- attached content survives across drafting, style revision, and revision
+- prepare tools include the non-cacheable style suffix block when a content
+  is attached, and omit it cleanly when none is attached (cache-stable)
+
+### Phase 5c: Windowed Style Revision And Hard-Tier Gates
+
+Make the anti-AI rewrite robust on long essays and make hard-tier rules
+enforceable at the facade rather than trusted to the harness.
+
+Deliverables:
+
+- windowed plan in `prepare_style_revision` (threshold ~1200 words, target
+  ~400-word windows snapped to paragraph boundaries)
+- `prepare_style_revision_window`
+- updated `commit_style_revision` that accepts either a single
+  `work_result_id` or a list of per-window `work_result_id`s, assembles
+  windows in paragraph order, and runs hard-tier deterministic checks
+- hard-tier rejection responses that name the offending counts and the
+  windows that produced them
+- the same hard-tier gates applied to `commit_revision`
+
+Tests:
+
+- short drafts use the single-packet path unchanged
+- long drafts emit N windows; commit assembles them in order; the assembled
+  draft passes through the existing `EssayDraft` schema cleanly
+- a window result containing an em-dash triggers commit rejection with a
+  structured retry hint
+- a window result containing a tier-1 vocab hit triggers commit rejection
+- removing the offending pattern and re-submitting that window succeeds
+  without re-doing the other windows
+
 ### Phase 6: Validation, Revision, Export
 
 Add quality-control tools.
@@ -1300,6 +1626,24 @@ Mode. Tests and package boundaries need to make this hard.
 Existing downstream code expects `source_card.json`. Pending-card source
 artifacts need clear status handling so downstream stages do not fail with
 confusing file errors.
+
+### Anti-AI Skill Skipping Mid-Essay
+
+LLM attention tapers across long outputs, so the opening paragraphs of a
+style-revision pass get heavy rewriting while the middle and tail get skimmed.
+The mitigation is the windowed style-revision flow plus hard-tier deterministic
+gates at `commit_style_revision`. The combination means the facade verifies
+that the skill was actually applied instead of trusting that the harness
+honored the system prompt evenly across the whole draft.
+
+### Voice Overcorrection
+
+Without a user writing-style anchor, the anti-AI pass converges on a generic
+"human-sounding" register that is itself a detection signal because it sits
+inside the same probability distribution as the AI text it replaces. The
+mitigation is the writing-style ingestion pipeline plus the existing
+`writing_style_payload` plumbing already used by Pipeline Mode. Agent Tool Mode
+must pass a real payload instead of `None` when one is attached to the job.
 
 ### Subagent Drift
 
