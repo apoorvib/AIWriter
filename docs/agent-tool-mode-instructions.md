@@ -55,9 +55,26 @@ This is the target workflow surface. During partial implementation, call only to
 33. `submit_work_result`
 34. `commit_validation`
 35. `export_markdown`
+36. after the user confirms the essay is good: optionally `cleanup_agent_run`
 
 The `prepare_style_revision` → `commit_style_revision` pair is the prose-only anti-AI rewrite pass. Its `system_prompt` embeds the full anti-AI writing skill; skipping this step or generating the rewrite under your own system instructions will produce text that reads as machine-generated. Skip it only when the user has explicitly opted out (for example, a research note where the AI-flavored register is acceptable). If skipped, `commit_draft` is followed directly by `prepare_validation` against the unrevised draft.
 
+## Cleanup after a successful run
+
+After `export_markdown` returns and the user has explicitly confirmed the essay is acceptable, you MAY offer to delete the verbose workflow logs. Treat cleanup as user-initiated, never automatic, and follow this sequence exactly:
+
+1. Ask the user to confirm the essay is acceptable and that they want to free disk space. Do not assume.
+2. Call `cleanup_agent_run` with `confirm=False` first. This is a dry-run that returns counts and byte totals per category under `would_delete` and `preserved`. Show the preview to the user verbatim.
+3. Only after the user explicitly approves the specific scope and counts in the preview, call `cleanup_agent_run` again with the same `scope` and `confirm=True`. The second call performs the deletion.
+4. If the user is unsure, default to `scope="workflow_logs"` (the safest tier). Never default to `"all_except_export"` without an explicit user choice.
+
+Scopes:
+- `workflow_logs` (default): deletes agent-run events, agent-run checkpoints, work packets, work results, work commits, and source-packet bundles for this run. Preserves the agent-run record, the job, all drafts, all exports, validation reports, outlines, research, topics, task specs, and uploaded source files.
+- `intermediate_artifacts`: also deletes research plans, topics, evidence maps / research reports, outlines, validation reports, and older draft versions. Preserves the latest draft, exports, task specs, sources, the job record, and the agent-run record.
+- `all_except_export`: also deletes all drafts, the job record, and the agent-run record. Preserves exports, task specs, and uploaded sources. Use only when the user explicitly says they only want to keep the final exported markdown.
+
+If `cleanup_agent_run` returns `cleanup_blocked_active_run`, the agent run still has pending work packets. Resolve or commit them first, or pass `force=True` only if the user explicitly accepts losing the in-flight work.
+
 ## Subagents
 
-Use subagents for source-card packets, deep source reading, web-research capture, topic feasibility checks, and independent validation lenses. Keep final synthesis, final thesis choice, draft commits, style-revision commits, validation commits, revision commits, and export under the main orchestrator unless a future bounded-write packet explicitly allows otherwise.
+Use subagents for source-card packets, deep source reading, web-research capture, topic feasibility checks, and independent validation lenses. Keep final synthesis, final thesis choice, draft commits, style-revision commits, validation commits, revision commits, export, and cleanup under the main orchestrator unless a future bounded-write packet explicitly allows otherwise.

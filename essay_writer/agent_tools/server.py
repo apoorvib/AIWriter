@@ -403,6 +403,22 @@ def build_server(data_dir: str | Path | None = None) -> Any:
         )
 
     @app.tool()
+    def cleanup_agent_run(
+        agent_run_id: str,
+        scope: str = "workflow_logs",
+        confirm: bool = False,
+        force: bool = False,
+    ) -> dict[str, object]:
+        return result(
+            facade.cleanup_agent_run(
+                agent_run_id,
+                scope=scope,
+                confirm=confirm,
+                force=force,
+            )
+        )
+
+    @app.tool()
     def get_job_summary(job_id: str) -> dict[str, object]:
         return result(facade.get_job_summary(job_id))
 

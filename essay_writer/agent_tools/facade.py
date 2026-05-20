@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from uuid import uuid4
@@ -105,6 +106,7 @@ CURRENTLY_CALLABLE_TOOLS = [
     "commit_validation",
     "save_user_edit",
     "export_markdown",
+    "cleanup_agent_run",
     "list_drafts",
     "get_draft",
     "get_job_summary",
@@ -119,6 +121,8 @@ CURRENTLY_CALLABLE_TOOLS = [
     "resolve_source_requests",
     "get_source_packet_bundle",
 ]
+
+CLEANUP_SCOPES = ("workflow_logs", "intermediate_artifacts", "all_except_export")
 PLANNED_WORKFLOW_TOOLS = [
     *CURRENTLY_CALLABLE_TOOLS,
 ]
@@ -4262,6 +4266,130 @@ class AgentToolFacade:
             next_suggested_tools=next_tools,
         )
 
+    def cleanup_agent_run(
+        self,
+        agent_run_id: str,
+        *,
+        scope: str = "workflow_logs",
+        confirm: bool = False,
+        force: bool = False,
+    ) -> ToolResult:
+        if scope not in CLEANUP_SCOPES:
+            return _error_result(
+                "cleanup_agent_run",
+                code="cleanup_scope_invalid",
+                message=(
+                    f"scope must be one of {CLEANUP_SCOPES}, got {scope!r}"
+                ),
+                exc=ValueError(scope),
+            )
+        try:
+            run = self.run_store.load_run(agent_run_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return _missing_run_result("cleanup_agent_run", agent_run_id, exc)
+
+        if (
+            confirm
+            and not force
+            and run.status == "active"
+            and run.pending_work_packet_ids
+        ):
+            return _error_result(
+                "cleanup_agent_run",
+                code="cleanup_blocked_active_run",
+                message=(
+                    f"agent run {agent_run_id} is still active with "
+                    f"{len(run.pending_work_packet_ids)} pending work packet(s). "
+                    "Resolve or commit them first, or call again with force=True."
+                ),
+                exc=ValueError(run.status),
+            )
+
+        plan = _build_cleanup_plan(
+            stores=self.stores,
+            work_store=self.work_store,
+            run_store=self.run_store,
+            run=run,
+            scope=scope,
+        )
+
+        plan_summary = {
+            category: {"count": entry["count"], "bytes": entry["bytes"]}
+            for category, entry in plan["delete"].items()
+        }
+        preserved_summary = {
+            category: {"count": entry["count"], "bytes": entry["bytes"]}
+            for category, entry in plan["preserve"].items()
+        }
+        totals = {
+            "deletable_count": sum(entry["count"] for entry in plan["delete"].values()),
+            "deletable_bytes": sum(entry["bytes"] for entry in plan["delete"].values()),
+            "preserved_count": sum(entry["count"] for entry in plan["preserve"].values()),
+            "preserved_bytes": sum(entry["bytes"] for entry in plan["preserve"].values()),
+        }
+
+        if not confirm:
+            return ToolResult(
+                ok=True,
+                tool_name="cleanup_agent_run",
+                data={
+                    "dry_run": True,
+                    "confirm": False,
+                    "agent_run_id": agent_run_id,
+                    "job_id": run.job_id,
+                    "scope": scope,
+                    "would_delete": plan_summary,
+                    "preserved": preserved_summary,
+                    "totals": totals,
+                    "warnings": plan["warnings"],
+                    "next_steps": [
+                        "Show the user this preview, then call cleanup_agent_run again "
+                        "with confirm=True only if the user explicitly approves the deletion."
+                    ],
+                },
+            )
+
+        allowed_root = self.stores.data_dir.resolve()
+        deleted: dict[str, dict[str, int]] = {}
+        delete_errors: list[str] = []
+        for category, entry in plan["delete"].items():
+            count = 0
+            byte_total = 0
+            for path in entry["paths"]:
+                try:
+                    deleted_count, deleted_bytes = _safe_delete_path(
+                        Path(path),
+                        allowed_root=allowed_root,
+                    )
+                except (ValueError, OSError) as exc:
+                    delete_errors.append(f"{category}:{path}: {exc}")
+                    continue
+                count += deleted_count
+                byte_total += deleted_bytes
+            deleted[category] = {"count": count, "bytes": byte_total}
+
+        actual_totals = {
+            "deleted_count": sum(entry["count"] for entry in deleted.values()),
+            "deleted_bytes": sum(entry["bytes"] for entry in deleted.values()),
+            "preserved_count": totals["preserved_count"],
+            "preserved_bytes": totals["preserved_bytes"],
+        }
+        return ToolResult(
+            ok=True,
+            tool_name="cleanup_agent_run",
+            data={
+                "dry_run": False,
+                "confirm": True,
+                "agent_run_id": agent_run_id,
+                "job_id": run.job_id,
+                "scope": scope,
+                "deleted": deleted,
+                "preserved": preserved_summary,
+                "totals": actual_totals,
+                "warnings": plan["warnings"] + delete_errors,
+            },
+        )
+
     def save_user_edit(
         self,
         job_id: str,
@@ -5483,3 +5611,273 @@ def _work_result_summary(result: object) -> dict[str, object]:
         "created_at": getattr(result, "created_at"),
         "warnings": list(getattr(result, "warnings")),
     }
+
+
+# --------------------------------------------------------------------------- #
+# cleanup_agent_run helpers
+# --------------------------------------------------------------------------- #
+
+
+def _safe_delete_path(path: Path, *, allowed_root: Path) -> tuple[int, int]:
+    """Delete a single file or a directory tree, but only if it resolves under
+    `allowed_root`. Symlinks are never followed for the containment check or
+    for recursive deletion. Returns (deleted_entry_count, deleted_byte_total).
+    Raises ValueError if the path escapes the allowed root."""
+    if not path.exists() and not path.is_symlink():
+        return (0, 0)
+    if path.is_symlink():
+        raise ValueError(f"refusing to delete symlink: {path}")
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(allowed_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"refusing to delete path outside allowed_root {allowed_root}: {resolved}"
+        ) from exc
+    if path.is_file():
+        size = path.stat().st_size
+        path.unlink()
+        return (1, size)
+    if path.is_dir():
+        count, byte_total = _measure_tree(path)
+        shutil.rmtree(path)
+        return (count, byte_total)
+    return (0, 0)
+
+
+def _measure_tree(root: Path) -> tuple[int, int]:
+    count = 0
+    byte_total = 0
+    for entry in root.rglob("*"):
+        if entry.is_symlink():
+            continue
+        if entry.is_file():
+            try:
+                byte_total += entry.stat().st_size
+            except OSError:
+                pass
+            count += 1
+        elif entry.is_dir():
+            count += 1
+    return (count, byte_total)
+
+
+def _path_summary(paths: list[Path]) -> dict[str, object]:
+    count = 0
+    byte_total = 0
+    for path in paths:
+        if not path.exists() or path.is_symlink():
+            continue
+        if path.is_file():
+            count += 1
+            try:
+                byte_total += path.stat().st_size
+            except OSError:
+                pass
+        elif path.is_dir():
+            tree_count, tree_bytes = _measure_tree(path)
+            count += tree_count
+            byte_total += tree_bytes
+    return {"count": count, "bytes": byte_total, "paths": [str(p) for p in paths]}
+
+
+def _list_json(path: Path) -> list[Path]:
+    if not path.exists():
+        return []
+    return sorted([p for p in path.iterdir() if p.is_file() and p.suffix == ".json"])
+
+
+def _agent_run_log_paths(run_store: AgentRunStore, agent_run_id: str) -> dict[str, list[Path]]:
+    """Return events and checkpoints belonging to the given agent_run_id.
+    Each file is loaded and filtered by its `agent_run_id` field so substring
+    collisions on filenames cannot delete the wrong run's data."""
+    from essay_writer.agent_tools.json_io import read_json
+
+    event_paths: list[Path] = []
+    for path in _list_json(run_store.events_dir):
+        try:
+            payload = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if payload.get("agent_run_id") == agent_run_id:
+            event_paths.append(path)
+
+    checkpoint_paths: list[Path] = []
+    for path in _list_json(run_store.checkpoints_dir):
+        try:
+            payload = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if payload.get("agent_run_id") == agent_run_id:
+            checkpoint_paths.append(path)
+
+    return {"events": event_paths, "checkpoints": checkpoint_paths}
+
+
+def _work_artifact_paths_for_job(
+    work_store: AgentWorkStore,
+    job_id: str | None,
+) -> dict[str, list[Path]]:
+    """Return work packets / results / commits / source-packet bundles whose
+    `scope` matches `job:{job_id}`. If `job_id` is None, returns empty lists."""
+    if not job_id:
+        return {
+            "packets": [],
+            "results": [],
+            "commits": [],
+            "source_packet_bundles": [],
+        }
+    scope = f"job:{job_id}"
+
+    packets = work_store.list_packets(scope=scope)
+    packet_paths = [work_store.packets_dir / f"{p.work_packet_id}.json" for p in packets]
+    packet_ids = {p.work_packet_id for p in packets}
+
+    result_paths: list[Path] = []
+    for path in _list_json(work_store.results_dir):
+        try:
+            from essay_writer.agent_tools.json_io import read_json
+
+            payload = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if payload.get("work_packet_id") in packet_ids:
+            result_paths.append(path)
+
+    commits = work_store.list_commits(scope=scope)
+    commit_paths = [work_store.commits_dir / f"{c.commit_id}.json" for c in commits]
+
+    bundle_paths: list[Path] = []
+    for path in _list_json(work_store.source_packet_bundles_dir):
+        try:
+            from essay_writer.agent_tools.json_io import read_json
+
+            payload = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if payload.get("scope") == scope:
+            bundle_paths.append(path)
+
+    return {
+        "packets": packet_paths,
+        "results": result_paths,
+        "commits": commit_paths,
+        "source_packet_bundles": bundle_paths,
+    }
+
+
+def _build_cleanup_plan(
+    *,
+    stores: AgentStoreBundle,
+    work_store: AgentWorkStore,
+    run_store: AgentRunStore,
+    run: AgentRun,
+    scope: str,
+) -> dict[str, object]:
+    """Enumerate the paths a cleanup at `scope` would delete vs preserve.
+    Returns a dict with keys `delete`, `preserve`, and `warnings`.
+
+    `delete` maps a category key to {"count", "bytes", "paths"}.
+    `preserve` maps a category key to {"count", "bytes", "paths"} so the
+    caller can confirm what will remain on disk. Path lists in `preserve`
+    are summarized lazily — they are not enumerated under directories that
+    may be huge."""
+    data_dir = stores.data_dir
+    job_id = run.job_id
+    warnings: list[str] = []
+
+    run_log_paths = _agent_run_log_paths(run_store, run.agent_run_id)
+    work_paths = _work_artifact_paths_for_job(work_store, job_id)
+
+    run_record_path = run_store.runs_dir / f"{run.agent_run_id}.json"
+
+    job_record_path: Path | None = None
+    job_dir_paths: dict[str, Path] = {}
+    if job_id:
+        job_record_path = stores.job_store._jobs_dir / f"{job_id}.json"
+        job_dir_paths = {
+            "research_plans": data_dir / "research_plans" / job_id,
+            "topics": data_dir / "topics" / job_id,
+            "research": data_dir / "research" / job_id,
+            "outlines": data_dir / "outlines" / job_id,
+            "validations": data_dir / "validations" / job_id,
+            "drafts": data_dir / "drafts" / job_id,
+            "exports": data_dir / "exports" / job_id,
+        }
+
+    delete: dict[str, dict[str, object]] = {}
+    preserve: dict[str, dict[str, object]] = {}
+
+    # workflow_logs: always part of every scope
+    delete["agent_run_events"] = _path_summary(run_log_paths["events"])
+    delete["agent_run_checkpoints"] = _path_summary(run_log_paths["checkpoints"])
+    delete["work_packets"] = _path_summary(work_paths["packets"])
+    delete["work_results"] = _path_summary(work_paths["results"])
+    delete["work_commits"] = _path_summary(work_paths["commits"])
+    delete["source_packet_bundles"] = _path_summary(work_paths["source_packet_bundles"])
+
+    if scope == "workflow_logs":
+        preserve["agent_run_record"] = _path_summary(
+            [run_record_path] if run_record_path.exists() else []
+        )
+        if job_id:
+            for category, path in job_dir_paths.items():
+                preserve[f"job_dir_{category}"] = _path_summary([path])
+            if job_record_path is not None:
+                preserve["job_record"] = _path_summary(
+                    [job_record_path] if job_record_path.exists() else []
+                )
+        return {"delete": delete, "preserve": preserve, "warnings": warnings}
+
+    if scope in ("intermediate_artifacts", "all_except_export"):
+        if not job_id:
+            warnings.append(
+                f"agent run {run.agent_run_id} has no job_id; "
+                f"only agent-run logs are cleanable at scope={scope}."
+            )
+        for category in ("research_plans", "topics", "research", "outlines", "validations"):
+            target = job_dir_paths.get(category)
+            delete[f"job_dir_{category}"] = _path_summary([target] if target else [])
+
+    if scope == "intermediate_artifacts":
+        # Preserve latest draft only; delete older draft versions.
+        drafts_dir = job_dir_paths.get("drafts")
+        older_drafts: list[Path] = []
+        latest_draft: list[Path] = []
+        if drafts_dir and drafts_dir.exists():
+            files = sorted(
+                [p for p in drafts_dir.iterdir() if p.is_file() and p.suffix == ".json"]
+            )
+            if files:
+                latest_draft = [files[-1]]
+                older_drafts = files[:-1]
+        delete["older_drafts"] = _path_summary(older_drafts)
+        preserve["latest_draft"] = _path_summary(latest_draft)
+        preserve["agent_run_record"] = _path_summary(
+            [run_record_path] if run_record_path.exists() else []
+        )
+        if job_record_path is not None:
+            preserve["job_record"] = _path_summary(
+                [job_record_path] if job_record_path.exists() else []
+            )
+        if job_id:
+            preserve["exports"] = _path_summary([job_dir_paths["exports"]])
+            preserve["task_specs"] = _path_summary([data_dir / "task_specs"])
+            preserve["sources"] = _path_summary([data_dir / "sources"])
+        return {"delete": delete, "preserve": preserve, "warnings": warnings}
+
+    # all_except_export: also delete all drafts, the job record, and the agent run record itself.
+    delete["all_drafts"] = _path_summary(
+        [job_dir_paths["drafts"]] if "drafts" in job_dir_paths else []
+    )
+    delete["job_record"] = _path_summary(
+        [job_record_path] if job_record_path is not None and job_record_path.exists() else []
+    )
+    delete["agent_run_record"] = _path_summary(
+        [run_record_path] if run_record_path.exists() else []
+    )
+    if job_id:
+        preserve["exports"] = _path_summary([job_dir_paths["exports"]])
+        preserve["task_specs"] = _path_summary([data_dir / "task_specs"])
+        preserve["sources"] = _path_summary([data_dir / "sources"])
+    return {"delete": delete, "preserve": preserve, "warnings": warnings}
