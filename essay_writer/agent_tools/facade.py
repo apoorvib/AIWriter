@@ -6,9 +6,26 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
-from essay_writer.agent_tools.config import AgentToolConfig
+from datetime import datetime
+
+from essay_writer.agent_tools.config import (
+    AgentToolConfig,
+    STALE_HARNESS_AFTER_PHASE_ADVANCES,
+    STALE_HARNESS_AFTER_SECONDS,
+)
 from essay_writer.agent_tools.run_store import AgentRunStore
 from essay_writer.agent_tools.id_utils import safe_slug, short_hash, timestamp_id
+from essay_writer.agent_tools.phases import (
+    PHASE_MODE_STRICT,
+    check_tool_allowed,
+    normalize_job_stage_to_phase,
+)
+from essay_writer.agent_tools.skip_tokens import (
+    SCOPE_WRITING_STYLE,
+    SkipTokenStore,
+)
+from essay_writer.agent_tools.subagent_tokens import SubagentTokenStore
+from essay_writer.agent_tools.workspace_scan import scan_writing_style_directory
 from essay_writer.agent_tools.schemas import (
     AgentRun,
     AgentRunEvent,
@@ -23,6 +40,10 @@ from essay_writer.agent_tools.schemas import (
 from essay_writer.agent_tools.source_materialization import SourceMaterializationService
 from essay_writer.agent_tools.stores import AgentStoreBundle
 from essay_writer.agent_tools.work_store import AgentWorkStore
+from essay_writer.drafting.anti_ai_audit import (
+    ANTI_AI_AUDIT_SCHEMA,
+    ANTI_AI_AUDIT_SYSTEM_PROMPT,
+)
 from essay_writer.drafting.prompts import DRAFTING_SCHEMA, DRAFTING_SYSTEM_PROMPT
 from essay_writer.drafting.schema import utc_now_iso
 from essay_writer.drafting.style_revision import (
@@ -80,6 +101,36 @@ MUST_REMEMBER = [
     "Persisted AgentRun state is authoritative; chat memory is advisory.",
     "Recover the AgentRun after context compaction or uncertainty.",
 ]
+# Gap (4): packets whose excerpt/source content exceeds these char
+# thresholds are marked delegation_required=True so they MUST be run in
+# a clean-context subagent rather than absorbed by the orchestrator.
+SOURCE_CARD_DELEGATION_REQUIRED_CHARS = 8_000
+RESEARCH_NOTES_DELEGATION_REQUIRED_CHARS = 12_000
+
+# Gap H1: tools that mutate persisted workflow state and therefore must be
+# tied to an agent run when require_agent_run is on. Read-only tools,
+# bootstrap tools (start/recover/get_harness_instructions), and the
+# pre-run upload tools (ingest_*) are intentionally NOT in this set.
+_RUN_REQUIRED_TOOLS: frozenset[str] = frozenset({
+    "prepare_source_card", "commit_source_card",
+    "prepare_writing_style_content", "commit_writing_style_content",
+    "attach_writing_style_to_job", "skip_writing_style_calibration",
+    "prepare_task_spec", "commit_task_spec",
+    "create_job_from_artifacts",
+    "prepare_topics", "commit_topics", "select_topic", "reject_topic",
+    "create_research_plan", "resolve_source_requests",
+    "prepare_research_notes", "commit_research_notes",
+    "prepare_outline", "commit_outline",
+    "prepare_draft", "commit_draft",
+    "prepare_style_revision", "prepare_style_revision_window",
+    "commit_style_revision",
+    "prepare_anti_ai_audit", "commit_anti_ai_audit",
+    "prepare_revision", "commit_revision",
+    "prepare_validation", "commit_validation",
+    "submit_work_result", "dispatch_subagent",
+    "export_markdown",
+})
+
 START_NEXT_TOOLS = ["ingest_source_file", "prepare_source_card"]
 CURRENTLY_CALLABLE_TOOLS = [
     "get_harness_instructions",
@@ -91,11 +142,13 @@ CURRENTLY_CALLABLE_TOOLS = [
     "ingest_source_file",
     "prepare_source_card",
     "submit_work_result",
+    "dispatch_subagent",
     "commit_source_card",
     "ingest_writing_style_sample",
     "prepare_writing_style_content",
     "commit_writing_style_content",
     "attach_writing_style_to_job",
+    "skip_writing_style_calibration",
     "prepare_task_spec",
     "commit_task_spec",
     "create_job_from_artifacts",
@@ -111,7 +164,10 @@ CURRENTLY_CALLABLE_TOOLS = [
     "prepare_draft",
     "commit_draft",
     "prepare_style_revision",
+    "prepare_style_revision_window",
     "commit_style_revision",
+    "prepare_anti_ai_audit",
+    "commit_anti_ai_audit",
     "prepare_revision",
     "commit_revision",
     "run_deterministic_checks",
@@ -149,6 +205,32 @@ class AgentToolFacade:
     run_store: AgentRunStore
     source_materializer: SourceMaterializationService
     llm_guard: object | None = None
+    skip_token_store: SkipTokenStore = None  # type: ignore[assignment]
+    subagent_token_store: SubagentTokenStore = None  # type: ignore[assignment]
+    # Gap (3): when True, every model-reasoning packet gets a proof-of-
+    # attention token appended to its system_prompt, and submit_work_result
+    # rejects results that do not echo the token. Production builds this
+    # facade with enforcement on. The tests/agent_tools conftest flips the
+    # default off so the broad suite (which submits hand-written payloads)
+    # is not forced to thread tokens through every call; dedicated tests
+    # construct the facade with enforce_attention_challenge=True.
+    enforce_attention_challenge: bool = True
+    # Gap H1: when True, stateful tools (those in _RUN_REQUIRED_TOOLS)
+    # refuse calls that omit agent_run_id with `agent_run_required`. This
+    # closes the dominant bypass: without it, an orchestrator can skip
+    # every phase / stale / writing-style gate simply by never passing
+    # the run id, while still persisting artifacts. Production builds the
+    # facade with this on; the tests/agent_tools conftest flips it off so
+    # the broad suite (which calls many tools without a run) is unaffected.
+    require_agent_run: bool = True
+
+    def __post_init__(self) -> None:
+        if self.skip_token_store is None:
+            self.skip_token_store = SkipTokenStore(self.config.skip_token_dir)
+        if self.subagent_token_store is None:
+            self.subagent_token_store = SubagentTokenStore(
+                self.config.subagent_token_dir
+            )
 
     @classmethod
     def from_data_dir(
@@ -159,6 +241,8 @@ class AgentToolFacade:
         document_reader: object | None = None,
         ocr_extractor: object | None = None,
         llm_guard: object | None = None,
+        enforce_attention_challenge: bool = True,
+        require_agent_run: bool = True,
     ) -> "AgentToolFacade":
         os.environ["ESSAY_AGENT_TOOL_MODE"] = "1"
         config = AgentToolConfig.from_base_dir(data_dir)
@@ -178,9 +262,359 @@ class AgentToolFacade:
             run_store=run_store,
             source_materializer=source_materializer,
             llm_guard=llm_guard,
+            enforce_attention_challenge=enforce_attention_challenge,
+            require_agent_run=require_agent_run,
         )
 
-    def get_harness_instructions(self) -> ToolResult:
+    def _save_model_packet(self, packet: WorkPacket) -> WorkPacket:
+        """Persist a model-reasoning packet, applying the attention
+        challenge (Gap 3) first when enforcement is on.
+
+        All ``prepare_*`` tools route their WorkPacket saves through this
+        method so the challenge is applied uniformly at one chokepoint.
+        """
+        packet = self._apply_attention_challenge(packet)
+        return self.work_store.save_packet(packet)
+
+    def _writing_style_skip_warnings(self, job_id: str) -> list[str]:
+        """Return a one-item warning list when the job opted out of voice
+        calibration (mechanism D / Gap 6), else an empty list.
+
+        Surfacing this on every downstream drafting/revision packet keeps
+        the skip decision visible long after create_job_from_artifacts,
+        so the orchestrator (and the user) are reminded that the draft is
+        not voice-calibrated and carries detector risk.
+        """
+        try:
+            job = self.stores.workflow.load_job(job_id)
+        except (KeyError, FileNotFoundError):
+            return []
+        if getattr(job, "writing_style_skip_token", None) and not getattr(
+            job, "writing_style_content_id", None
+        ):
+            return [
+                "This job opted out of writing-style calibration "
+                "(writing_style_skip_token is set). The generated prose will "
+                "not match a user voice and carries elevated AI-detection "
+                "risk. Attach writing-style content with "
+                "attach_writing_style_to_job to remove this warning."
+            ]
+        return []
+
+    def _apply_attention_challenge(self, packet: WorkPacket) -> WorkPacket:
+        """Append a proof-of-attention token to the packet's system prompt
+        and record it on the packet. No-op when enforcement is off or when
+        the packet already carries a challenge."""
+        if not self.enforce_attention_challenge:
+            return packet
+        if packet.system_prompt_challenge:
+            return packet
+        token = f"ATTN-{uuid4().hex[:12]}"
+        footer = (
+            "\n\n---\n"
+            "ATTENTION CHECK (required): To confirm you have read this entire "
+            f"system prompt, you MUST include the exact token {token} somewhere "
+            "in your JSON output. Append it to a free-text string field such as "
+            "a notes or self_check_notes array, or any existing string field. "
+            "Outputs that omit this token will be rejected with "
+            "system_prompt_not_honored, because a missing token indicates the "
+            "system prompt was not actually read."
+        )
+        return replace(
+            packet,
+            system_prompt=packet.system_prompt + footer,
+            system_prompt_challenge=token,
+        )
+
+    def _enforce_writing_style_gate(
+        self,
+        *,
+        job_id: str | None,
+        writing_style_skip_token: str | None,
+    ) -> ToolResult | None:
+        """Return a ``blocked_on`` error if the writing-style gate fails.
+
+        The gate fires when:
+        - ``job_id`` is None (a brand-new job is being created), OR
+        - ``job_id`` is set but no matching job exists yet (also a new
+          job creation).
+
+        It does NOT fire on idempotent re-calls of an existing job that
+        either already has writing-style content attached or already
+        recorded a skip token.
+        """
+        # Idempotent retry path: if the job exists already, skip the gate.
+        if job_id is not None:
+            try:
+                existing = self.stores.workflow.load_job(job_id)
+            except (KeyError, FileNotFoundError):
+                existing = None
+            if existing is not None:
+                if getattr(existing, "writing_style_content_id", None):
+                    return None
+                if getattr(existing, "writing_style_skip_token", None):
+                    return None
+                # Existing job without writing-style decision: fall through
+                # so the orchestrator must resolve before we move forward.
+
+        # If a skip token was supplied, validate it.
+        if writing_style_skip_token is not None:
+            scope = SCOPE_WRITING_STYLE
+            target_job = job_id or ""
+            if not self.skip_token_store.validate(
+                token=writing_style_skip_token,
+                scope=scope,
+                job_id=target_job,
+            ):
+                return _error_result_with_next(
+                    "create_job_from_artifacts",
+                    code="writing_style_skip_token_invalid",
+                    message=(
+                        "writing_style_skip_token did not match this job and "
+                        f"scope ({scope!r}). Issue a new token via "
+                        "skip_writing_style_calibration(job_id, reason)."
+                    ),
+                    exc=ValueError(writing_style_skip_token),
+                    next_suggested_tools=["skip_writing_style_calibration"],
+                )
+            return None
+
+        # No token, no attached content. Surface what is available in
+        # inputs/writing_style/ so the orchestrator can choose to ingest
+        # the existing samples or to skip with an explicit reason.
+        discovered = scan_writing_style_directory()
+        sample_paths = [item.path for item in discovered]
+        next_tools: list[str] = []
+        if sample_paths:
+            next_tools.append("ingest_writing_style_sample")
+        next_tools.append("skip_writing_style_calibration")
+        return ToolResult(
+            ok=False,
+            tool_name="create_job_from_artifacts",
+            error=ToolError(
+                code="writing_style_required",
+                message=(
+                    "create_job_from_artifacts requires writing-style "
+                    "calibration. Either attach a writing-style content_id "
+                    "to the job via attach_writing_style_to_job, OR call "
+                    "skip_writing_style_calibration(job_id, reason='...') "
+                    "and pass the returned token as writing_style_skip_token."
+                ),
+                detail={
+                    "scope": SCOPE_WRITING_STYLE,
+                    "samples_discovered": sample_paths,
+                    "samples_discovered_count": len(sample_paths),
+                    "samples_directory": "inputs/writing_style/",
+                    "remedy": (
+                        "If samples_discovered is non-empty, ingest them with "
+                        "ingest_writing_style_sample, then prepare/commit a "
+                        "writing-style content and attach it to the job. "
+                        "If you intend to proceed without voice calibration, "
+                        "call skip_writing_style_calibration(job_id, reason)."
+                    ),
+                },
+            ),
+            next_suggested_tools=next_tools,
+        )
+
+    def dispatch_subagent(
+        self,
+        *,
+        work_packet_id: str,
+        role: str,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        """Issue a subagent dispatch token for a work packet.
+
+        Required before ``submit_work_result`` when the packet has
+        ``delegation_required=True``. The orchestrator should:
+        1. Call ``dispatch_subagent`` to get the token
+        2. Dispatch a subagent with the packet (the subagent reads it
+           via ``get_work_packet``) and the role
+        3. Have the subagent submit its result with the token in the
+           producer's ``subagent_token`` field
+        """
+        # Validate the work packet exists. Run the phase gate if linked.
+        try:
+            packet = self.work_store.load_packet(work_packet_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return _error_result(
+                "dispatch_subagent",
+                code="work_packet_not_found",
+                message=f"WorkPacket not found: {work_packet_id}",
+                exc=exc,
+            )
+        if agent_run_id is not None:
+            _, _gate_error = self._load_run_and_gate(
+                "dispatch_subagent", agent_run_id
+            )
+            if _gate_error is not None:
+                return _gate_error
+        if not role or not role.strip():
+            return _error_result_with_next(
+                "dispatch_subagent",
+                code="role_required",
+                message=(
+                    "dispatch_subagent requires a non-empty role string "
+                    "(e.g. the packet's delegation.suggested_role)."
+                ),
+                exc=ValueError("role"),
+                next_suggested_tools=["dispatch_subagent"],
+            )
+        try:
+            token = self.subagent_token_store.issue(
+                work_packet_id=work_packet_id,
+                role=role,
+            )
+        except ValueError as exc:
+            return _error_result(
+                "dispatch_subagent",
+                code="subagent_token_invalid",
+                message=str(exc),
+                exc=exc,
+            )
+        next_tools = ["submit_work_result"]
+        return ToolResult(
+            ok=True,
+            tool_name="dispatch_subagent",
+            data={
+                "subagent_token": token.token,
+                "work_packet_id": token.work_packet_id,
+                "role": token.role,
+                "stage": packet.stage,
+                "delegation_hint": asdict(packet.delegation),
+                "created_at": token.created_at,
+                "next_suggested_tools": next_tools,
+                "must_remember": (
+                    "Pass subagent_token in the producer.subagent_token "
+                    "field when calling submit_work_result for this packet."
+                ),
+            },
+            next_suggested_tools=next_tools,
+        )
+
+    def skip_writing_style_calibration(
+        self,
+        *,
+        job_id: str,
+        reason: str,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        """Issue a skip token that bypasses the writing-style gate.
+
+        The ``reason`` is recorded on the token and on the agent run so
+        the decision is auditable. ``reason`` must be a non-empty string;
+        callers should articulate why voice calibration is being skipped.
+        """
+        run = None
+        if agent_run_id is not None:
+            run, _gate_error = self._load_run_and_gate(
+                "skip_writing_style_calibration", agent_run_id
+            )
+            if _gate_error is not None:
+                return _gate_error
+
+        if not reason or not reason.strip():
+            return _error_result_with_next(
+                "skip_writing_style_calibration",
+                code="reason_required",
+                message=(
+                    "skip_writing_style_calibration requires a non-empty "
+                    "reason so the decision is auditable."
+                ),
+                exc=ValueError("reason"),
+                next_suggested_tools=["skip_writing_style_calibration"],
+            )
+
+        try:
+            token = self.skip_token_store.issue(
+                scope=SCOPE_WRITING_STYLE,
+                job_id=job_id,
+                reason=reason,
+            )
+        except ValueError as exc:
+            return _error_result(
+                "skip_writing_style_calibration",
+                code="skip_token_invalid",
+                message=str(exc),
+                exc=exc,
+            )
+
+        # Record the decision on the run so recover_agent_run can surface it.
+        if agent_run_id is not None and run is not None:
+            self.run_store.update_run(
+                replace(
+                    run,
+                    writing_style_skip_token=token.token,
+                )
+            )
+
+        next_tools = ["create_job_from_artifacts"]
+        return ToolResult(
+            ok=True,
+            tool_name="skip_writing_style_calibration",
+            data={
+                "skip_token": token.token,
+                "scope": token.scope,
+                "job_id": token.job_id,
+                "reason": token.reason,
+                "created_at": token.created_at,
+                "next_suggested_tools": next_tools,
+            },
+            next_suggested_tools=next_tools,
+        )
+
+    def _load_run_and_gate(
+        self,
+        tool_name: str,
+        agent_run_id: str | None,
+    ) -> tuple[AgentRun | None, ToolResult | None]:
+        """Load the agent run if given and run the gates.
+
+        Runs three checks in order:
+        1. Run exists (missing -> ``missing_run`` error)
+        2. Phase gate (out-of-order -> ``out_of_order`` error)
+        3. Stale-harness gate (too many advances or too much time since
+           the orchestrator last read ``get_harness_instructions`` ->
+           ``harness_stale`` error)
+
+        Returns ``(run, error)``. If ``agent_run_id`` is ``None`` and the
+        tool is a stateful (run-required) tool with enforcement on,
+        returns ``(None, agent_run_required_error)``; otherwise
+        ``(None, None)``.
+        """
+        if agent_run_id is None:
+            if self.require_agent_run and tool_name in _RUN_REQUIRED_TOOLS:
+                return None, _error_result_with_next(
+                    tool_name,
+                    code="agent_run_required",
+                    message=(
+                        f"{tool_name} mutates workflow state and requires an "
+                        "agent_run_id. Start or recover a run first, then pass "
+                        "its id. (Omitting agent_run_id would bypass the phase, "
+                        "stale-harness, and writing-style gates.)"
+                    ),
+                    exc=ValueError("agent_run_id"),
+                    next_suggested_tools=["start_agent_run", "recover_agent_run"],
+                )
+            return None, None
+        try:
+            run = self.run_store.load_run(agent_run_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return None, _missing_run_result(tool_name, agent_run_id, exc)
+        gate_error = _phase_gate_error(tool_name, run)
+        if gate_error is not None:
+            return run, gate_error
+        stale_error = _harness_stale_error(tool_name, run)
+        if stale_error is not None:
+            return run, stale_error
+        return run, None
+
+    def get_harness_instructions(
+        self,
+        *,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
         instructions_path = _repo_root() / "docs" / "agent-tool-mode-instructions.md"
         try:
             instructions = instructions_path.read_text(encoding="utf-8")
@@ -191,6 +625,22 @@ class AgentToolFacade:
                 message=f"Agent Tool Mode instructions were not found: {instructions_path}",
                 exc=exc,
             )
+        # If linked to a run, reset the stale-harness counter and stamp
+        # the last-read timestamp. (mechanism C)
+        if agent_run_id is not None:
+            try:
+                run = self.run_store.load_run(agent_run_id)
+                self.run_store.update_run(
+                    replace(
+                        run,
+                        phase_advances_since_harness_read=0,
+                        last_harness_read_at=utc_now_iso(),
+                    )
+                )
+            except (KeyError, FileNotFoundError):
+                # Soft-fail: get_harness_instructions still returns the
+                # instructions even if the run was not found.
+                pass
         return ToolResult(
             ok=True,
             tool_name="get_harness_instructions",
@@ -214,11 +664,29 @@ class AgentToolFacade:
         objective: str,
         job_id: str | None = None,
         user_constraints: list[str] | None = None,
+        phase_mode: str | None = None,
     ) -> ToolResult:
+        # If a job is provided, inherit its current_stage as the run's
+        # initial phase so the gate does not block tools that are valid
+        # for that mid-flight job.
+        initial_phase: str | None = None
+        if job_id is not None:
+            try:
+                existing_job = self.stores.workflow.load_job(job_id)
+                # Normalize the job-store stage vocabulary to a valid run
+                # phase, else a resumed run could land in a phase no tool
+                # allows and be bricked. (Tier-1 fix.)
+                initial_phase = normalize_job_stage_to_phase(
+                    getattr(existing_job, "current_stage", None)
+                )
+            except (KeyError, FileNotFoundError):
+                initial_phase = None
         run = self.run_store.start_run(
             objective=objective,
             job_id=job_id,
             user_constraints=user_constraints,
+            initial_phase=initial_phase,
+            phase_mode=phase_mode,
         )
         if not run.next_suggested_tools:
             run = self.run_store.update_run(
@@ -237,10 +705,9 @@ class AgentToolFacade:
         )
 
     def get_agent_run_state(self, *, agent_run_id: str) -> ToolResult:
-        try:
-            run = self.run_store.load_run(agent_run_id)
-        except (KeyError, FileNotFoundError) as exc:
-            return _missing_run_result("get_agent_run_state", agent_run_id, exc)
+        run, _gate_error = self._load_run_and_gate("get_agent_run_state", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         return ToolResult(
             ok=True,
             tool_name="get_agent_run_state",
@@ -275,6 +742,7 @@ class AgentToolFacade:
             data={
                 "agent_run_id": recovery.agent_run_id,
                 "current_phase": _recovered_current_phase(recovery),
+                "phase_history": list(recovery.run.phase_history),
                 "status": recovery.run.status,
                 "pending_work_packet_ids": list(recovery.pending_work_packet_ids),
                 "completed_work_result_ids": list(recovery.completed_work_result_ids),
@@ -325,13 +793,12 @@ class AgentToolFacade:
         *,
         job_id: str | None = None,
         agent_run_id: str | None = None,
+        writing_style_skip_token: str | None = None,
     ) -> ToolResult:
         run = None
-        if agent_run_id is not None:
-            try:
-                run = self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("create_job_from_artifacts", agent_run_id, exc)
+        run, _gate_error = self._load_run_and_gate("create_job_from_artifacts", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
 
         try:
             task_spec = self.stores.task_store.load_latest(task_spec_id)
@@ -371,6 +838,23 @@ class AgentToolFacade:
                     next_suggested_tools=["prepare_source_card"],
                 )
 
+        # Writing-style gate (mechanism D). Fires only when the call is
+        # linked to an agent run (i.e. the orchestrator is driving the
+        # workflow). The orchestrator must either:
+        # (a) have already attached writing-style content to the job, OR
+        # (b) explicitly call skip_writing_style_calibration(reason=...)
+        # and pass the returned token as ``writing_style_skip_token``.
+        # Idempotent retries on an existing job that recorded a decision
+        # bypass the gate. Calls without ``agent_run_id`` (e.g. test
+        # fixtures, ad-hoc CLI use) also bypass it.
+        if agent_run_id is not None:
+            gate_error = self._enforce_writing_style_gate(
+                job_id=job_id,
+                writing_style_skip_token=writing_style_skip_token,
+            )
+            if gate_error is not None:
+                return gate_error
+
         already_existing = False
         if job_id is not None:
             try:
@@ -405,6 +889,16 @@ class AgentToolFacade:
                 source_ids=effective_source_ids,
             )
 
+        # If a writing_style_skip_token was supplied, record it on the
+        # job so idempotent retries see the decision. (mechanism D)
+        if writing_style_skip_token is not None and not getattr(
+            job, "writing_style_skip_token", None
+        ):
+            job = self.stores.workflow.record_writing_style_skip(
+                job_id=job.id,
+                skip_token=writing_style_skip_token,
+            )
+
         next_tools = ["prepare_topics"]
         artifact_refs = {
             "job_id": job.id,
@@ -412,11 +906,13 @@ class AgentToolFacade:
             "source_ids": list(effective_source_ids),
         }
         if agent_run_id is not None and run is not None:
+            # Normalize the job stage to a valid run phase (Tier-1 fix).
+            job_phase = normalize_job_stage_to_phase(job.current_stage)
             self.run_store.update_run(
                 replace(
                     run,
                     job_id=job.id,
-                    current_phase=job.current_stage,
+                    current_phase=job_phase,
                 )
             )
             self.run_store.attach_commit(
@@ -426,7 +922,7 @@ class AgentToolFacade:
             )
             self.run_store.checkpoint(
                 agent_run_id,
-                current_phase=job.current_stage,
+                current_phase=job_phase,
                 decision="job_created" if not already_existing else "job_recovered",
                 next_suggested_tools=next_tools,
             )
@@ -644,11 +1140,9 @@ class AgentToolFacade:
         agent_run_id: str | None = None,
     ) -> ToolResult:
         run = None
-        if agent_run_id is not None:
-            try:
-                run = self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("resolve_source_requests", agent_run_id, exc)
+        run, _gate_error = self._load_run_and_gate("resolve_source_requests", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
 
         source_requests: list[SourceLocator] = []
         if locators:
@@ -820,11 +1314,9 @@ class AgentToolFacade:
                 exc=ValueError(suffix),
             )
         run = None
-        if agent_run_id is not None:
-            try:
-                run = self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("ingest_source_file", agent_run_id, exc)
+        run, _gate_error = self._load_run_and_gate("ingest_source_file", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
 
         try:
             result = self.source_materializer.materialize(path, source_id=source_id)
@@ -903,11 +1395,9 @@ class AgentToolFacade:
                 exc=ValueError(suffix),
             )
         run = None
-        if agent_run_id is not None:
-            try:
-                run = self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("ingest_writing_style_sample", agent_run_id, exc)
+        run, _gate_error = self._load_run_and_gate("ingest_writing_style_sample", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
 
         from essay_writer.writing_style.ingestion import (
             HumanWritingSampleIngestionService,
@@ -982,13 +1472,9 @@ class AgentToolFacade:
                 exc=ValueError("sample_ids"),
             )
         run = None
-        if agent_run_id is not None:
-            try:
-                run = self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result(
-                    "prepare_writing_style_content", agent_run_id, exc
-                )
+        run, _gate_error = self._load_run_and_gate("prepare_writing_style_content", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             prompt_samples = self.stores.writing_style_sample_store.load_prompt_samples(
                 list(sample_ids)
@@ -1018,7 +1504,7 @@ class AgentToolFacade:
         artifact_refs = {
             "writing_style_sample_ids": [sample.sample_id for sample in prompt_samples],
         }
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="writing_style_content",
@@ -1082,13 +1568,9 @@ class AgentToolFacade:
         work_result_id: str,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result(
-                    "commit_writing_style_content", agent_run_id, exc
-                )
+        _, _gate_error = self._load_run_and_gate("commit_writing_style_content", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             result = self.work_store.load_result(work_result_id)
             packet = self.work_store.load_packet(result.work_packet_id)
@@ -1246,13 +1728,9 @@ class AgentToolFacade:
         content_id: str,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result(
-                    "attach_writing_style_to_job", agent_run_id, exc
-                )
+        _, _gate_error = self._load_run_and_gate("attach_writing_style_to_job", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             content = self.stores.writing_style_content_store.load(content_id)
         except (KeyError, FileNotFoundError) as exc:
@@ -1307,11 +1785,9 @@ class AgentToolFacade:
         reuse_existing: bool = True,
     ) -> ToolResult:
         run = None
-        if agent_run_id is not None:
-            try:
-                run = self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("prepare_source_card", agent_run_id, exc)
+        run, _gate_error = self._load_run_and_gate("prepare_source_card", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         if not self.stores.source_store.has_text_artifacts(source_id):
             return _error_result(
                 "prepare_source_card",
@@ -1365,15 +1841,22 @@ class AgentToolFacade:
             "source_id": source_id,
             "source": f"essay://sources/{source_id}",
         }
+        selected_excerpt_chars = sum(chunk.char_count for chunk in excerpts)
         delegation = _source_card_delegation(
             source_id=source_id,
-            selected_excerpt_chars=sum(chunk.char_count for chunk in excerpts),
+            selected_excerpt_chars=selected_excerpt_chars,
             pending_source_card_packets=_pending_source_card_packet_count(
                 self.work_store,
                 self.run_store.load_run(agent_run_id) if agent_run_id is not None else None,
             ),
         )
-        packet = self.work_store.save_packet(
+        # Gap (4): large source-card excerpts must be processed by a
+        # subagent so the main orchestrator does not absorb a multi-KB
+        # excerpt block into its own context.
+        source_card_delegation_required = (
+            selected_excerpt_chars > SOURCE_CARD_DELEGATION_REQUIRED_CHARS
+        )
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="source_card",
@@ -1388,12 +1871,13 @@ class AgentToolFacade:
                 context={
                     "source_id": source_id,
                     "summary_char_limit": config.source_card_summary_char_limit,
-                    "selected_excerpt_chars": sum(chunk.char_count for chunk in excerpts),
+                    "selected_excerpt_chars": selected_excerpt_chars,
                     "selected_chunk_ids": [chunk.id for chunk in excerpts],
                 },
                 artifact_refs=artifact_refs,
                 commit_tool="commit_source_card",
                 delegation=delegation,
+                delegation_required=source_card_delegation_required,
             )
         )
         if agent_run_id is not None:
@@ -1448,11 +1932,57 @@ class AgentToolFacade:
                 message=f"WorkPacket not found: {work_packet_id}",
                 exc=exc,
             )
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("submit_work_result", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("submit_work_result", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
+        # Subagent dispatch gate (mechanism B). If the packet requires a
+        # subagent dispatch, the producer MUST carry a valid token issued
+        # by dispatch_subagent for this exact work packet.
+        if packet.delegation_required:
+            token = getattr(producer, "subagent_token", None)
+            if not token:
+                return _error_result_with_next(
+                    "submit_work_result",
+                    code="subagent_dispatch_required",
+                    message=(
+                        f"WorkPacket {work_packet_id!r} has delegation_required=True. "
+                        "submit_work_result requires a producer carrying a "
+                        "subagent_token issued by dispatch_subagent. The packet "
+                        "is designed to run in a clean-context subagent; the "
+                        "main orchestrator should not absorb it."
+                    ),
+                    exc=ValueError("subagent_token"),
+                    next_suggested_tools=["dispatch_subagent"],
+                )
+            if not self.subagent_token_store.validate(
+                token=token, work_packet_id=work_packet_id
+            ):
+                return _error_result_with_next(
+                    "submit_work_result",
+                    code="subagent_dispatch_token_invalid",
+                    message=(
+                        "subagent_token does not match this work packet. "
+                        "Issue a new token via dispatch_subagent(work_packet_id, role)."
+                    ),
+                    exc=ValueError(token),
+                    next_suggested_tools=["dispatch_subagent"],
+                )
+            # Gap (8): a delegated packet must be produced by a subagent.
+            # A main_agent producer carrying a token is contradictory and
+            # signals the orchestrator ran the work inline anyway.
+            if getattr(producer, "type", None) != "subagent":
+                return _error_result_with_next(
+                    "submit_work_result",
+                    code="subagent_dispatch_required",
+                    message=(
+                        f"WorkPacket {work_packet_id!r} is delegation_required. "
+                        "The producer.type must be 'subagent', not "
+                        f"{getattr(producer, 'type', None)!r}. Run the packet in "
+                        "a dispatched subagent and submit from there."
+                    ),
+                    exc=ValueError(getattr(producer, "type", None)),
+                    next_suggested_tools=["dispatch_subagent"],
+                )
         validation_error = _validate_work_payload(
             payload,
             packet.response_schema,
@@ -1460,6 +1990,31 @@ class AgentToolFacade:
         )
         if validation_error is not None:
             return validation_error
+
+        # Proof-of-attention gate (Gap 3). If the packet carries a
+        # system_prompt_challenge, the token must appear somewhere in the
+        # serialized payload. A missing token means the orchestrator did
+        # not read the supplied system prompt.
+        challenge = packet.system_prompt_challenge
+        if challenge:
+            import json as _json
+
+            serialized = _json.dumps(payload, ensure_ascii=False)
+            if challenge not in serialized:
+                return _error_result_with_next(
+                    "submit_work_result",
+                    code="system_prompt_not_honored",
+                    message=(
+                        "The required attention token from the packet's "
+                        "system_prompt is missing from your output. This "
+                        "indicates the system_prompt was not read. Re-read the "
+                        "packet's system_prompt and include the exact token "
+                        "(see the 'ATTENTION CHECK' line at the end of the "
+                        "system_prompt) in a free-text field of your JSON."
+                    ),
+                    exc=ValueError("system_prompt_challenge"),
+                    next_suggested_tools=["get_work_packet"],
+                )
 
         existing_ids = {result.work_result_id for result in self.work_store.list_results()}
         result = self.work_store.submit_result(
@@ -1501,11 +2056,9 @@ class AgentToolFacade:
         payload: dict[str, object] | None = None,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("commit_source_card", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("commit_source_card", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         if work_result_id is None:
             direct = self._direct_source_card_work_result(source_id=source_id, payload=payload)
             if not direct.ok:
@@ -1598,11 +2151,9 @@ class AgentToolFacade:
         selected_prompt: str | None = None,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("prepare_task_spec", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("prepare_task_spec", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
 
         effective_task_id = task_id or stable_task_id(raw_text)
         sources = list(source_document_ids or [])
@@ -1621,7 +2172,7 @@ class AgentToolFacade:
         }
         if selected_prompt is not None:
             artifact_refs["selected_prompt"] = selected_prompt
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="task_spec",
@@ -1692,11 +2243,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("commit_task_spec", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("commit_task_spec", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             result = self.work_store.load_result(work_result_id)
             packet = self.work_store.load_packet(result.work_packet_id)
@@ -1840,11 +2389,9 @@ class AgentToolFacade:
             return max_candidates_result
         max_candidates = max_candidates_result
 
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("prepare_topics", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("prepare_topics", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             job = self.stores.workflow.load_job(job_id)
         except KeyError as exc:
@@ -1932,7 +2479,7 @@ class AgentToolFacade:
             "task_spec_id": job.task_spec_id,
             "source_ids": list(job.source_ids),
         }
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="topic_ideation",
@@ -2001,11 +2548,9 @@ class AgentToolFacade:
         user_instruction: str | None = None,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("commit_topics", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("commit_topics", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         if work_result_id is None:
             direct = self._direct_topic_work_result(
                 job_id=job_id,
@@ -2265,11 +2810,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("select_topic", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("select_topic", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             selected = self.stores.workflow.select_topic(
                 job_id=job_id,
@@ -2325,11 +2868,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("reject_topic", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("reject_topic", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             rejected = self.stores.workflow.reject_topic(
                 job_id=job_id,
@@ -2387,11 +2928,9 @@ class AgentToolFacade:
         external_search_allowed: bool = False,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("create_research_plan", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("create_research_plan", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             job = self.stores.workflow.load_job(job_id)
         except KeyError as exc:
@@ -2546,11 +3085,9 @@ class AgentToolFacade:
         if isinstance(max_notes_result, ToolResult):
             return max_notes_result
         max_notes = max_notes_result
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("prepare_research_notes", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("prepare_research_notes", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             job = self.stores.workflow.load_job(job_id)
         except KeyError as exc:
@@ -2624,6 +3161,11 @@ class AgentToolFacade:
         )
         total_packet_chars = sum(len(packet.text) for packet in packets_result)
         delegation = _research_notes_delegation(total_packet_chars=total_packet_chars)
+        # Gap (4): a large source-packet bundle must be read by a subagent
+        # so the deep source text is not absorbed into the orchestrator.
+        research_notes_delegation_required = (
+            total_packet_chars > RESEARCH_NOTES_DELEGATION_REQUIRED_CHARS
+        )
         packet_id = timestamp_id(
             "workpkt",
             "job",
@@ -2639,7 +3181,7 @@ class AgentToolFacade:
         }
         if job.research_plan_id is not None:
             artifact_refs["research_plan_id"] = job.research_plan_id
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="research_notes",
@@ -2662,6 +3204,7 @@ class AgentToolFacade:
                 artifact_refs=artifact_refs,
                 commit_tool="commit_research_notes",
                 delegation=delegation,
+                delegation_required=research_notes_delegation_required,
             )
         )
         if agent_run_id is not None:
@@ -2699,11 +3242,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("commit_research_notes", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("commit_research_notes", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             result = self.work_store.load_result(work_result_id)
             packet = self.work_store.load_packet(result.work_packet_id)
@@ -2922,11 +3463,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("prepare_outline", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("prepare_outline", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             job = self.stores.workflow.load_job(job_id)
         except KeyError as exc:
@@ -3023,7 +3562,7 @@ class AgentToolFacade:
         }
         if effective_bundle_id is not None:
             artifact_refs["source_packet_bundle_id"] = effective_bundle_id
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="outline",
@@ -3092,11 +3631,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("commit_outline", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("commit_outline", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             result = self.work_store.load_result(work_result_id)
             packet = self.work_store.load_packet(result.work_packet_id)
@@ -3267,11 +3804,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("prepare_draft", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("prepare_draft", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             job = self.stores.workflow.load_job(job_id)
         except KeyError as exc:
@@ -3380,7 +3915,7 @@ class AgentToolFacade:
         }
         if effective_bundle_id is not None:
             artifact_refs["source_packet_bundle_id"] = effective_bundle_id
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="draft",
@@ -3436,6 +3971,7 @@ class AgentToolFacade:
                 "artifact_refs": dict(packet.artifact_refs),
                 "next_suggested_tools": ["submit_work_result"],
             },
+            warnings=self._writing_style_skip_warnings(job_id),
             next_suggested_tools=["submit_work_result"],
         )
 
@@ -3445,11 +3981,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("commit_draft", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("commit_draft", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             result = self.work_store.load_result(work_result_id)
             packet = self.work_store.load_packet(result.work_packet_id)
@@ -3622,11 +4156,9 @@ class AgentToolFacade:
         source_packet_bundle_id: str | None = None,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("prepare_style_revision", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("prepare_style_revision", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             job = self.stores.workflow.load_job(job_id)
         except KeyError as exc:
@@ -3770,7 +4302,7 @@ class AgentToolFacade:
                 ]
             ),
         )
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="style_revision",
@@ -3828,6 +4360,7 @@ class AgentToolFacade:
                 "windowing": {"mode": "single"},
                 "next_suggested_tools": ["submit_work_result"],
             },
+            warnings=self._writing_style_skip_warnings(job_id),
             next_suggested_tools=["submit_work_result"],
         )
 
@@ -3873,7 +4406,7 @@ class AgentToolFacade:
                 "windows": windows_payload,
             },
         }
-        parent_packet = self.work_store.save_packet(
+        parent_packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=parent_packet_id,
                 stage="style_revision_plan",
@@ -3925,6 +4458,7 @@ class AgentToolFacade:
                 "artifact_refs": dict(artifact_refs),
                 "next_suggested_tools": ["prepare_style_revision_window"],
             },
+            warnings=self._writing_style_skip_warnings(job_id),
             next_suggested_tools=["prepare_style_revision_window"],
         )
 
@@ -3935,13 +4469,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result(
-                    "prepare_style_revision_window", agent_run_id, exc
-                )
+        _, _gate_error = self._load_run_and_gate("prepare_style_revision_window", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             parent_packet = self.work_store.load_packet(parent_packet_id)
         except (KeyError, FileNotFoundError) as exc:
@@ -4006,6 +4536,33 @@ class AgentToolFacade:
         prev_paragraph = paragraphs[start - 1] if start > 0 else None
         next_paragraph = paragraphs[end] if end < len(paragraphs) else None
         window_det = run_validation_deterministic_checks(window_text)
+        whole_det = run_validation_deterministic_checks(previous_draft.content)
+        # Whole-draft structural context — the per-window LLM cannot see paragraph
+        # length variance or the first-sentence chain otherwise. Without this, the
+        # soft-tier anti-AI rules ("paragraph length variance", "argument advancement")
+        # are structurally invisible at revision time.
+        whole_draft_context = {
+            "paragraph_count": len(paragraphs),
+            "paragraph_word_counts": [len(p.split()) for p in paragraphs],
+            "first_sentence_chain": list(
+                whole_det.soft_tier.paragraph_first_sentences
+            ),
+            "paragraphs_under_50_words": whole_det.soft_tier.paragraphs_under_50_words,
+            "paragraphs_opening_with_topic_sentence": whole_det.soft_tier.paragraphs_opening_with_topic_sentence,
+            "filler_phrase_hits": [
+                {"phrase": h.word, "count": h.count}
+                for h in whole_det.soft_tier.filler_phrase_hits
+            ],
+            "significance_inflation_hits": [
+                {"phrase": h.word, "count": h.count}
+                for h in whole_det.soft_tier.significance_inflation_hits
+            ],
+            "vague_attribution_hits": [
+                {"phrase": h.word, "count": h.count}
+                for h in whole_det.soft_tier.vague_attribution_hits
+            ],
+            "concrete_engagement_present_in_whole_draft": whole_det.concrete_engagement_present,
+        }
 
         instructions = (
             f"You are rewriting WINDOW {window_index + 1} of {total} of a long essay's prose-only "
@@ -4013,7 +4570,12 @@ class AgentToolFacade:
             "window's paragraphs, in the same paragraph order. Do not output text for other windows. "
             "Preserve every claim, citation, and quoted source phrase in this window. Apply the "
             "anti-AI skill in the system_prompt verbatim. If a writing-style block was attached to "
-            "the job, the user's voice wins over soft-tier heuristics (hard-tier rules still apply)."
+            "the job, the user's voice wins over soft-tier heuristics (hard-tier rules still apply). "
+            "The whole_draft_context block reports paragraph counts and the first-sentence chain for "
+            "the ENTIRE essay so structural patterns are visible. If `paragraphs_under_50_words == 0` "
+            "and you can plausibly split or shorten a paragraph in your window without losing meaning, "
+            "do so. If your window covers the first or last paragraph, prefer it for short-paragraph "
+            "variety so the introduction or conclusion does not run uniformly long."
         )
         window_user_payload = {
             "window_index": window_index,
@@ -4025,6 +4587,7 @@ class AgentToolFacade:
             "next_window_first_paragraph": next_paragraph,
             "window_text": window_text,
             "window_deterministic_findings": asdict(window_det),
+            "whole_draft_context": whole_draft_context,
         }
         import json as _json
 
@@ -4055,7 +4618,7 @@ class AgentToolFacade:
             "parent_packet_id": parent_packet_id,
             "window_index": window_index,
         }
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="style_revision_window",
@@ -4075,15 +4638,23 @@ class AgentToolFacade:
                 artifact_refs=artifact_refs,
                 commit_tool="commit_style_revision",
                 delegation=DelegationHint(
-                    recommended=False,
+                    recommended=True,
                     reason=(
-                        "each window is part of a coordinated rewrite; the main agent must "
-                        "submit results in order"
+                        "windowed anti-AI rewrite benefits from a bounded subagent with only the "
+                        "anti-AI skill in its context; the orchestrator must still submit window "
+                        "results in order and call commit_style_revision"
                     ),
+                    suggested_role="anti_ai_window_reviser",
                     allowed_tools=["submit_work_result"],
                     return_contract=(
                         "Return one JSON object matching response_schema. content must contain "
                         "ONLY this window's revised paragraphs."
+                    ),
+                    subagent_prompt=(
+                        "You are a bounded prose-only style reviser. The system prompt you receive "
+                        "contains the full anti-AI writing skill. Apply it. Use whole_draft_context "
+                        "to break the uniform-paragraph-shape and topic-sentence-opener patterns "
+                        "the parent draft falls into. Return JSON matching response_schema and stop."
                     ),
                 ),
             )
@@ -4126,11 +4697,9 @@ class AgentToolFacade:
         work_result_ids: list[str] | None = None,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("commit_style_revision", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("commit_style_revision", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         if work_result_ids:
             return self._commit_windowed_style_revision(
                 work_result_ids=list(work_result_ids),
@@ -4305,7 +4874,11 @@ class AgentToolFacade:
                 artifact_refs=artifact_refs,
             )
 
-        next_tools = ["prepare_validation"]
+        # After the style-revision pass, the workflow should run the bounded
+        # anti-AI audit before validation. The audit is the forcing function
+        # that makes the soft-tier checks visible; validation can still be
+        # called directly if the user opts out.
+        next_tools = ["prepare_anti_ai_audit", "prepare_validation"]
         if agent_run_id is not None:
             self.run_store.attach_work_result(
                 agent_run_id,
@@ -4320,7 +4893,7 @@ class AgentToolFacade:
             )
             self.run_store.checkpoint(
                 agent_run_id,
-                current_phase="validation",
+                current_phase="anti_ai_audit",
                 decision="style_revision_committed",
                 next_suggested_tools=next_tools,
             )
@@ -4654,11 +5227,9 @@ class AgentToolFacade:
         source_packet_bundle_id: str | None = None,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("prepare_revision", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("prepare_revision", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             job = self.stores.workflow.load_job(job_id)
         except KeyError as exc:
@@ -4774,7 +5345,7 @@ class AgentToolFacade:
         }
         if effective_bundle_id is not None:
             artifact_refs["source_packet_bundle_id"] = effective_bundle_id
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="revision",
@@ -4835,6 +5406,7 @@ class AgentToolFacade:
                 "artifact_refs": dict(packet.artifact_refs),
                 "next_suggested_tools": ["submit_work_result"],
             },
+            warnings=self._writing_style_skip_warnings(job_id),
             next_suggested_tools=["submit_work_result"],
         )
 
@@ -4844,11 +5416,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("commit_revision", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("commit_revision", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             result = self.work_store.load_result(work_result_id)
             packet = self.work_store.load_packet(result.work_packet_id)
@@ -5062,6 +5632,371 @@ class AgentToolFacade:
             next_suggested_tools=next_tools,
         )
 
+    def prepare_anti_ai_audit(
+        self,
+        job_id: str,
+        draft_id: str | None = None,
+        *,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        """Run a bounded single-skill anti-AI audit on a committed draft.
+
+        The audit stage exists so the LLM cannot skip the anti-AI self-check
+        the way it can when the skill is buried in a multi-goal drafting prompt.
+        The audit packet's system prompt is ONLY the anti-AI skill. The
+        response schema FORCES the model to fill the seven self-check fields
+        and grade each writing-style guidance bullet."""
+        import json as _json
+
+        _, _gate_error = self._load_run_and_gate("prepare_anti_ai_audit", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
+        try:
+            if draft_id is None:
+                draft = self.stores.draft_store.load_latest(job_id)
+            else:
+                draft = self.stores.draft_store.find_by_id(job_id, draft_id)
+        except (KeyError, FileNotFoundError, ValueError) as exc:
+            return _error_result_with_next(
+                "prepare_anti_ai_audit",
+                code="draft_not_found",
+                message=f"draft not found for job {job_id}",
+                exc=exc,
+                next_suggested_tools=["prepare_draft"],
+            )
+
+        det = run_validation_deterministic_checks(draft.content)
+        paragraphs = [p for p in draft.content.split("\n\n") if p.strip()]
+        whole_draft_context = {
+            "paragraph_count": len(paragraphs),
+            "paragraph_word_counts": [len(p.split()) for p in paragraphs],
+            "first_sentence_chain": list(det.soft_tier.paragraph_first_sentences),
+            "paragraphs_under_50_words": det.soft_tier.paragraphs_under_50_words,
+            "paragraphs_opening_with_topic_sentence": det.soft_tier.paragraphs_opening_with_topic_sentence,
+        }
+
+        # Style-guidance checklist (one row per bullet). If the user attached a
+        # writing-style content to the job, those bullets are what the audit
+        # grades against.
+        writing_style_payload = self._load_writing_style_payload_for_job(job_id)
+        guidance_bullets: list[dict[str, str]] = []
+        if writing_style_payload is not None:
+            content = writing_style_payload.style_content
+            for idx, bullet in enumerate(content.guidance, start=1):
+                guidance_bullets.append({"id": f"guidance-{idx}", "bullet": bullet})
+            for idx, bullet in enumerate(content.preferred_moves, start=1):
+                guidance_bullets.append({"id": f"preferred-{idx}", "bullet": f"PREFERRED MOVE: {bullet}"})
+            for idx, bullet in enumerate(content.avoid_moves, start=1):
+                guidance_bullets.append({"id": f"avoid-{idx}", "bullet": f"AVOID MOVE: {bullet}"})
+            for idx, bullet in enumerate(content.structural_habits, start=1):
+                guidance_bullets.append({"id": f"structure-{idx}", "bullet": f"STRUCTURAL HABIT: {bullet}"})
+
+        user_payload = {
+            "draft_id": draft.id,
+            "draft_version": draft.version,
+            "essay_content": draft.content,
+            "deterministic_findings": asdict(det),
+            "whole_draft_context": whole_draft_context,
+            "style_guidance_checklist": guidance_bullets,
+        }
+
+        prompt_blocks = [
+            PromptBlock(text=_json.dumps(user_payload, ensure_ascii=False), cacheable=True),
+        ]
+
+        packet_id = timestamp_id(
+            "workpkt",
+            "job",
+            job_id,
+            "anti_ai_audit",
+            short_hash([draft.id, draft.version]),
+        )
+        artifact_refs = {
+            "job_id": job_id,
+            "draft_id": draft.id,
+            "draft_version": draft.version,
+        }
+        packet = self._save_model_packet(
+            WorkPacket(
+                work_packet_id=packet_id,
+                stage="anti_ai_audit",
+                scope=f"job:{job_id}",
+                instructions=(
+                    "Audit the committed draft against the anti-AI writing skill. The system_prompt "
+                    "contains ONLY the anti-AI skill; do not invent grounding rules or rewrite the "
+                    "draft. Return JSON matching response_schema. Empty arrays will be rejected."
+                ),
+                system_prompt=ANTI_AI_AUDIT_SYSTEM_PROMPT,
+                prompt_blocks=prompt_blocks,
+                response_schema=dict(ANTI_AI_AUDIT_SCHEMA),
+                context={
+                    "job_id": job_id,
+                    "draft_id": draft.id,
+                    "draft_version": draft.version,
+                },
+                artifact_refs=artifact_refs,
+                commit_tool="commit_anti_ai_audit",
+                delegation=DelegationHint(
+                    recommended=True,
+                    reason=(
+                        "bounded single-skill audit; subagent gets ONLY the anti-AI skill in "
+                        "its system prompt and produces the structured audit JSON"
+                    ),
+                    suggested_role="anti_ai_auditor",
+                    allowed_tools=["submit_work_result"],
+                    return_contract=(
+                        "Return one JSON object matching response_schema (the audit, not a rewrite)."
+                    ),
+                    subagent_prompt=(
+                        "Read the essay content in the user message. Apply the anti-AI writing "
+                        "skill from the system prompt. Score, do not rewrite. Return the audit JSON."
+                    ),
+                ),
+                # The audit packet is structurally clean-context work.
+                # Require a subagent dispatch token at submit time so the
+                # orchestrator cannot silently absorb the audit system
+                # prompt. (mechanism B)
+                delegation_required=True,
+            )
+        )
+        if agent_run_id is not None:
+            self.run_store.attach_work_packet(
+                agent_run_id,
+                packet.work_packet_id,
+                current_phase="anti_ai_audit",
+                next_suggested_tools=["submit_work_result"],
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="prepare_anti_ai_audit",
+            data={
+                "work_packet_id": packet.work_packet_id,
+                "stage": packet.stage,
+                "job_id": job_id,
+                "draft_id": draft.id,
+                "commit_tool": packet.commit_tool,
+                "delegation": asdict(packet.delegation),
+                "response_schema": packet.response_schema,
+                "system_prompt": packet.system_prompt,
+                "prompt_blocks": [asdict(block) for block in packet.prompt_blocks],
+                "instructions": packet.instructions,
+                "artifact_refs": dict(packet.artifact_refs),
+                "deterministic": asdict(det),
+                "next_suggested_tools": ["submit_work_result"],
+            },
+            next_suggested_tools=["submit_work_result"],
+        )
+
+    def commit_anti_ai_audit(
+        self,
+        work_result_id: str,
+        *,
+        agent_run_id: str | None = None,
+    ) -> ToolResult:
+        """Attach the audit JSON to the draft as a new draft version.
+
+        We do not overwrite the existing draft in place: the audit is a real
+        artifact that belongs in the draft history, and downstream consumers
+        (validation, export) should be able to ask which audit version they
+        are looking at.
+        """
+        from essay_writer.drafting.schema import (
+            AntiAISelfCheck,
+            EssayDraft,
+            StyleGuidanceGrade,
+        )
+
+        _, _gate_error = self._load_run_and_gate("commit_anti_ai_audit", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
+        try:
+            result = self.work_store.load_result(work_result_id)
+            packet = self.work_store.load_packet(result.work_packet_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return _error_result(
+                "commit_anti_ai_audit",
+                code="work_result_not_found",
+                message=f"WorkResult not found: {work_result_id}",
+                exc=exc,
+            )
+        if packet.commit_tool != "commit_anti_ai_audit":
+            return _error_result(
+                "commit_anti_ai_audit",
+                code="wrong_commit_tool",
+                message=f"expected commit_anti_ai_audit packet, got {packet.commit_tool}",
+                exc=ValueError(packet.commit_tool),
+            )
+        validation_error = _validate_work_payload(
+            result.payload,
+            ANTI_AI_AUDIT_SCHEMA,
+            tool_name="commit_anti_ai_audit",
+        )
+        if validation_error is not None:
+            return validation_error
+        job_id = packet.context.get("job_id") or packet.artifact_refs.get("job_id")
+        source_draft_id = packet.context.get("draft_id") or packet.artifact_refs.get("draft_id")
+        if not isinstance(job_id, str) or not isinstance(source_draft_id, str):
+            return _error_result(
+                "commit_anti_ai_audit",
+                code="missing_artifact_refs",
+                message="anti-AI audit packet missing job_id or draft_id",
+                exc=ValueError("artifact_refs"),
+            )
+        try:
+            source_draft = self.stores.draft_store.find_by_id(job_id, source_draft_id)
+        except (KeyError, FileNotFoundError, ValueError) as exc:
+            return _error_result(
+                "commit_anti_ai_audit",
+                code="draft_not_found",
+                message=f"source draft missing: {source_draft_id}",
+                exc=exc,
+            )
+
+        audit_payload = result.payload.get("anti_ai_self_check", {}) or {}
+        grades = [
+            StyleGuidanceGrade(
+                bullet=str(grade.get("bullet", "")).strip(),
+                followed=bool(grade.get("followed", False)),
+                where=str(grade.get("where", "")).strip(),
+                why_not=str(grade.get("why_not", "")).strip(),
+            )
+            for grade in audit_payload.get("style_guidance_grades", []) or []
+            if isinstance(grade, dict) and str(grade.get("bullet", "")).strip()
+        ]
+        audit = AntiAISelfCheck(
+            paragraph_count=int(audit_payload.get("paragraph_count", 0) or 0),
+            paragraph_first_sentences=[
+                str(s) for s in audit_payload.get("paragraph_first_sentences", []) or []
+            ],
+            first_sentence_chain_summarizes_essay=bool(
+                audit_payload.get("first_sentence_chain_summarizes_essay", True)
+            ),
+            paragraphs_under_50_words=int(audit_payload.get("paragraphs_under_50_words", 0) or 0),
+            paragraphs_opening_with_topic_sentence=int(
+                audit_payload.get("paragraphs_opening_with_topic_sentence", 0) or 0
+            ),
+            filler_phrases_used=[
+                str(s) for s in audit_payload.get("filler_phrases_used", []) or []
+            ],
+            significance_inflation_phrases=[
+                str(s) for s in audit_payload.get("significance_inflation_phrases", []) or []
+            ],
+            vague_attributions_used=[
+                str(s) for s in audit_payload.get("vague_attributions_used", []) or []
+            ],
+            concrete_source_handles=[
+                str(s) for s in audit_payload.get("concrete_source_handles", []) or []
+            ],
+            style_guidance_grades=grades,
+            self_check_notes=[
+                str(s) for s in audit_payload.get("self_check_notes", []) or []
+            ],
+        )
+        passes = bool(result.payload.get("pass", False))
+        revision_targets = result.payload.get("revision_targets", []) or []
+
+        scope = f"job:{job_id}"
+        existing_commit = next(
+            (
+                commit
+                for commit in self.work_store.list_commits(scope=scope, stage="anti_ai_audit")
+                if commit.work_result_id == result.work_result_id
+            ),
+            None,
+        )
+        already_committed = existing_commit is not None
+        if existing_commit is not None:
+            audited_version = existing_commit.artifact_refs.get("draft_version")
+            if isinstance(audited_version, int):
+                draft = self.stores.draft_store.load(job_id, audited_version)
+            else:
+                return _error_result(
+                    "commit_anti_ai_audit",
+                    code="audit_commit_artifact_missing",
+                    message="prior audit commit is missing draft_version",
+                    exc=KeyError(existing_commit.commit_id),
+                )
+            commit = existing_commit
+        else:
+            new_version = self.stores.draft_store.next_version(job_id)
+            draft = replace(
+                source_draft,
+                id=f"draft_{uuid4().hex[:12]}",
+                version=new_version,
+                anti_ai_self_check=audit,
+                origin="system_revision",
+                created_by="system",
+                parent_draft_id=source_draft.id,
+                prompt_version="anti-ai-audit-v1",
+            )
+            try:
+                self.stores.draft_store.save(draft)
+                self.stores.workflow.record_draft_ready(job_id=job_id, draft=draft)
+            except (FileExistsError, TopicSelectionError) as exc:
+                return _error_result(
+                    "commit_anti_ai_audit",
+                    code="audit_commit_failed",
+                    message=str(exc),
+                    exc=exc,
+                )
+            artifact_refs = {
+                "job_id": job_id,
+                "source_draft_id": source_draft.id,
+                "draft_id": draft.id,
+                "draft_version": new_version,
+                "audit_pass": passes,
+                "audit_revision_target_count": len(revision_targets),
+            }
+            commit = self.work_store.save_commit(
+                scope=scope,
+                stage="anti_ai_audit",
+                work_packet_id=packet.work_packet_id,
+                work_result_id=result.work_result_id,
+                artifact_refs=artifact_refs,
+            )
+
+        next_tools = (
+            ["prepare_validation"]
+            if passes
+            else ["prepare_revision", "prepare_validation"]
+        )
+        if agent_run_id is not None:
+            self.run_store.attach_work_result(
+                agent_run_id,
+                result.work_result_id,
+                work_packet_id=packet.work_packet_id,
+                next_suggested_tools=next_tools,
+            )
+            self.run_store.attach_commit(
+                agent_run_id,
+                dict(commit.artifact_refs),
+                next_suggested_tools=next_tools,
+            )
+            self.run_store.checkpoint(
+                agent_run_id,
+                current_phase="validation" if passes else "anti_ai_revision",
+                decision="anti_ai_audit_committed",
+                next_suggested_tools=next_tools,
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="commit_anti_ai_audit",
+            data={
+                "commit_id": commit.commit_id,
+                "work_result_id": result.work_result_id,
+                "job_id": job_id,
+                "draft_id": draft.id,
+                "audit_pass": passes,
+                "revision_targets": revision_targets,
+                "anti_ai_self_check": audit_payload,
+                "draft": asdict(draft),
+                "artifact_refs": dict(commit.artifact_refs),
+                "already_committed": already_committed,
+                "next_suggested_tools": next_tools,
+            },
+            next_suggested_tools=next_tools,
+        )
+
     def run_deterministic_checks(
         self,
         draft_text_or_id: str,
@@ -5095,11 +6030,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("prepare_validation", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("prepare_validation", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             job = self.stores.workflow.load_job(job_id)
             draft = _load_draft_for_job(self.stores, job_id=job_id, draft_id=draft_id)
@@ -5153,7 +6086,7 @@ class AgentToolFacade:
             "draft_version": draft.version,
             "evidence_map_id": research_result.evidence_map.id,
         }
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=packet_id,
                 stage="validation",
@@ -5221,11 +6154,9 @@ class AgentToolFacade:
         *,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("commit_validation", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("commit_validation", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             result = self.work_store.load_result(work_result_id)
             packet = self.work_store.load_packet(result.work_packet_id)
@@ -5399,10 +6330,9 @@ class AgentToolFacade:
                 ),
                 exc=ValueError(scope),
             )
-        try:
-            run = self.run_store.load_run(agent_run_id)
-        except (KeyError, FileNotFoundError) as exc:
-            return _missing_run_result("cleanup_agent_run", agent_run_id, exc)
+        run, _gate_error = self._load_run_and_gate("cleanup_agent_run", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
 
         if (
             confirm
@@ -5516,11 +6446,9 @@ class AgentToolFacade:
         user_instruction: str | None = None,
         agent_run_id: str | None = None,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("save_user_edit", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("save_user_edit", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             parent = self.stores.draft_store.find_by_id(job_id, draft_id)
         except KeyError as exc:
@@ -5611,12 +6539,11 @@ class AgentToolFacade:
         draft_id: str | None = None,
         validation_version: int | None = None,
         agent_run_id: str | None = None,
+        allow_failed_validation: bool = False,
     ) -> ToolResult:
-        if agent_run_id is not None:
-            try:
-                self.run_store.load_run(agent_run_id)
-            except (KeyError, FileNotFoundError) as exc:
-                return _missing_run_result("export_markdown", agent_run_id, exc)
+        _, _gate_error = self._load_run_and_gate("export_markdown", agent_run_id)
+        if _gate_error is not None:
+            return _gate_error
         try:
             job = self.stores.workflow.load_job(job_id)
             task_spec = self.stores.task_store.load_latest(str(job.task_spec_id))
@@ -5641,6 +6568,25 @@ class AgentToolFacade:
                 message="validation report does not match the draft selected for export",
                 exc=ValueError(validation.draft_id),
                 next_suggested_tools=["prepare_validation"],
+            )
+        # Refuse to export a draft whose validation did not pass, unless the
+        # caller explicitly overrides. Without this, the documented
+        # "loop back through revision on failure" step is advisory only:
+        # commit_validation(fail) -> prepare_validation -> export ships a
+        # failed essay. (Tier-1 fix for the export-failed-validation bug.)
+        if not validation.passes and not allow_failed_validation:
+            return _error_result_with_next(
+                "export_markdown",
+                code="validation_not_passing",
+                message=(
+                    "The latest validation report for this draft did not pass "
+                    "(validation.passes is False). Run prepare_revision -> "
+                    "commit_revision and re-validate until it passes, or call "
+                    "export_markdown with allow_failed_validation=True to "
+                    "deliberately export a draft that failed validation."
+                ),
+                exc=ValueError("validation_not_passing"),
+                next_suggested_tools=["prepare_revision", "prepare_validation"],
             )
         export = FinalExportService().create_markdown_export(
             job=job,
@@ -5716,7 +6662,7 @@ class AgentToolFacade:
                 exc=FileNotFoundError(source_id),
             )
         source = self.stores.source_store.load_source(source_id)
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=(
                     "workpkt_source_"
@@ -5793,7 +6739,7 @@ class AgentToolFacade:
         )
         if readiness_error is not None:
             return readiness_error
-        packet = self.work_store.save_packet(
+        packet = self._save_model_packet(
             WorkPacket(
                 work_packet_id=(
                     "workpkt_job_"
@@ -6606,6 +7552,7 @@ def _run_state(run: AgentRun) -> dict[str, object]:
         "job_id": run.job_id,
         "status": run.status,
         "current_phase": run.current_phase,
+        "phase_history": list(run.phase_history),
         "artifact_refs": dict(run.artifact_refs),
         "pending_work_packet_ids": list(run.pending_work_packet_ids),
         "completed_work_result_ids": list(run.completed_work_result_ids),
@@ -6699,6 +7646,122 @@ def _error_result(
             message=message,
             detail={"exception": type(exc).__name__},
         ),
+    )
+
+
+def _harness_stale_error(tool_name: str, run: AgentRun) -> ToolResult | None:
+    """Return a ``harness_stale`` / ``harness_never_read`` error when the
+    orchestrator has not read ``get_harness_instructions`` recently enough.
+
+    The check fires only for tools that begin with ``prepare_`` or
+    ``commit_`` (the stateful-write tools), so read-only and
+    bookkeeping tools are not gated on staleness.
+
+    Two trigger conditions:
+    - ``harness_never_read``: the run has never read the harness
+      (``last_harness_read_at is None``). The orchestrator must read the
+      instructions at least once before doing any stateful write.
+    - ``harness_stale``: too many phase advances or too much elapsed time
+      since the last read.
+
+    Legacy-mode runs always pass.
+    """
+    if run.phase_mode != PHASE_MODE_STRICT:
+        return None
+    if not (tool_name.startswith("prepare_") or tool_name.startswith("commit_")):
+        return None
+    last_read = run.last_harness_read_at
+    # Gap (1): the harness must be read at least once before the first
+    # stateful write. A fresh run has last_harness_read_at = None.
+    if last_read is None:
+        return ToolResult(
+            ok=False,
+            tool_name=tool_name,
+            error=ToolError(
+                code="harness_never_read",
+                message=(
+                    "You have not called get_harness_instructions on this run. "
+                    "Read the workflow instructions before the first stateful "
+                    f"write ({tool_name!r}). Call "
+                    "get_harness_instructions(agent_run_id=...) first."
+                ),
+                detail={
+                    "last_harness_read_at": None,
+                    "wrong_call": tool_name,
+                },
+            ),
+            next_suggested_tools=["get_harness_instructions"],
+        )
+    advances = run.phase_advances_since_harness_read
+    seconds_since_read: float | None = None
+    try:
+        parsed = datetime.fromisoformat(last_read)
+        now = datetime.fromisoformat(utc_now_iso())
+        seconds_since_read = (now - parsed).total_seconds()
+    except (TypeError, ValueError):
+        seconds_since_read = None
+    too_many_advances = advances >= STALE_HARNESS_AFTER_PHASE_ADVANCES
+    too_old = (
+        seconds_since_read is not None
+        and seconds_since_read >= STALE_HARNESS_AFTER_SECONDS
+    )
+    if not (too_many_advances or too_old):
+        return None
+    return ToolResult(
+        ok=False,
+        tool_name=tool_name,
+        error=ToolError(
+            code="harness_stale",
+            message=(
+                f"Your last get_harness_instructions read is stale. "
+                f"phase_advances_since_harness_read={advances} "
+                f"(threshold={STALE_HARNESS_AFTER_PHASE_ADVANCES}); "
+                f"seconds_since_read="
+                f"{int(seconds_since_read) if seconds_since_read is not None else 'never'} "
+                f"(threshold={STALE_HARNESS_AFTER_SECONDS}). "
+                f"Call get_harness_instructions before {tool_name!r}."
+            ),
+            detail={
+                "phase_advances_since_harness_read": advances,
+                "advances_threshold": STALE_HARNESS_AFTER_PHASE_ADVANCES,
+                "seconds_since_read": seconds_since_read,
+                "seconds_threshold": STALE_HARNESS_AFTER_SECONDS,
+                "last_harness_read_at": last_read,
+            },
+        ),
+        next_suggested_tools=["get_harness_instructions"],
+    )
+
+
+def _phase_gate_error(tool_name: str, run: AgentRun) -> ToolResult | None:
+    """Return an ``out_of_order`` ToolResult if the gate blocks this call.
+
+    Returns ``None`` if the call is allowed. Legacy-mode runs always
+    return ``None`` (the gate is a no-op for them).
+    """
+    check = check_tool_allowed(
+        tool_name,
+        current_phase=run.current_phase,
+        phase_mode=run.phase_mode,
+    )
+    if check.allowed:
+        return None
+    return ToolResult(
+        ok=False,
+        tool_name=tool_name,
+        error=ToolError(
+            code="out_of_order",
+            message=check.reason or (
+                f"Tool {tool_name!r} is not allowed in current phase "
+                f"{run.current_phase!r}."
+            ),
+            detail={
+                "current_phase": check.current_phase,
+                "expected_phases": list(check.expected_phases),
+                "wrong_call": tool_name,
+            },
+        ),
+        next_suggested_tools=list(check.suggested_next_tools),
     )
 
 

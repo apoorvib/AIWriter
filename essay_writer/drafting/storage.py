@@ -6,7 +6,12 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from essay_writer.drafting.schema import EssayDraft, SectionSourceMap
+from essay_writer.drafting.schema import (
+    AntiAISelfCheck,
+    EssayDraft,
+    SectionSourceMap,
+    StyleGuidanceGrade,
+)
 
 
 class DraftStore:
@@ -67,6 +72,46 @@ def _draft_from_payload(payload: dict) -> EssayDraft:
     payload["section_source_map"] = [
         SectionSourceMap(**item) for item in payload.get("section_source_map", [])
     ]
+    audit = payload.get("anti_ai_self_check")
+    if isinstance(audit, dict):
+        grades_raw = audit.get("style_guidance_grades", []) or []
+        grades = [
+            StyleGuidanceGrade(
+                bullet=str(grade.get("bullet", "")),
+                followed=bool(grade.get("followed", False)),
+                where=str(grade.get("where", "")),
+                why_not=str(grade.get("why_not", "")),
+            )
+            for grade in grades_raw
+            if isinstance(grade, dict) and str(grade.get("bullet", "")).strip()
+        ]
+        payload["anti_ai_self_check"] = AntiAISelfCheck(
+            paragraph_count=int(audit.get("paragraph_count", 0) or 0),
+            paragraph_first_sentences=[
+                str(s) for s in audit.get("paragraph_first_sentences", []) or []
+            ],
+            first_sentence_chain_summarizes_essay=bool(
+                audit.get("first_sentence_chain_summarizes_essay", True)
+            ),
+            paragraphs_under_50_words=int(audit.get("paragraphs_under_50_words", 0) or 0),
+            paragraphs_opening_with_topic_sentence=int(
+                audit.get("paragraphs_opening_with_topic_sentence", 0) or 0
+            ),
+            filler_phrases_used=[str(s) for s in audit.get("filler_phrases_used", []) or []],
+            significance_inflation_phrases=[
+                str(s) for s in audit.get("significance_inflation_phrases", []) or []
+            ],
+            vague_attributions_used=[
+                str(s) for s in audit.get("vague_attributions_used", []) or []
+            ],
+            concrete_source_handles=[
+                str(s) for s in audit.get("concrete_source_handles", []) or []
+            ],
+            style_guidance_grades=grades,
+            self_check_notes=[str(s) for s in audit.get("self_check_notes", []) or []],
+        )
+    else:
+        payload["anti_ai_self_check"] = None
     return EssayDraft(**payload)
 
 

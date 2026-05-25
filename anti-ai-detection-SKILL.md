@@ -372,3 +372,93 @@ LLMs cite generic authorities to add weight without committing to a source. "Exp
 LLMs end with vague forward-looking statements: "The future looks bright," "exciting times lie ahead," "much remains to be seen," "only time will tell," "the implications will continue to unfold." These are filler that sounds like a conclusion without making any actual claim.
 
 **Rule:** End on a specific claim or a specific question, never on a forward-looking generality. If the essay has nothing specific to say at the end, the essay is not done. "Whether the LPC acts on the recommendation remains to be seen" is borderline acceptable only because the LPC is named and the action is concrete. "Time will tell whether community participation matters" would not be acceptable.
+
+---
+
+## Paragraph-Level Before/After Gallery
+
+Rules in the abstract are easy to ignore. The samples below show the exact rewrites this skill expects. Pattern-match against them when revising.
+
+### Example 1: Uniform topic-sentence paragraph shape
+
+**Before (AI-flagged at high confidence):**
+
+> The algorithm itself operates on two static objects before the dynamic-programming pass begins. The first is the local cost matrix C, where each entry stores a pairwise distance. The matrix is, in effect, a heatmap of similarity, and the alignment task amounts to finding a route through its low-cost valleys. The second is the warping path, a sequence of cells through C that must satisfy three conditions: boundary, monotonicity, and step size.
+
+What flags it: opens with the topic sentence, every subsequent sentence supports it, ends on a tidy parallel-structure summary. Locally coherent, globally flat.
+
+**After (real-writer rhythm):**
+
+> Two objects matter before the dynamic-programming pass begins. The local cost matrix C stores every pairwise distance between the two sequences, so cell (i, j) reports how unlike x_i and y_j are. Think of C as a similarity heatmap whose low-cost valleys mark candidate alignments. On top of C the algorithm carves a warping path, which is a list of cells the alignment will actually use. That path is not free; it has to start at one corner, end at the other, never move backward, and never jump.
+
+What changed: opener leads with the noun count, not a topic claim. The middle adds a worked-example reading ("Think of C as..."). The close lands on a concrete constraint list, not a parallel-structure paraphrase of the opener.
+
+### Example 2: Paragraph-length variance
+
+**Before (uniform 100-150 word paragraphs throughout):**
+
+> [Paragraph 1, 130 words.] [Paragraph 2, 140 words.] [Paragraph 3, 125 words.] [Paragraph 4, 135 words.] ...
+
+What flags it: even paragraph rhythm reads as machine output regardless of content.
+
+**After (real-writer variance):**
+
+> [Paragraph 1, 130 words, sets up the problem.]
+>
+> Then a beat. One sentence.
+>
+> [Paragraph 3, 220 words, the deep dive.] [Paragraph 4, 60 words, a short pivot.] [Paragraph 5, 150 words, the close.]
+
+What changed: at least one paragraph is two sentences. One paragraph runs much longer than the others because the writer cared more about it.
+
+### Example 3: Filler removal
+
+**Before:** "In order to make the algorithm tractable, the designers introduced global constraints. In essence, these constraints define a feasible region around the diagonal. Essentially, only paths inside this region are evaluated."
+
+**After:** "To make the algorithm tractable, the designers introduced global constraints. These constraints define a feasible region around the diagonal. Only paths inside the region are evaluated."
+
+What changed: "in order to" → "to". Deleted "In essence,". Deleted "Essentially,". Three filler hits go away without changing the meaning.
+
+### Example 4: Significance inflation
+
+**Before:** "The most important consequence is that the recurrence runs in O(NM) time. What is striking here is that this matches the cost of the matrix fill itself, which deserves attention because it bounds the algorithm's scaling."
+
+**After:** "The recurrence runs in O(NM) time, which matches the matrix-fill cost and bounds how the algorithm scales."
+
+What changed: deleted "The most important consequence is", deleted "What is striking here is that", deleted "which deserves attention because". The point survives and the sentence is faster.
+
+### Example 5: Vague attribution → named source
+
+**Before:** "Experts believe that DTW is poorly suited to indexing because it does not obey the triangle inequality. Studies show that this limits its use in time-series databases."
+
+**After:** "Senin notes that DTW does not obey the triangle inequality, which is what limits its use in indexing schemes for time-series databases (p. 19)."
+
+What changed: "Experts believe" → "Senin notes". Removed "Studies show that". Added a page reference as a concrete handle.
+
+### Example 6: Generic forward-looking closing
+
+**Before:** "Only time will tell how the field will continue to develop, but the implications for time-series analysis will only continue to unfold."
+
+**After:** "The successor algorithm the report names (CSDTW) bolts a hidden-Markov-model layer onto DTW, which is the review's tacit admission that the basic recurrence is a starting point and not an endpoint."
+
+What changed: vague futurology replaced with a specific named successor and a specific judgment about what its existence implies.
+
+---
+
+## How to Use This Skill in a Schema-Constrained Stage
+
+If your output JSON has an `anti_ai_self_check` field, populating that object IS how you run this skill. The expected workflow at generation time:
+
+1. Write the draft.
+2. Re-read it once.
+3. List the first sentence of every paragraph in `paragraph_first_sentences`. Read the list alone. If it summarizes the essay, your middle paragraphs are restating, not advancing. Rewrite at least one middle paragraph before you finalize.
+4. Count `paragraph_count` and `paragraphs_under_50_words`. If the essay is >1000 words and `paragraphs_under_50_words == 0`, add a short paragraph.
+5. Search your text for every entry in the filler-phrases list. Put any you used in `filler_phrases_used`. If the list is non-empty, rewrite to remove them.
+6. Search for every entry in the significance-inflation list. Same drill into `significance_inflation_phrases`.
+7. Search for vague-authority subjects ("experts believe", "studies show"). Same drill into `vague_attributions_used`.
+8. List every concrete source handle the prose actually contains (page numbers, named-source-plus-date parentheticals, quoted phrases of 8+ characters) in `concrete_source_handles`. If empty, add at least one.
+9. For each bullet in `<style_guidance_checklist>`, fill one `style_guidance_grades` row. `followed: true` requires a `where` quote or paragraph reference.
+10. If you removed any phrases during this pass, note them briefly in `self_check_notes` so the validator can confirm you actually ran the check.
+
+A response with everything at zero / empty / true-without-evidence is treated as a failed audit.
+

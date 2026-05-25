@@ -73,6 +73,19 @@ def test_prepare_commit_draft_records_validation_ready() -> None:
                 ],
                 "bibliography_candidates": ["Uploaded Source."],
                 "known_weak_spots": [],
+                "anti_ai_self_check": {
+                    "paragraph_count": 1,
+                    "paragraph_first_sentences": [],
+                    "first_sentence_chain_summarizes_essay": False,
+                    "paragraphs_under_50_words": 1,
+                    "paragraphs_opening_with_topic_sentence": 0,
+                    "filler_phrases_used": [],
+                    "significance_inflation_phrases": [],
+                    "vague_attributions_used": [],
+                    "concrete_source_handles": [],
+                    "style_guidance_grades": [],
+                    "self_check_notes": [],
+                },
             },
             producer=main_agent(),
         )
@@ -148,7 +161,10 @@ def test_prepare_commit_style_revision_records_new_draft_version() -> None:
     # Content is the rewrite.
     assert "Cooling access is uneven" in revised.content
     assert "em dashes" not in revised.content
-    assert committed.next_suggested_tools == ["prepare_validation"]
+    assert committed.next_suggested_tools == [
+        "prepare_anti_ai_audit",
+        "prepare_validation",
+    ]
 
 
 def test_commit_style_revision_is_idempotent_for_same_work_result() -> None:
@@ -208,6 +224,19 @@ def test_commit_style_revision_rejects_wrong_stage_packet() -> None:
                 ],
                 "bibliography_candidates": ["Uploaded Source."],
                 "known_weak_spots": [],
+                "anti_ai_self_check": {
+                    "paragraph_count": 1,
+                    "paragraph_first_sentences": [],
+                    "first_sentence_chain_summarizes_essay": False,
+                    "paragraphs_under_50_words": 1,
+                    "paragraphs_opening_with_topic_sentence": 0,
+                    "filler_phrases_used": [],
+                    "significance_inflation_phrases": [],
+                    "vague_attributions_used": [],
+                    "concrete_source_handles": [],
+                    "style_guidance_grades": [],
+                    "self_check_notes": [],
+                },
             },
             producer=main_agent(),
         )
@@ -259,6 +288,19 @@ def test_prepare_commit_revision_records_new_draft_version() -> None:
                 ],
                 "bibliography_candidates": ["Uploaded Source."],
                 "known_weak_spots": [],
+                "anti_ai_self_check": {
+                    "paragraph_count": 1,
+                    "paragraph_first_sentences": [],
+                    "first_sentence_chain_summarizes_essay": False,
+                    "paragraphs_under_50_words": 1,
+                    "paragraphs_opening_with_topic_sentence": 0,
+                    "filler_phrases_used": [],
+                    "significance_inflation_phrases": [],
+                    "vague_attributions_used": [],
+                    "concrete_source_handles": [],
+                    "style_guidance_grades": [],
+                    "self_check_notes": [],
+                },
             },
             producer=main_agent(),
         )
@@ -393,6 +435,19 @@ def _seed_job_through_draft(facade: AgentToolFacade) -> None:
             ],
             "bibliography_candidates": ["Uploaded Source."],
             "known_weak_spots": [],
+            "anti_ai_self_check": {
+                "paragraph_count": 1,
+                "paragraph_first_sentences": [],
+                "first_sentence_chain_summarizes_essay": False,
+                "paragraphs_under_50_words": 1,
+                "paragraphs_opening_with_topic_sentence": 0,
+                "filler_phrases_used": [],
+                "significance_inflation_phrases": [],
+                "vague_attributions_used": [],
+                "concrete_source_handles": [],
+                "style_guidance_grades": [],
+                "self_check_notes": [],
+            },
         },
         producer=main_agent(),
     )

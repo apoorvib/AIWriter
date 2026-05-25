@@ -765,6 +765,19 @@ def _draft_response() -> dict:
         ],
         "bibliography_candidates": [],
         "known_weak_spots": [],
+        "anti_ai_self_check": {
+            "paragraph_count": 1,
+            "paragraph_first_sentences": [],
+            "first_sentence_chain_summarizes_essay": False,
+            "paragraphs_under_50_words": 1,
+            "paragraphs_opening_with_topic_sentence": 0,
+            "filler_phrases_used": [],
+            "significance_inflation_phrases": [],
+            "vague_attributions_used": [],
+            "concrete_source_handles": [],
+            "style_guidance_grades": [],
+            "self_check_notes": [],
+        },
     }
 
 
@@ -807,6 +820,19 @@ def _revision_draft_response() -> dict:
         ],
         "bibliography_candidates": ["Urban Heat. Uploaded source PDF."],
         "known_weak_spots": [],
+        "anti_ai_self_check": {
+            "paragraph_count": 1,
+            "paragraph_first_sentences": [],
+            "first_sentence_chain_summarizes_essay": False,
+            "paragraphs_under_50_words": 1,
+            "paragraphs_opening_with_topic_sentence": 0,
+            "filler_phrases_used": [],
+            "significance_inflation_phrases": [],
+            "vague_attributions_used": [],
+            "concrete_source_handles": [],
+            "style_guidance_grades": [],
+            "self_check_notes": [],
+        },
     }
 
 

@@ -108,6 +108,22 @@ class EssayWorkflow:
         )
         return self._job_store.save(updated)
 
+    def record_writing_style_skip(
+        self,
+        *,
+        job_id: str,
+        skip_token: str,
+    ) -> EssayJob:
+        """Persist the writing-style skip token on the job.
+
+        Idempotent: re-calling with the same token overwrites without
+        side effects. Used by mechanism (D) so future ``create_job_from_artifacts``
+        retries see the decision and bypass the gate.
+        """
+        job = self._job_store.load(job_id)
+        updated = replace(job, writing_style_skip_token=skip_token)
+        return self._job_store.save(updated)
+
     def mark_blocked(self, *, job_id: str, stage: str, message: str) -> EssayJob:
         job = self._job_store.load(job_id)
         updated = replace(

@@ -167,7 +167,15 @@ def test_resolve_source_requests_with_agent_run_attaches_recovery_refs() -> None
         facade = _facade_with_source(tmp)
         facade.ingest_source_file(tmp / "source.pdf", source_id="src1")
         search = facade.search_source("src1", "cooling access", limit=1)
-        run = facade.start_agent_run(objective="Resolve source packets.", job_id="job1")
+        # job1 is not pre-created as a workflow job; start_agent_run cannot
+        # inherit a phase. resolve_source_requests can be called ad-hoc with
+        # explicit locators, so opt out of strict phase gating for this
+        # test by starting the run in legacy mode.
+        run = facade.start_agent_run(
+            objective="Resolve source packets.",
+            job_id="job1",
+            phase_mode="legacy",
+        )
         agent_run_id = str(run.data["agent_run_id"])
 
         result = facade.resolve_source_requests(

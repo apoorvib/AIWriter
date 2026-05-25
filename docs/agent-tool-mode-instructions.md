@@ -9,12 +9,22 @@ You are orchestrating EssayWriter through local Agent Tool Mode tools.
 3. Start or recover an AgentRun before doing stateful work.
 4. Treat persisted AgentRun state as authoritative and chat memory as advisory.
 5. For model-reasoning stages, call `prepare_*`, produce JSON matching `response_schema`, call `submit_work_result`, then call the named `commit_*` tool.
-6. **For every `prepare_*` work packet, the `system_prompt` field returned by the tool IS the system message you MUST use when generating the JSON. Do not summarize it, skip it, paraphrase it, or substitute your own.** The `prompt_blocks` array contains the user message(s) in order. `response_schema` defines only the output shape. Skipping `system_prompt` silently bypasses the prompt engineering the workflow depends on — grounding rules, source-trust boundaries, anti-AI writing rules, and stage-specific output contracts. If you cannot or will not honor a packet's `system_prompt`, stop and report it instead of producing a result.
+6. **For every `prepare_*` work packet, the `system_prompt` field returned by the tool IS the system message you MUST use when generating the JSON. Do not summarize it, skip it, paraphrase it, or substitute your own.** The `prompt_blocks` array contains the user message(s) in order. `response_schema` defines only the output shape. Skipping `system_prompt` silently bypasses the prompt engineering the workflow depends on — grounding rules, source-trust boundaries, anti-AI writing rules, and stage-specific output contracts. If you cannot or will not honor a packet's `system_prompt`, stop and report it instead of producing a result. **Proof of attention:** the system_prompt ends with an `ATTENTION CHECK` line containing a one-time token. You MUST copy that exact token into a free-text field of your output JSON (for example a `notes` or `self_check_notes` entry). `submit_work_result` rejects payloads that omit it with `system_prompt_not_honored`, because a missing token means the system_prompt was not read.
 7. Prefer `work_result_id` for commits.
 8. Never invent source IDs, page numbers, note IDs, packet IDs, work packet IDs, work result IDs, draft IDs, validation IDs, or export IDs.
 9. If `blocked_on` is present, ask the user to resolve it before continuing.
 10. If context was compacted or you are unsure what happened, call `recover_agent_run` before taking another state-changing action.
 11. If a work packet has `delegation.recommended=true` and your harness supports subagents, delegate the packet unless the user disabled subagents or the packet is small enough to handle directly. When delegating, the subagent must also use the packet's `system_prompt` verbatim — pass it through, do not strip it.
+
+## Common Failure Modes
+
+These are the three drift patterns this build is engineered to catch. If a tool returns one of these error codes, you are inside the failure mode. Stop and resolve before continuing.
+
+1. **Skipping writing-style ingestion before `create_job_from_artifacts`.** The anti-AI writing skill explicitly says voice calibration is the dominant defense against AI detectors. Generic anti-AI heuristics alone produce text that still resembles the average LLM output and gets flagged. The server enforces a `writing_style_required` gate at `create_job_from_artifacts` time. Before calling it, either ingest samples from `inputs/writing_style/` and attach a writing-style content_id to the job, or explicitly call `skip_writing_style_calibration(job_id, reason="…")` and pass the returned token. There is no silent default.
+
+2. **Running stages inline when the packet has `delegation.recommended=true`.** Packets like `prepare_anti_ai_audit` are designed to be dispatched to a clean-context subagent. Running them in the main orchestrator pollutes the context with the audit's bespoke system prompt and degrades the quality of every subsequent stage. When the packet declares delegation, delegate.
+
+3. **Not re-reading harness instructions after several stages.** If many stages have passed since you last called `get_harness_instructions`, your view of the workflow may be stale. Tools that are about to make irreversible commitments will warn or refuse if your last harness read is too old. Re-call `get_harness_instructions` when prompted; the cost is small.
 
 ## Normal Flow
 
@@ -27,52 +37,81 @@ This is the target workflow surface. During partial implementation, call only to
 5. produce source-card JSON
 6. `submit_work_result`
 7. `commit_source_card`
-8. (recommended) `ingest_writing_style_sample` for each user writing sample
-9. (recommended) `prepare_writing_style_content`
-10. (recommended) produce writing-style-content JSON
-11. (recommended) `submit_work_result`
-12. (recommended) `commit_writing_style_content`
-13. `prepare_task_spec`
-14. produce task-spec JSON
-15. `submit_work_result`
-16. `commit_task_spec`
-17. `create_job_from_artifacts`
-18. (if writing-style content exists) `attach_writing_style_to_job`
-19. `prepare_topics`
-20. `submit_work_result`
-21. `commit_topics`
-22. ask the user to select or reject a topic
-23. `select_topic` or `reject_topic`
-24. `create_research_plan`
-25. `resolve_source_requests`
-26. `prepare_research_notes`
-27. `submit_work_result`
-28. `commit_research_notes`
-29. `prepare_outline`
-30. `submit_work_result`
-31. `commit_outline`
-32. `prepare_draft`
-33. `submit_work_result`
-34. `commit_draft`
-35. `prepare_style_revision`
-36. if the response includes `windowing.mode == "windowed"`: for each window
+8. **REQUIRED** before `create_job_from_artifacts`: either ingest writing-style samples OR explicitly skip with a reason.
+   - First check the conventional location `inputs/writing_style/`. Files there (`.md`, `.txt`, `.pdf`, `.docx`) are the user's writing samples; ingest them.
+   - If no samples are available and you intend to proceed without voice calibration, call `skip_writing_style_calibration(job_id, reason="…")` and pass the returned `skip_token` to `create_job_from_artifacts(writing_style_skip_token=...)`. The server enforces this gate and will return `error.code="writing_style_required"` if you skip the decision.
+   - The error response includes any samples already present in `inputs/writing_style/` so you do not need to be told they exist.
+9. `ingest_writing_style_sample` for each user writing sample
+10. `prepare_writing_style_content`
+11. produce writing-style-content JSON
+12. `submit_work_result`
+13. `commit_writing_style_content`
+14. `prepare_task_spec`
+15. produce task-spec JSON
+16. `submit_work_result`
+17. `commit_task_spec`
+18. `create_job_from_artifacts` (the server's writing-style gate fires here)
+19. (if writing-style content exists) `attach_writing_style_to_job`
+20. `prepare_topics`
+21. `submit_work_result`
+22. `commit_topics`
+23. ask the user to select or reject a topic
+24. `select_topic` or `reject_topic`
+25. `create_research_plan`
+26. `resolve_source_requests`
+27. `prepare_research_notes`
+28. `submit_work_result`
+29. `commit_research_notes`
+30. `prepare_outline`
+31. `submit_work_result`
+32. `commit_outline`
+33. `prepare_draft`
+34. `submit_work_result`
+35. `commit_draft`
+36. `prepare_style_revision`
+37. if the response includes `windowing.mode == "windowed"`: for each window
     index returned, call `prepare_style_revision_window`, `submit_work_result`,
     and collect the `work_result_id`s. Otherwise produce a single
     style-revision JSON and `submit_work_result`.
-37. `commit_style_revision` (pass the single `work_result_id` for short
+38. `commit_style_revision` (pass the single `work_result_id` for short
     drafts, or the ordered list of per-window `work_result_id`s for windowed
     drafts)
-38. if `commit_style_revision` returns a hard-tier rejection, re-prepare and
+39. if `commit_style_revision` returns a hard-tier rejection, re-prepare and
     re-submit only the windows it names, then call `commit_style_revision`
     again with the updated `work_result_id`s
-39. `prepare_validation`
-40. `submit_work_result`
-41. `commit_validation`
-42. if `commit_validation` reports failure: `prepare_revision` →
+40. `prepare_anti_ai_audit` (bounded single-skill audit on the assembled draft)
+41. `submit_work_result` (produce the `anti_ai_self_check` JSON)
+42. `commit_anti_ai_audit`
+43. if the audit returns `audit_pass: false` with `revision_targets`, prefer
+    `prepare_revision` with `selected_lenses=["anti_ai"]` and pass the
+    `revision_targets` in `user_instruction`, then loop back to
+    `prepare_anti_ai_audit`
+44. `prepare_validation`
+45. `submit_work_result`
+46. `commit_validation`
+47. if `commit_validation` reports failure: `prepare_revision` →
     `submit_work_result` → `commit_revision`, then loop back to
     `prepare_validation`
-43. `export_markdown`
-44. after the user confirms the essay is good: optionally `cleanup_agent_run`
+48. `export_markdown`
+49. after the user confirms the essay is good: optionally `cleanup_agent_run`
+
+### Anti-AI audit stage (steps 39-42)
+
+`prepare_anti_ai_audit` exists because the anti-AI writing skill is a soft-tier
+contract that gets ignored when it lives inside a multi-goal drafting prompt.
+The audit's system prompt contains ONLY the anti-AI skill. The response schema
+forces the auditor to fill the seven self-check fields and grade each
+writing-style guidance bullet. Empty arrays will fail the audit.
+
+The packet's `delegation.recommended=true` and `suggested_role="anti_ai_auditor"`.
+If your harness supports subagents, dispatch the audit to one — a clean-context
+agent with a single skill in its prompt produces better audits than the main
+orchestrator carrying eight other concerns.
+
+A committed audit produces a NEW draft version whose `anti_ai_self_check` field
+is populated. The audit does not rewrite the prose; it only scores it. If
+`audit_pass` is false, the orchestrator should use `revision_targets` to scope
+a `prepare_revision` call before running validation.
 
 ### Writing-style ingestion (voice calibration)
 

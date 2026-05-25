@@ -241,11 +241,21 @@ def test_create_job_from_artifacts_creates_job_and_updates_recovery_refs() -> No
         run = facade.start_agent_run(objective="Create an essay.")
         agent_run_id = str(run.data["agent_run_id"])
 
+        # Writing-style gate (mechanism D): tests that are not exercising
+        # voice calibration must explicitly skip it.
+        skip = facade.skip_writing_style_calibration(
+            job_id="job1",
+            reason="unit test does not exercise voice calibration",
+            agent_run_id=agent_run_id,
+        )
+        skip_token = str(skip.data["skip_token"])
+
         created = facade.create_job_from_artifacts(
             task_spec_id="task1",
             source_ids=["src1"],
             job_id="job1",
             agent_run_id=agent_run_id,
+            writing_style_skip_token=skip_token,
         )
         summary = facade.get_job_summary("job1")
         recovered = facade.recover_agent_run(agent_run_id=agent_run_id)
@@ -310,11 +320,20 @@ def test_create_job_from_artifacts_idempotent_retry_with_agent_run_keeps_recover
         run = facade.start_agent_run(objective="Create an essay.")
         agent_run_id = str(run.data["agent_run_id"])
 
+        # Writing-style gate skip (mechanism D).
+        skip = facade.skip_writing_style_calibration(
+            job_id="job1",
+            reason="unit test does not exercise voice calibration",
+            agent_run_id=agent_run_id,
+        )
+        skip_token = str(skip.data["skip_token"])
+
         first = facade.create_job_from_artifacts(
             task_spec_id="task1",
             source_ids=["src1"],
             job_id="job1",
             agent_run_id=agent_run_id,
+            writing_style_skip_token=skip_token,
         )
         retry = facade.create_job_from_artifacts(
             task_spec_id="task1",

@@ -255,6 +255,27 @@ def _style_revision_context(
             "paragraph_length_variance_warning": det.paragraph_length_variance_warning,
             "mechanical_burstiness_count": det.mechanical_burstiness_count,
             "concrete_engagement_present": det.concrete_engagement_present,
+            "soft_tier": {
+                "paragraphs_under_50_words": det.soft_tier.paragraphs_under_50_words,
+                "paragraphs_opening_with_topic_sentence": det.soft_tier.paragraphs_opening_with_topic_sentence,
+                "paragraph_first_sentences": det.soft_tier.paragraph_first_sentences,
+                "filler_phrase_hits": [
+                    {"phrase": hit.word, "count": hit.count}
+                    for hit in det.soft_tier.filler_phrase_hits
+                ],
+                "significance_inflation_hits": [
+                    {"phrase": hit.word, "count": hit.count}
+                    for hit in det.soft_tier.significance_inflation_hits
+                ],
+                "vague_attribution_hits": [
+                    {"phrase": hit.word, "count": hit.count}
+                    for hit in det.soft_tier.vague_attribution_hits
+                ],
+                "generic_closing_hits": [
+                    {"phrase": hit.word, "count": hit.count}
+                    for hit in det.soft_tier.generic_closing_hits
+                ],
+            },
         },
         "outline": {
             "outline_id": outline.id,

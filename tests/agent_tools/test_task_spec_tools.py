@@ -15,6 +15,7 @@ def test_prepare_submit_commit_task_spec_stores_spec_and_merges_deterministic_fl
         )
         run = facade.start_agent_run(objective="Parse assignment.")
         agent_run_id = str(run.data["agent_run_id"])
+        facade.get_harness_instructions(agent_run_id=agent_run_id)
 
         prepared = facade.prepare_task_spec(
             raw_text,
@@ -91,6 +92,7 @@ def test_commit_task_spec_with_blocking_questions_blocks_run_recovery() -> None:
         facade = AgentToolFacade.from_data_dir(tmp / "data")
         run = facade.start_agent_run(objective="Parse ambiguous assignment.")
         agent_run_id = str(run.data["agent_run_id"])
+        facade.get_harness_instructions(agent_run_id=agent_run_id)
         prepared = facade.prepare_task_spec("Prompt A or Prompt B?", task_id="task-block", agent_run_id=agent_run_id)
         submitted = facade.submit_work_result(
             str(prepared.data["work_packet_id"]),
@@ -218,6 +220,7 @@ def test_commit_task_spec_with_late_agent_run_clears_pending_and_attaches_result
         facade = AgentToolFacade.from_data_dir(tmp / "data")
         run = facade.start_agent_run(objective="Parse assignment.")
         agent_run_id = str(run.data["agent_run_id"])
+        facade.get_harness_instructions(agent_run_id=agent_run_id)
         prepared = facade.prepare_task_spec(
             "Write 1000 words in MLA.",
             task_id="task-late-run",

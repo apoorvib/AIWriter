@@ -25,10 +25,19 @@ def _seed_job_through_export(facade: AgentToolFacade) -> tuple[str, str]:
     does in production when properly threaded."""
     started = facade.start_agent_run(objective="cleanup test")
     agent_run_id = str(started.data["agent_run_id"])
+    facade.get_harness_instructions(agent_run_id=agent_run_id)
 
     _seed_job_through_draft(facade)
+    # _seed_job_through_draft drives the workflow without threading
+    # agent_run_id, so the underlying job ends up in a late stage while
+    # the run sits at "bootstrap". Fast-forward both the job link and the
+    # phase so subsequent tools that DO pass agent_run_id satisfy the gate.
     facade.run_store.update_run(
-        replace(facade.run_store.load_run(agent_run_id), job_id="job1")
+        replace(
+            facade.run_store.load_run(agent_run_id),
+            job_id="job1",
+            current_phase="drafting",
+        )
     )
 
     prepared = facade.prepare_validation("job1", agent_run_id=agent_run_id)
@@ -221,6 +230,7 @@ def test_cleanup_rejects_invalid_scope() -> None:
         facade = AgentToolFacade.from_data_dir(tmp / "data")
         started = facade.start_agent_run(objective="bad scope")
         agent_run_id = str(started.data["agent_run_id"])
+        facade.get_harness_instructions(agent_run_id=agent_run_id)
         result = facade.cleanup_agent_run(agent_run_id, scope="nuke_everything")
         assert result.ok is False
         assert result.error.code == "cleanup_scope_invalid"
@@ -231,6 +241,15 @@ def test_cleanup_blocks_when_run_is_active_with_pending_packets() -> None:
     with LocalAgentTempDir() as tmp:
         facade = AgentToolFacade.from_data_dir(tmp / "data")
         agent_run_id, _ = _seed_job_through_export(facade)
+        # After export_markdown the run is in the "export" phase; the
+        # phase gate blocks prepare_validation from there. Step the run
+        # back into validation so we can simulate an active+pending state.
+        facade.run_store.update_run(
+            replace(
+                facade.run_store.load_run(agent_run_id),
+                current_phase="validation",
+            )
+        )
         # Open a new prepare_* packet to leave the run active+pending.
         facade.prepare_validation("job1", agent_run_id=agent_run_id)
         run = facade.run_store.load_run(agent_run_id)
@@ -265,6 +284,7 @@ def test_cleanup_handles_run_with_no_job_id() -> None:
         facade = AgentToolFacade.from_data_dir(tmp / "data")
         started = facade.start_agent_run(objective="orphan run")
         agent_run_id = str(started.data["agent_run_id"])
+        facade.get_harness_instructions(agent_run_id=agent_run_id)
 
         dry = facade.cleanup_agent_run(agent_run_id)
         confirmed = facade.cleanup_agent_run(

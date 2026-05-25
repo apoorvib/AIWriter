@@ -29,13 +29,29 @@ class AgentRunStore:
         objective: str,
         job_id: str | None = None,
         user_constraints: list[str] | None = None,
+        initial_phase: str | None = None,
+        phase_mode: str | None = None,
     ) -> AgentRun:
-        run = AgentRun(
-            agent_run_id=timestamp_id("agrun", job_id, short_hash(objective)),
-            objective=objective,
-            job_id=job_id,
-            user_constraints=list(user_constraints or []),
-        )
+        """Create a new agent run.
+
+        ``initial_phase`` lets callers seed the run's phase from a job
+        that already exists (so a run started against a mid-flight job
+        does not start at ``"bootstrap"``).
+
+        ``phase_mode`` lets callers opt into ``"legacy"`` mode where the
+        phase gate is a no-op. New runs default to ``"strict"``.
+        """
+        kwargs: dict[str, object] = {
+            "agent_run_id": timestamp_id("agrun", job_id, short_hash(objective)),
+            "objective": objective,
+            "job_id": job_id,
+            "user_constraints": list(user_constraints or []),
+        }
+        if initial_phase is not None:
+            kwargs["current_phase"] = initial_phase
+        if phase_mode is not None:
+            kwargs["phase_mode"] = phase_mode
+        run = AgentRun(**kwargs)  # type: ignore[arg-type]
         self._write_run(run)
         self.append_event(run.agent_run_id, "start", "Started agent run.")
         return run
@@ -93,11 +109,20 @@ class AgentRunStore:
             status = "blocked"
         elif status == "blocked":
             status = "active"
+        # Increment the stale-harness counter on a real phase advance.
+        # (mechanism C) and append to phase_history (Gap 7).
+        advances = run.phase_advances_since_harness_read
+        phase_history = list(run.phase_history)
+        if current_phase is not None and current_phase != run.current_phase:
+            advances += 1
+            phase_history.append(current_phase)
         current = replace(
             run,
             current_phase=phase,
             next_suggested_tools=tools,
             status=status,
+            phase_advances_since_harness_read=advances,
+            phase_history=phase_history,
         )
         checkpoint = AgentRunCheckpoint(
             agent_run_checkpoint_id=timestamp_id(
@@ -153,10 +178,20 @@ class AgentRunStore:
         pending_ids = list(run.pending_work_packet_ids)
         if work_packet_id not in pending_ids:
             pending_ids.append(work_packet_id)
+        new_phase = current_phase if current_phase is not None else run.current_phase
+        # Increment the stale-harness counter on any real phase advance.
+        # (mechanism C) and append to phase_history (Gap 7).
+        advances = run.phase_advances_since_harness_read
+        phase_history = list(run.phase_history)
+        if current_phase is not None and current_phase != run.current_phase:
+            advances += 1
+            phase_history.append(current_phase)
         current = replace(
             run,
             pending_work_packet_ids=pending_ids,
-            current_phase=current_phase if current_phase is not None else run.current_phase,
+            current_phase=new_phase,
+            phase_advances_since_harness_read=advances,
+            phase_history=phase_history,
             next_suggested_tools=(
                 list(next_suggested_tools)
                 if next_suggested_tools is not None

@@ -39,6 +39,11 @@ class EssayJob:
     source_ids: list[str] = field(default_factory=list)
     writing_style_sample_ids: list[str] = field(default_factory=list)
     writing_style_content_id: str | None = None
+    # Records the skip-token issued by skip_writing_style_calibration when
+    # the orchestrator opted to proceed without voice calibration. Recorded
+    # on the job so idempotent retries see the prior decision and so the
+    # choice is auditable. (mechanism D)
+    writing_style_skip_token: str | None = None
     topic_round_ids: list[str] = field(default_factory=list)
     selected_topic_id: str | None = None
     selected_topic_round_id: str | None = None

@@ -24,8 +24,17 @@ def build_server(data_dir: str | Path | None = None) -> Any:
         return asdict(value)
 
     @app.tool()
-    def get_harness_instructions() -> dict[str, object]:
-        return result(facade.get_harness_instructions())
+    def get_harness_instructions(
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        """Fetch the harness instructions.
+
+        When ``agent_run_id`` is provided, the call also resets the
+        stale-harness counter on that run (mechanism C). Pass it any
+        time you suspect the workflow has drifted or several phases
+        have passed since your last read.
+        """
+        return result(facade.get_harness_instructions(agent_run_id=agent_run_id))
 
     @app.tool()
     def start_agent_run(objective: str, job_id: str | None = None) -> dict[str, object]:
@@ -174,6 +183,47 @@ def build_server(data_dir: str | Path | None = None) -> Any:
             facade.attach_writing_style_to_job(
                 job_id=job_id,
                 content_id=content_id,
+                agent_run_id=agent_run_id,
+            )
+        )
+
+    @app.tool()
+    def dispatch_subagent(
+        work_packet_id: str,
+        role: str,
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        """Issue a subagent dispatch token for a work packet.
+
+        Required before ``submit_work_result`` when the packet has
+        ``delegation_required=True`` (e.g. ``prepare_anti_ai_audit``).
+        Pass the returned ``subagent_token`` in the producer's
+        ``subagent_token`` field when the subagent submits its result.
+        """
+        return result(
+            facade.dispatch_subagent(
+                work_packet_id=work_packet_id,
+                role=role,
+                agent_run_id=agent_run_id,
+            )
+        )
+
+    @app.tool()
+    def skip_writing_style_calibration(
+        job_id: str,
+        reason: str,
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        """Issue a skip token that bypasses the writing-style gate.
+
+        Use only when proceeding without voice calibration is a deliberate
+        and articulated choice. ``reason`` is mandatory and is recorded so
+        the decision is auditable.
+        """
+        return result(
+            facade.skip_writing_style_calibration(
+                job_id=job_id,
+                reason=reason,
                 agent_run_id=agent_run_id,
             )
         )
@@ -374,12 +424,57 @@ def build_server(data_dir: str | Path | None = None) -> Any:
         )
 
     @app.tool()
+    def prepare_style_revision_window(
+        parent_packet_id: str,
+        window_index: int,
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        return result(
+            facade.prepare_style_revision_window(
+                parent_packet_id,
+                window_index,
+                agent_run_id=agent_run_id,
+            )
+        )
+
+    @app.tool()
     def commit_style_revision(
+        work_result_id: str | None = None,
+        work_result_ids: list[str] | None = None,
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        return result(
+            facade.commit_style_revision(
+                work_result_id,
+                work_result_ids=work_result_ids,
+                agent_run_id=agent_run_id,
+            )
+        )
+
+    @app.tool()
+    def prepare_anti_ai_audit(
+        job_id: str,
+        draft_id: str | None = None,
+        agent_run_id: str | None = None,
+    ) -> dict[str, object]:
+        return result(
+            facade.prepare_anti_ai_audit(
+                job_id,
+                draft_id,
+                agent_run_id=agent_run_id,
+            )
+        )
+
+    @app.tool()
+    def commit_anti_ai_audit(
         work_result_id: str,
         agent_run_id: str | None = None,
     ) -> dict[str, object]:
         return result(
-            facade.commit_style_revision(work_result_id, agent_run_id=agent_run_id)
+            facade.commit_anti_ai_audit(
+                work_result_id,
+                agent_run_id=agent_run_id,
+            )
         )
 
     @app.tool()
@@ -446,13 +541,20 @@ def build_server(data_dir: str | Path | None = None) -> Any:
         draft_id: str | None = None,
         validation_version: int | None = None,
         agent_run_id: str | None = None,
+        allow_failed_validation: bool = False,
     ) -> dict[str, object]:
+        """Export the validated draft to markdown.
+
+        Refuses to export a draft whose latest validation did not pass
+        unless ``allow_failed_validation=True`` is passed deliberately.
+        """
         return result(
             facade.export_markdown(
                 job_id,
                 draft_id=draft_id,
                 validation_version=validation_version,
                 agent_run_id=agent_run_id,
+                allow_failed_validation=allow_failed_validation,
             )
         )
 

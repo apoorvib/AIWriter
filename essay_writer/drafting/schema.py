@@ -17,6 +17,40 @@ class SectionSourceMap:
     source_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class StyleGuidanceGrade:
+    """Self-graded checklist row. One per writing-style guidance bullet that the
+    drafting or style-revision stage was asked to honor. Forces the model to
+    explicitly own whether it followed each bullet, instead of letting style
+    guidance read as advisory context."""
+
+    bullet: str
+    followed: bool
+    where: str = ""  # quoted span or paragraph reference that demonstrates compliance
+    why_not: str = ""  # explanation when followed is False
+
+
+@dataclass(frozen=True)
+class AntiAISelfCheck:
+    """Anti-AI self-audit produced by the drafting and style-revision stages.
+
+    The act of producing this object is the audit. Every field is verifiable
+    against the draft `content` so the validator can spot self-grade mismatches.
+    See the anti-AI skill 7-step self-check section."""
+
+    paragraph_count: int = 0
+    paragraph_first_sentences: list[str] = field(default_factory=list)
+    first_sentence_chain_summarizes_essay: bool = True
+    paragraphs_under_50_words: int = 0
+    paragraphs_opening_with_topic_sentence: int = 0
+    filler_phrases_used: list[str] = field(default_factory=list)
+    significance_inflation_phrases: list[str] = field(default_factory=list)
+    vague_attributions_used: list[str] = field(default_factory=list)
+    concrete_source_handles: list[str] = field(default_factory=list)
+    style_guidance_grades: list[StyleGuidanceGrade] = field(default_factory=list)
+    self_check_notes: list[str] = field(default_factory=list)
+
+
 DraftOrigin = Literal[
     "generated",
     "style_revision",
@@ -41,6 +75,7 @@ class EssayDraft:
     section_source_map: list[SectionSourceMap] = field(default_factory=list)
     bibliography_candidates: list[str] = field(default_factory=list)
     known_weak_spots: list[str] = field(default_factory=list)
+    anti_ai_self_check: AntiAISelfCheck | None = None
     origin: DraftOrigin = "generated"
     created_by: DraftActor = "system"
     parent_draft_id: str | None = None

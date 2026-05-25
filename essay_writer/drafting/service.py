@@ -12,7 +12,12 @@ from essay_writer.topic_ideation.schema import SelectedTopic
 from essay_writer.research.schema import EvidenceMap
 from essay_writer.sources.access_schema import SourceTextPacket
 from essay_writer.drafting.prompts import DRAFTING_SCHEMA, DRAFTING_SYSTEM_PROMPT
-from essay_writer.drafting.schema import EssayDraft, SectionSourceMap
+from essay_writer.drafting.schema import (
+    AntiAISelfCheck,
+    EssayDraft,
+    SectionSourceMap,
+    StyleGuidanceGrade,
+)
 from essay_writer.writing_style.prompts import build_writing_style_prompt_block
 from essay_writer.writing_style.schema import WritingStylePayload
 
@@ -225,9 +230,55 @@ def draft_from_payload(
         section_source_map=section_source_map,
         bibliography_candidates=_payload_list(payload, "bibliography_candidates", max_items=50),
         known_weak_spots=_payload_list(payload, "known_weak_spots", max_items=20),
+        anti_ai_self_check=_anti_ai_self_check_from_payload(payload.get("anti_ai_self_check")),
         origin="generated",
         created_by="system",
         prompt_version=prompt_version,
+    )
+
+
+def _anti_ai_self_check_from_payload(value: Any) -> AntiAISelfCheck | None:
+    if not isinstance(value, dict):
+        return None
+    grades_raw = value.get("style_guidance_grades", []) or []
+    grades = [
+        StyleGuidanceGrade(
+            bullet=str(grade.get("bullet", "")).strip(),
+            followed=bool(grade.get("followed", False)),
+            where=str(grade.get("where", "")).strip(),
+            why_not=str(grade.get("why_not", "")).strip(),
+        )
+        for grade in grades_raw
+        if isinstance(grade, dict) and str(grade.get("bullet", "")).strip()
+    ]
+    return AntiAISelfCheck(
+        paragraph_count=int(value.get("paragraph_count", 0) or 0),
+        paragraph_first_sentences=[
+            str(s) for s in value.get("paragraph_first_sentences", []) or [] if str(s).strip()
+        ],
+        first_sentence_chain_summarizes_essay=bool(
+            value.get("first_sentence_chain_summarizes_essay", True)
+        ),
+        paragraphs_under_50_words=int(value.get("paragraphs_under_50_words", 0) or 0),
+        paragraphs_opening_with_topic_sentence=int(
+            value.get("paragraphs_opening_with_topic_sentence", 0) or 0
+        ),
+        filler_phrases_used=[
+            str(s) for s in value.get("filler_phrases_used", []) or [] if str(s).strip()
+        ],
+        significance_inflation_phrases=[
+            str(s) for s in value.get("significance_inflation_phrases", []) or [] if str(s).strip()
+        ],
+        vague_attributions_used=[
+            str(s) for s in value.get("vague_attributions_used", []) or [] if str(s).strip()
+        ],
+        concrete_source_handles=[
+            str(s) for s in value.get("concrete_source_handles", []) or [] if str(s).strip()
+        ],
+        style_guidance_grades=grades,
+        self_check_notes=[
+            str(s) for s in value.get("self_check_notes", []) or [] if str(s).strip()
+        ],
     )
 
 

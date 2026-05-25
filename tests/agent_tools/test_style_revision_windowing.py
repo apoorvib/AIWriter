@@ -116,6 +116,13 @@ def test_prepare_style_revision_window_rejects_out_of_range_index() -> None:
     assert result.error.code == "window_index_out_of_range"
 
 
+def test_currently_callable_tools_lists_windowed_style_revision() -> None:
+    from essay_writer.agent_tools.facade import CURRENTLY_CALLABLE_TOOLS
+
+    assert "prepare_style_revision_window" in CURRENTLY_CALLABLE_TOOLS
+    assert "commit_style_revision" in CURRENTLY_CALLABLE_TOOLS
+
+
 def test_commit_style_revision_assembles_window_results_into_single_draft() -> None:
     with LocalAgentTempDir() as tmp:
         facade = AgentToolFacade.from_data_dir(tmp / "data")

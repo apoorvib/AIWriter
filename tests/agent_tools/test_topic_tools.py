@@ -24,6 +24,7 @@ def test_prepare_submit_commit_and_select_topic_happy_path_with_recovery_refs() 
         _seed_ready_job(facade)
         run = facade.start_agent_run(objective="Choose topic.", job_id="job1")
         agent_run_id = str(run.data["agent_run_id"])
+        facade.get_harness_instructions(agent_run_id=agent_run_id)
 
         prepared = facade.prepare_topics(
             "job1",
@@ -79,6 +80,7 @@ def test_commit_topics_with_blocking_questions_does_not_record_round() -> None:
         _seed_ready_job(facade)
         run = facade.start_agent_run(objective="Choose topic.", job_id="job1")
         agent_run_id = str(run.data["agent_run_id"])
+        facade.get_harness_instructions(agent_run_id=agent_run_id)
         prepared = facade.prepare_topics("job1", agent_run_id=agent_run_id)
         submitted = facade.submit_work_result(
             str(prepared.data["work_packet_id"]),

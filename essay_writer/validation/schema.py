@@ -29,6 +29,25 @@ class ParagraphLengthProfile:
 
 
 @dataclass(frozen=True)
+class SoftTierProfile:
+    """Soft-tier paragraph and phrase signals used by the anti-AI self-check.
+
+    These are not blocking like the hard tier, but they are surfaced verbatim
+    in prepare_style_revision and prepare_validation deterministic output so
+    the LLM has a quantitative feedback signal for patterns it would otherwise
+    skip.
+    """
+
+    paragraphs_under_50_words: int = 0
+    paragraphs_opening_with_topic_sentence: int = 0
+    paragraph_first_sentences: list[str] = field(default_factory=list)
+    filler_phrase_hits: list[VocabHit] = field(default_factory=list)
+    significance_inflation_hits: list[VocabHit] = field(default_factory=list)
+    vague_attribution_hits: list[VocabHit] = field(default_factory=list)
+    generic_closing_hits: list[VocabHit] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class DeterministicCheckResult:
     word_count: int
     em_dash_count: int
@@ -48,6 +67,7 @@ class DeterministicCheckResult:
     paragraph_length_variance_warning: bool = False
     mechanical_burstiness_count: int = 0
     concrete_engagement_present: bool = False
+    soft_tier: SoftTierProfile = field(default_factory=SoftTierProfile)
 
     @property
     def has_issues(self) -> bool:

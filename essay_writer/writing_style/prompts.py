@@ -151,6 +151,33 @@ def build_writing_style_prompt_block(payload: WritingStylePayload) -> str:
                 "",
             ]
         )
-    lines.extend(["</full_cleaned_samples>", "</writing_style_samples>"])
+    lines.extend(["</full_cleaned_samples>", ""])
+    # Style-guidance graded checklist. The drafting / style-revision stage MUST
+    # produce one anti_ai_self_check.style_guidance_grades row per bullet here,
+    # each with `followed: bool` and a `where` quote or paragraph reference.
+    # This is how the user proves the model actually read this block.
+    lines.extend(
+        [
+            "<style_guidance_checklist>",
+            "For each bullet below, produce one row in `anti_ai_self_check.style_guidance_grades`.",
+            "Set `followed` honestly. Quote the supporting span in `where`, or fill `why_not`.",
+            "Empty grades are treated as a failed audit.",
+            "",
+        ]
+    )
+    grade_id = 0
+    for bullet in content.guidance:
+        grade_id += 1
+        lines.append(f"[guidance-{grade_id}] {bullet}")
+    for bullet in content.preferred_moves:
+        grade_id += 1
+        lines.append(f"[preferred-{grade_id}] PREFERRED MOVE: {bullet}")
+    for bullet in content.avoid_moves:
+        grade_id += 1
+        lines.append(f"[avoid-{grade_id}] AVOID MOVE: {bullet}")
+    for bullet in content.structural_habits:
+        grade_id += 1
+        lines.append(f"[structure-{grade_id}] STRUCTURAL HABIT: {bullet}")
+    lines.extend(["</style_guidance_checklist>", "", "</writing_style_samples>"])
     return "\n".join(lines).strip()
 

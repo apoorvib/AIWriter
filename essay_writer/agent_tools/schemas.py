@@ -62,6 +62,10 @@ class WorkProducer:
     type: Literal["main_agent", "subagent", "user", "system"]
     role: str | None = None
     name: str | None = None
+    # When the work packet has delegation_required=True, the producer
+    # MUST carry the subagent_token issued by dispatch_subagent. The
+    # server validates this in submit_work_result. See mechanism (B).
+    subagent_token: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "WorkProducer":
@@ -69,6 +73,7 @@ class WorkProducer:
             type=data["type"],  # type: ignore[arg-type]
             role=_optional_str(data.get("role")),
             name=_optional_str(data.get("name")),
+            subagent_token=_optional_str(data.get("subagent_token")),
         )
 
 
@@ -111,6 +116,20 @@ class WorkPacket:
     delegation: DelegationHint
     mode: str = "agent_tool_no_api"
     status: str = "prepared"
+    # When True, submit_work_result requires a valid subagent dispatch
+    # token in the producer. The token is issued by dispatch_subagent.
+    # See mechanism (B) for rationale: certain packets are too large or
+    # too prompt-engineered to be safely absorbed by the main
+    # orchestrator context. The default is False, so existing packets
+    # continue to work unchanged.
+    delegation_required: bool = False
+    # Proof-of-attention token (mechanism / Gap 3). When set, the token
+    # has been appended to ``system_prompt`` and the LLM is instructed to
+    # echo it in its output. submit_work_result verifies the token
+    # appears in the payload; a missing token means the LLM did not read
+    # the supplied system prompt and the result is rejected. None means
+    # no challenge was injected (enforcement off).
+    system_prompt_challenge: str | None = None
     created_at: str = field(default_factory=utc_now_iso)
     warnings: list[str] = field(default_factory=list)
 
@@ -134,6 +153,8 @@ class WorkPacket:
             delegation=DelegationHint.from_dict(data.get("delegation")),
             mode=str(data.get("mode", "agent_tool_no_api")),
             status=str(data.get("status", "prepared")),
+            delegation_required=bool(data.get("delegation_required", False)),
+            system_prompt_challenge=_optional_str(data.get("system_prompt_challenge")),
             created_at=str(data.get("created_at", utc_now_iso())),
             warnings=[str(item) for item in data.get("warnings", [])],
         )
@@ -203,6 +224,23 @@ class AgentRun:
     mode: str = "agent_tool_no_api"
     status: str = "active"
     current_phase: str = "bootstrap"
+    # phase_mode controls whether the phase gate enforces ordering for this
+    # run. New runs default to "strict". Runs loaded from JSON files that
+    # predate the gate are loaded as "legacy" and bypass the gate, so old
+    # runs continue to work.
+    phase_mode: str = "strict"
+    # Phase-advance counter and last get_harness_instructions timestamp,
+    # used by the stale-harness check (mechanism C).
+    phase_advances_since_harness_read: int = 0
+    last_harness_read_at: str | None = None
+    # Token issued by skip_writing_style_calibration; recorded so the
+    # decision is auditable. (mechanism D)
+    writing_style_skip_token: str | None = None
+    # Ordered list of phases this run has entered (mechanism / Gap 7).
+    # Helps the orchestrator re-orient after compaction: recover shows
+    # not just the current phase but the journey to it, so a skipped
+    # stage is visible.
+    phase_history: list[str] = field(default_factory=list)
     artifact_refs: dict[str, object] = field(default_factory=dict)
     pending_work_packet_ids: list[str] = field(default_factory=list)
     completed_work_result_ids: list[str] = field(default_factory=list)
@@ -213,6 +251,13 @@ class AgentRun:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "AgentRun":
+        # If phase_mode is absent from the JSON, this run predates the
+        # phase gate. Load it as legacy so the gate is a no-op for it.
+        raw_phase_mode = data.get("phase_mode")
+        if raw_phase_mode is None:
+            phase_mode = "legacy"
+        else:
+            phase_mode = str(raw_phase_mode)
         return cls(
             agent_run_id=str(data["agent_run_id"]),
             objective=str(data["objective"]),
@@ -221,6 +266,13 @@ class AgentRun:
             mode=str(data.get("mode", "agent_tool_no_api")),
             status=str(data.get("status", "active")),
             current_phase=str(data.get("current_phase", "bootstrap")),
+            phase_mode=phase_mode,
+            phase_advances_since_harness_read=int(
+                data.get("phase_advances_since_harness_read", 0) or 0
+            ),
+            last_harness_read_at=_optional_str(data.get("last_harness_read_at")),
+            writing_style_skip_token=_optional_str(data.get("writing_style_skip_token")),
+            phase_history=[str(item) for item in data.get("phase_history", [])],
             artifact_refs=dict(data.get("artifact_refs", {})),
             pending_work_packet_ids=[
                 str(item) for item in data.get("pending_work_packet_ids", [])

@@ -15,6 +15,7 @@ def test_prepare_submit_commit_source_card_persists_card_and_commit_link() -> No
         facade = _facade_with_source(tmp, "Urban heat and cooling access evidence.")
         run = facade.start_agent_run(objective="Ingest one source.")
         agent_run_id = str(run.data["agent_run_id"])
+        facade.get_harness_instructions(agent_run_id=agent_run_id)
         facade.ingest_source_file(
             str(tmp / "source.pdf"),
             source_id="src1",
@@ -180,6 +181,7 @@ def test_prepare_source_card_reuses_existing_card_and_updates_run_refs() -> None
         facade = _facade_with_prepared_source(tmp)
         run = facade.start_agent_run(objective="Use an existing card.")
         agent_run_id = str(run.data["agent_run_id"])
+        facade.get_harness_instructions(agent_run_id=agent_run_id)
         facade.stores.source_store.save_source_card(
             "src1",
             SourceCard(
@@ -212,6 +214,7 @@ def test_committing_two_source_cards_accumulates_run_recovery_refs() -> None:
         facade = _facade_with_source(tmp, "Urban heat and cooling access evidence.")
         run = facade.start_agent_run(objective="Use two sources.")
         agent_run_id = str(run.data["agent_run_id"])
+        facade.get_harness_instructions(agent_run_id=agent_run_id)
         facade.ingest_source_file(tmp / "source.pdf", source_id="src1", agent_run_id=agent_run_id)
         second_path = tmp / "source2.pdf"
         second_path.write_bytes(b"%PDF-fake-2")

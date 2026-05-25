@@ -4,13 +4,19 @@ import re
 
 from essay_writer.drafting.anti_ai_rules import (
     BAD_CONCLUSION_OPENERS,
+    FILLER_PHRASES,
+    GENERIC_CLOSING_PHRASES,
+    SIGNIFICANCE_INFLATION_PHRASES,
     SIGNPOSTING_PHRASES,
     TIER1_FLAGGED_VOCAB,
+    TOPIC_SENTENCE_OPENERS,
+    VAGUE_ATTRIBUTION_SUBJECTS,
 )
 from essay_writer.validation.schema import (
     DeterministicCheckResult,
     ParagraphLengthProfile,
     SentenceRun,
+    SoftTierProfile,
     VocabHit,
 )
 
@@ -72,6 +78,7 @@ def run_deterministic_checks(text: str) -> DeterministicCheckResult:
     )
     mechanical_burstiness_count = _count_mechanical_burstiness(sentences)
     concrete_engagement_present = bool(_CONCRETE_ENGAGEMENT_RE.search(text))
+    soft_tier = _soft_tier_profile(text, lower)
 
     return DeterministicCheckResult(
         word_count=word_count,
@@ -92,7 +99,52 @@ def run_deterministic_checks(text: str) -> DeterministicCheckResult:
         paragraph_length_variance_warning=paragraph_variance_warning,
         mechanical_burstiness_count=mechanical_burstiness_count,
         concrete_engagement_present=concrete_engagement_present,
+        soft_tier=soft_tier,
     )
+
+
+def _soft_tier_profile(text: str, lower: str) -> SoftTierProfile:
+    paragraphs = [p.strip() for p in text.strip().split("\n\n") if p.strip()]
+    under_50 = sum(1 for p in paragraphs if len(p.split()) < 50)
+    first_sentences = [_first_sentence(p) for p in paragraphs]
+    topic_opener_count = sum(
+        1 for sentence in first_sentences if _opens_with_topic_word(sentence)
+    )
+    filler_hits = _count_phrase_hits(lower, FILLER_PHRASES)
+    significance_hits = _count_phrase_hits(lower, SIGNIFICANCE_INFLATION_PHRASES)
+    vague_attribution_hits = _count_phrase_hits(lower, VAGUE_ATTRIBUTION_SUBJECTS)
+    generic_closing_hits = _count_phrase_hits(lower, GENERIC_CLOSING_PHRASES)
+    return SoftTierProfile(
+        paragraphs_under_50_words=under_50,
+        paragraphs_opening_with_topic_sentence=topic_opener_count,
+        paragraph_first_sentences=first_sentences,
+        filler_phrase_hits=filler_hits,
+        significance_inflation_hits=significance_hits,
+        vague_attribution_hits=vague_attribution_hits,
+        generic_closing_hits=generic_closing_hits,
+    )
+
+
+def _first_sentence(paragraph: str) -> str:
+    sentences = _split_sentences(paragraph)
+    return sentences[0] if sentences else paragraph.strip()
+
+
+def _opens_with_topic_word(sentence: str) -> bool:
+    stripped = sentence.strip()
+    if not stripped:
+        return False
+    first_token = re.split(r"\s+", stripped, maxsplit=1)[0].lower().strip(",.;:!?\"'()")
+    return first_token in TOPIC_SENTENCE_OPENERS
+
+
+def _count_phrase_hits(lower_text: str, phrases: tuple[str, ...]) -> list[VocabHit]:
+    hits: list[VocabHit] = []
+    for phrase in phrases:
+        count = lower_text.count(phrase)
+        if count > 0:
+            hits.append(VocabHit(word=phrase, count=count))
+    return hits
 
 
 def _check_tier1_vocab(lower_text: str) -> list[VocabHit]:
