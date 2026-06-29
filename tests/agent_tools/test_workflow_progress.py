@@ -22,3 +22,36 @@ def test_step_status_is_pending_when_artifact_absent(tmp_path):
     by_id = {s["step_id"]: s for s in progress["steps"]}
     assert by_id["task_spec"]["status"] == "pending"
     assert by_id["topics"]["blocked_by"]  # blocked by earlier prep steps
+
+
+def test_draft_present_but_audit_absent_keeps_audit_pending(tmp_path):
+    import dataclasses
+    from essay_writer.agent_tools.stores import AgentStoreBundle
+    from essay_writer.drafting.schema import EssayDraft
+
+    stores = AgentStoreBundle.from_data_dir(tmp_path)
+    job = stores.workflow.create_job(task_spec_id="ts-1", source_ids=["src-1"])
+    # Move the job into the write segment with all pre-audit required steps done
+    # (topic_selected, research_plan, research_notes, outline, draft), but no
+    # anti-AI audit on the draft so the anti_ai_audit step stays pending.
+    draft = EssayDraft(
+        id="draft-1", job_id=job.id, version=1,
+        selected_topic_id="topic-1", content="A.\n\nB.",
+    )
+    stores.draft_store.save(draft)
+    stores.job_store.save(dataclasses.replace(
+        job,
+        selected_topic_id="topic-1",
+        research_plan_id="plan-1",
+        evidence_map_id="em-1",
+        outline_id="outline-1",
+        draft_id="draft-1",
+    ))
+
+    run = AgentRun(agent_run_id="run-1", objective="x", job_id=job.id)
+    progress = build_workflow_progress(run, stores)
+    by_id = {s["step_id"]: s for s in progress["steps"]}
+    assert progress["segment"] == "write"
+    assert by_id["anti_ai_audit"]["status"] == "pending"
+    assert progress["next_required_step"] == "anti_ai_audit"
+    assert progress["all_required_done"] is False
