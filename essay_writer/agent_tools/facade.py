@@ -27,6 +27,10 @@ from essay_writer.agent_tools.skip_tokens import (
 )
 from essay_writer.agent_tools.subagent_tokens import SubagentTokenStore
 from essay_writer.agent_tools.workspace_scan import scan_writing_style_directory
+from essay_writer.agent_tools.workflow_predicates import (
+    is_anti_ai_audit_fresh,
+    writing_style_decision_made,
+)
 from essay_writer.agent_tools.schemas import (
     AgentRun,
     AgentRunEvent,
@@ -361,13 +365,8 @@ class AgentToolFacade:
                 existing = self.stores.workflow.load_job(job_id)
             except (KeyError, FileNotFoundError):
                 existing = None
-            if existing is not None:
-                if getattr(existing, "writing_style_content_id", None):
-                    return None
-                if getattr(existing, "writing_style_skip_token", None):
-                    return None
-                # Existing job without writing-style decision: fall through
-                # so the orchestrator must resolve before we move forward.
+            if existing is not None and writing_style_decision_made(existing):
+                return None
 
         # If a skip token was supplied, validate it.
         if writing_style_skip_token is not None:
@@ -8196,14 +8195,7 @@ def _anti_ai_audit_freshness_error(
             exc=ValueError("anti_ai_audit"),
             next_suggested_tools=["prepare_anti_ai_audit"],
         )
-    manifest = anti_ai_skill_manifest()
-    expected_skill_hash = str(manifest["sha256"])
-    expected_draft_hash = draft_sha256(str(getattr(draft, "content")))
-    if (
-        getattr(audit, "skill_sha256", "") != expected_skill_hash
-        or int(getattr(audit, "skill_line_count", 0) or 0) != int(manifest["line_count"])
-        or getattr(audit, "draft_sha256", "") != expected_draft_hash
-    ):
+    if not is_anti_ai_audit_fresh(draft):
         return _error_result_with_next(
             tool_name,
             code="anti_ai_audit_stale",
