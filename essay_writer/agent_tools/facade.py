@@ -45,6 +45,7 @@ from essay_writer.agent_tools.schemas import (
 from essay_writer.agent_tools.source_materialization import SourceMaterializationService
 from essay_writer.agent_tools.stores import AgentStoreBundle
 from essay_writer.agent_tools.work_store import AgentWorkStore
+from essay_writer.agent_tools.workflow_progress import build_workflow_progress
 from essay_writer.drafting.anti_ai_audit import (
     ANTI_AI_AUDIT_SCHEMA,
     ANTI_AI_AUDIT_SYSTEM_PROMPT,
@@ -795,6 +796,35 @@ class AgentToolFacade:
             ok=True,
             tool_name="get_agent_run_state",
             data={**_run_state(run), "must_remember": list(MUST_REMEMBER)},
+        )
+
+    def get_workflow_progress(self, *, agent_run_id: str) -> ToolResult:
+        """Read-only completion ledger derived from persisted store state.
+
+        Returns which required workflow steps are done and the first undone
+        required step. Drives Dynamic Workflow orchestration: the script loops
+        on next_required_step until all_required_done. No mutation, no gate.
+        """
+        try:
+            run = self.run_store.load_run(agent_run_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return _missing_run_result("get_workflow_progress", agent_run_id, exc)
+        progress = build_workflow_progress(run, self.stores)
+        next_step = progress["next_required_step"]
+        next_tools = []
+        if next_step is not None:
+            for step in progress["steps"]:
+                if step["step_id"] == next_step:
+                    tool = step["next_action"].get("tool")
+                    if tool:
+                        next_tools = [tool.split(" ")[0]]
+                    break
+        return ToolResult(
+            ok=True,
+            tool_name="get_workflow_progress",
+            data={**progress, "must_remember": list(MUST_REMEMBER)},
+            warnings=list(progress["warnings"]),
+            next_suggested_tools=next_tools,
         )
 
     def list_agent_runs(
