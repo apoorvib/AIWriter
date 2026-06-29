@@ -229,3 +229,13 @@ If `cleanup_agent_run` returns `cleanup_blocked_active_run`, the agent run still
 ## Subagents
 
 Use subagents for source-card packets, deep source reading, web-research capture, topic feasibility checks, and independent validation lenses. Keep final synthesis, final thesis choice, draft commits, style-revision commits, validation commits, revision commits, export, and cleanup under the main orchestrator unless a future bounded-write packet explicitly allows otherwise.
+
+## Claude Code: /essay-prep and /essay-write
+
+In Claude Code you can drive this workflow deterministically with two saved
+Dynamic Workflows in `.claude/workflows/`: `/essay-prep` (runs to the topic
+gate, then stops for the user to choose a topic) and `/essay-write` (commits the
+chosen topic, then runs to export). Both loop on the read-only
+`get_workflow_progress(agent_run_id)` ledger and act only on its
+`next_required_step`, so no required step is skipped. Other harnesses (Codex,
+etc.) drive the same tools manually as described above.
