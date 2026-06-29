@@ -49,6 +49,12 @@ def build_server(data_dir: str | Path | None = None) -> Any:
         return result(facade.get_agent_run_state(agent_run_id=agent_run_id))
 
     @app.tool()
+    def get_workflow_progress(agent_run_id: str) -> dict[str, object]:
+        """Read-only completion ledger: which required workflow steps are done,
+        and the first undone required step. Drives Dynamic Workflow loops."""
+        return result(facade.get_workflow_progress(agent_run_id=agent_run_id))
+
+    @app.tool()
     def list_agent_runs(status: str | None = None, limit: int = 20) -> dict[str, object]:
         return result(facade.list_agent_runs(status=status, limit=limit))
 

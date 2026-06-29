@@ -144,6 +144,7 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "get_draft",
     "get_job_summary",
     "run_deterministic_checks",
+    "get_workflow_progress",
 })
 
 

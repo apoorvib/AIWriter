@@ -22,3 +22,10 @@ def test_get_workflow_progress_missing_run(tmp_path):
     assert result.ok is False
     # _missing_run_result uses code="agent_run_not_found" (not "missing_run")
     assert result.error.code == "agent_run_not_found"
+
+
+from essay_writer.agent_tools.phases import READ_ONLY_TOOLS
+
+
+def test_get_workflow_progress_is_read_only():
+    assert "get_workflow_progress" in READ_ONLY_TOOLS

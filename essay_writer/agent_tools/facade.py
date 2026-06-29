@@ -196,6 +196,7 @@ CURRENTLY_CALLABLE_TOOLS = [
     "read_source_packet",
     "resolve_source_requests",
     "get_source_packet_bundle",
+    "get_workflow_progress",
 ]
 
 CLEANUP_SCOPES = ("workflow_logs", "intermediate_artifacts", "all_except_export")
