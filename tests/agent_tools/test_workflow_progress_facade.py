@@ -13,7 +13,8 @@ def test_get_workflow_progress_returns_ledger(tmp_path):
     assert result.ok is True
     assert result.tool_name == "get_workflow_progress"
     assert result.data["segment"] == "prep"
-    assert result.data["next_required_step"] == "source_cards"
+    # Pre-job the driver is pointed at job_created (Option A scripted prelude).
+    assert result.data["next_required_step"] == "job_created"
 
 
 def test_get_workflow_progress_missing_run(tmp_path):

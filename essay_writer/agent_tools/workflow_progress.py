@@ -209,6 +209,19 @@ def build_workflow_progress(run, stores) -> dict:
             "will not match a user voice (elevated AI-detection risk)"
         )
 
+    # Scripted pre-job prelude (design Option A). Before a job exists the ledger
+    # cannot verify pre-job source-card / task-spec completion: there is no job
+    # scope yet, and the AgentRun does not track its own source-id list
+    # (commits dict-merge and overwrite source_id). The /essay-prep script runs
+    # ingest -> source cards -> task spec -> create_job as a deterministic
+    # prelude that the create_job_from_artifacts gate already guards (it refuses
+    # without committed cards, a task spec, and a writing-style decision). So
+    # before a job exists, point the driver straight at job_created instead of
+    # at the unverifiable parallel steps, which would otherwise leave
+    # next_required_step stuck on source_cards forever and deadlock the loop.
+    if segment == "prep" and job is None:
+        next_required_step = "job_created"
+
     return {
         "segment": segment,
         "job_id": run.job_id,

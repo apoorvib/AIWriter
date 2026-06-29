@@ -9,9 +9,13 @@ def test_no_job_reports_prep_segment_first_step(tmp_path):
     progress = build_workflow_progress(run, stores)
     assert progress["segment"] == "prep"
     assert progress["all_required_done"] is False
-    assert progress["next_required_step"] == "source_cards"
+    # Pre-job (Option A): the driver is pointed at job_created, whose MCP gate
+    # enforces the cards+task-spec+writing-style prelude. The parallel prep
+    # steps cannot be verified before a job exists, so the loop must not select
+    # source_cards (which would deadlock — it never creates a job).
+    assert progress["next_required_step"] == "job_created"
     step_ids = [s["step_id"] for s in progress["steps"]]
-    assert "task_spec" in step_ids and "job_created" in step_ids
+    assert "source_cards" in step_ids and "task_spec" in step_ids and "job_created" in step_ids
 
 
 def test_step_status_is_pending_when_artifact_absent(tmp_path):
@@ -34,8 +38,9 @@ def test_writing_style_decision_ordered_after_job_created(tmp_path):
     progress = build_workflow_progress(run, stores)
     order = [s["step_id"] for s in progress["steps"]]
     assert order.index("job_created") < order.index("writing_style_decision")
-    # With no job yet, the loop must never select writing_style_decision.
-    assert progress["next_required_step"] == "source_cards"
+    # With no job yet, the loop must never select writing_style_decision; under
+    # Option A it is pointed at job_created (the prelude's gated endpoint).
+    assert progress["next_required_step"] == "job_created"
     by_id = {s["step_id"]: s for s in progress["steps"]}
     # It is a serial step gated behind the pending job_created step.
     assert by_id["writing_style_decision"]["status"] == "blocked"
