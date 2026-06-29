@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+
+import pytest
 
 from essay_writer.agent_tools.facade import AgentToolFacade
 from essay_writer.agent_tools.schemas import DelegationHint, PromptBlock, WorkPacket, WorkProducer
@@ -118,6 +121,15 @@ def test_submit_source_card_rejects_invalid_payload_before_persistence() -> None
     assert facade.work_store.list_results() == []
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("jsonschema") is not None,
+    reason=(
+        "This test exercises the no-jsonschema fallback validator, which only "
+        "runs when jsonschema is absent. With jsonschema installed the malformed "
+        "schema raises SchemaError -> work_result_schema_invalid instead. "
+        "Pre-existing environment assumption, unrelated to the enforcement work."
+    ),
+)
 def test_submit_rejects_malformed_additional_properties_without_jsonschema() -> None:
     with LocalAgentTempDir() as tmp:
         facade = AgentToolFacade.from_data_dir(tmp / "data")

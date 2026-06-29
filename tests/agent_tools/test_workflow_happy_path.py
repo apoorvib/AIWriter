@@ -166,6 +166,7 @@ def test_delegated_packet_rejects_main_agent_producer_with_token() -> None:
         dispatch = facade.dispatch_subagent(
             work_packet_id=str(prepared.data["work_packet_id"]),
             role="anti_ai_auditor",
+            model_tier="opus",
         )
         token = str(dispatch.data["subagent_token"])
         # Valid token, but producer.type is main_agent (contradiction).

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -14,7 +15,7 @@ from essay_writer.agent_tools.config import (
     STALE_HARNESS_AFTER_SECONDS,
 )
 from essay_writer.agent_tools.run_store import AgentRunStore
-from essay_writer.agent_tools.id_utils import safe_slug, short_hash, timestamp_id
+from essay_writer.agent_tools.id_utils import content_hash, safe_slug, short_hash, timestamp_id
 from essay_writer.agent_tools.phases import (
     PHASE_MODE_STRICT,
     check_tool_allowed,
@@ -44,6 +45,7 @@ from essay_writer.drafting.anti_ai_audit import (
     ANTI_AI_AUDIT_SCHEMA,
     ANTI_AI_AUDIT_SYSTEM_PROMPT,
 )
+from essay_writer.drafting.anti_ai_skill import anti_ai_skill_manifest, draft_sha256
 from essay_writer.drafting.prompts import DRAFTING_SCHEMA, DRAFTING_SYSTEM_PROMPT
 from essay_writer.drafting.schema import utc_now_iso
 from essay_writer.drafting.style_revision import (
@@ -223,6 +225,14 @@ class AgentToolFacade:
     # facade with this on; the tests/agent_tools conftest flips it off so
     # the broad suite (which calls many tools without a run) is unaffected.
     require_agent_run: bool = True
+    # Fix #1: when True, prepare_validation refuses until an anti-AI audit
+    # has been committed for the job. Without it the audit stage (the
+    # dedicated "did you apply the anti-AI writing skill" checkpoint) is
+    # optional and silently skippable - the exact failure that started
+    # this work. Production builds the facade with this on; the
+    # tests/agent_tools conftest flips it off so tests that drive
+    # draft -> validation directly are unaffected.
+    require_anti_ai_audit: bool = True
 
     def __post_init__(self) -> None:
         if self.skip_token_store is None:
@@ -243,6 +253,7 @@ class AgentToolFacade:
         llm_guard: object | None = None,
         enforce_attention_challenge: bool = True,
         require_agent_run: bool = True,
+        require_anti_ai_audit: bool = True,
     ) -> "AgentToolFacade":
         os.environ["ESSAY_AGENT_TOOL_MODE"] = "1"
         config = AgentToolConfig.from_base_dir(data_dir)
@@ -264,6 +275,7 @@ class AgentToolFacade:
             llm_guard=llm_guard,
             enforce_attention_challenge=enforce_attention_challenge,
             require_agent_run=require_agent_run,
+            require_anti_ai_audit=require_anti_ai_audit,
         )
 
     def _save_model_packet(self, packet: WorkPacket) -> WorkPacket:
@@ -360,11 +372,27 @@ class AgentToolFacade:
         # If a skip token was supplied, validate it.
         if writing_style_skip_token is not None:
             scope = SCOPE_WRITING_STYLE
-            target_job = job_id or ""
+            # A skip token is scoped to a concrete job id. Without an
+            # explicit job_id the token would be validated against "" and
+            # a single token would satisfy every job_id=None creation
+            # (M3). Require the caller to name the job they are skipping.
+            if not job_id:
+                return _error_result_with_next(
+                    "create_job_from_artifacts",
+                    code="writing_style_skip_token_requires_job_id",
+                    message=(
+                        "writing_style_skip_token requires an explicit job_id "
+                        "so the skip decision is scoped to a specific job. Call "
+                        "create_job_from_artifacts with the same job_id you "
+                        "passed to skip_writing_style_calibration."
+                    ),
+                    exc=ValueError("job_id"),
+                    next_suggested_tools=["skip_writing_style_calibration"],
+                )
             if not self.skip_token_store.validate(
                 token=writing_style_skip_token,
                 scope=scope,
-                job_id=target_job,
+                job_id=job_id,
             ):
                 return _error_result_with_next(
                     "create_job_from_artifacts",
@@ -422,6 +450,7 @@ class AgentToolFacade:
         *,
         work_packet_id: str,
         role: str,
+        model_tier: str | None = None,
         agent_run_id: str | None = None,
     ) -> ToolResult:
         """Issue a subagent dispatch token for a work packet.
@@ -461,10 +490,50 @@ class AgentToolFacade:
                 exc=ValueError("role"),
                 next_suggested_tools=["dispatch_subagent"],
             )
+        # A dispatch token is only meaningful for a packet that the
+        # workflow wants delegated. Minting one for a packet with no
+        # delegation intent (neither required nor recommended) is
+        # pointless and signals a confused caller. (M2 hardening.)
+        if not packet.delegation_required and not packet.delegation.recommended:
+            return _error_result_with_next(
+                "dispatch_subagent",
+                code="delegation_not_applicable",
+                message=(
+                    f"WorkPacket {work_packet_id!r} is not marked for delegation "
+                    "(neither delegation_required nor delegation.recommended). "
+                    "Run it inline and submit with a main_agent producer; no "
+                    "dispatch token is needed."
+                ),
+                exc=ValueError(work_packet_id),
+                next_suggested_tools=["submit_work_result"],
+            )
+        required_model_tier = (
+            packet.delegation.required_model_tier.strip().lower()
+            if packet.delegation.required_model_tier
+            else None
+        )
+        requested_model_tier = model_tier.strip().lower() if model_tier else None
+        if required_model_tier and not _model_tier_satisfies_required(
+            requested_model_tier,
+            required_model_tier=required_model_tier,
+        ):
+            return _error_result_with_next(
+                "dispatch_subagent",
+                code="subagent_model_tier_required",
+                message=(
+                    f"WorkPacket {work_packet_id!r} requires a "
+                    f"{required_model_tier!r} subagent model tier. Dispatch with "
+                    f"model_tier={required_model_tier!r}, or a provider-specific "
+                    "frontier equivalent such as 'opus'. Lower tiers are not allowed."
+                ),
+                exc=ValueError("model_tier"),
+                next_suggested_tools=["dispatch_subagent"],
+            )
         try:
             token = self.subagent_token_store.issue(
                 work_packet_id=work_packet_id,
                 role=role,
+                model_tier=requested_model_tier,
             )
         except ValueError as exc:
             return _error_result(
@@ -481,6 +550,8 @@ class AgentToolFacade:
                 "subagent_token": token.token,
                 "work_packet_id": token.work_packet_id,
                 "role": token.role,
+                "model_tier": token.model_tier,
+                "required_model_tier": required_model_tier,
                 "stage": packet.stage,
                 "delegation_hint": asdict(packet.delegation),
                 "created_at": token.created_at,
@@ -513,6 +584,19 @@ class AgentToolFacade:
             )
             if _gate_error is not None:
                 return _gate_error
+
+        if not job_id or not job_id.strip():
+            return _error_result_with_next(
+                "skip_writing_style_calibration",
+                code="job_id_required",
+                message=(
+                    "skip_writing_style_calibration requires a concrete, "
+                    "non-empty job_id so the skip is scoped to a specific job. "
+                    "Pass the same job_id you will give create_job_from_artifacts."
+                ),
+                exc=ValueError("job_id"),
+                next_suggested_tools=["skip_writing_style_calibration"],
+            )
 
         if not reason or not reason.strip():
             return _error_result_with_next(
@@ -1962,7 +2046,7 @@ class AgentToolFacade:
                     code="subagent_dispatch_token_invalid",
                     message=(
                         "subagent_token does not match this work packet. "
-                        "Issue a new token via dispatch_subagent(work_packet_id, role)."
+                        "Issue a new token via dispatch_subagent(work_packet_id, role, model_tier)."
                     ),
                     exc=ValueError(token),
                     next_suggested_tools=["dispatch_subagent"],
@@ -1983,6 +2067,31 @@ class AgentToolFacade:
                     exc=ValueError(getattr(producer, "type", None)),
                     next_suggested_tools=["dispatch_subagent"],
                 )
+            # M2 hardening: a dispatch token authorizes ONE submission.
+            # If it was already consumed, allow only an idempotent retry
+            # (the same payload, which the store dedups) and reject reuse
+            # with a different payload.
+            token_record = self.subagent_token_store.load(token)
+            if token_record.consumed:
+                incoming_hash = content_hash(payload)
+                is_retry = any(
+                    r.work_packet_id == work_packet_id
+                    and r.payload_hash == incoming_hash
+                    for r in self.work_store.list_results()
+                )
+                if not is_retry:
+                    return _error_result_with_next(
+                        "submit_work_result",
+                        code="subagent_dispatch_token_consumed",
+                        message=(
+                            "This subagent_token was already used for a "
+                            "different submission. Each dispatch authorizes one "
+                            "result; dispatch a fresh subagent for a new "
+                            "submission."
+                        ),
+                        exc=ValueError(token),
+                        next_suggested_tools=["dispatch_subagent"],
+                    )
         validation_error = _validate_work_payload(
             payload,
             packet.response_schema,
@@ -2024,6 +2133,16 @@ class AgentToolFacade:
             warnings=warnings,
         )
         duplicate = result.work_result_id in existing_ids
+        # M2 hardening: mark the dispatch token consumed so it cannot
+        # authorize a second, different submission. consume() is
+        # idempotent, so an idempotent retry is harmless.
+        if packet.delegation_required:
+            _consumed_token = getattr(producer, "subagent_token", None)
+            if _consumed_token:
+                self.subagent_token_store.consume(
+                    token=_consumed_token,
+                    work_packet_id=packet.work_packet_id,
+                )
         next_tools = [packet.commit_tool] if packet.commit_tool else []
         if agent_run_id is not None:
             self.run_store.attach_work_result(
@@ -2764,6 +2883,7 @@ class AgentToolFacade:
             artifact_refs=artifact_refs,
         )
         next_tools = ["select_topic", "reject_topic"]
+        candidate_topics = [asdict(candidate) for candidate in topic_result.candidates]
         if agent_run_id is not None:
             self.run_store.attach_work_result(
                 agent_run_id,
@@ -2792,6 +2912,13 @@ class AgentToolFacade:
                 "round_number": matching_round.round_number,
                 "topic_round_id": matching_round.id,
                 "candidate_topic_ids": candidate_topic_ids,
+                "candidate_topics": candidate_topics,
+                "requires_user_topic_selection": True,
+                "selection_contract": (
+                    "Present candidate_topics to the user and call select_topic "
+                    "only after the user chooses one. Pass user_selection_evidence "
+                    "summarizing the user's choice."
+                ),
                 "blocking_questions": blocking,
                 "warnings": warnings,
                 "artifact_refs": dict(commit.artifact_refs),
@@ -2808,11 +2935,25 @@ class AgentToolFacade:
         round_number: int,
         topic_id: str,
         *,
+        user_selection_evidence: str | None = None,
         agent_run_id: str | None = None,
     ) -> ToolResult:
         _, _gate_error = self._load_run_and_gate("select_topic", agent_run_id)
         if _gate_error is not None:
             return _gate_error
+        selection_evidence = (user_selection_evidence or "").strip()
+        if not selection_evidence:
+            return _error_result_with_next(
+                "select_topic",
+                code="topic_selection_user_confirmation_required",
+                message=(
+                    "select_topic requires user_selection_evidence. Present the "
+                    "committed topic options to the user and pass a concise record "
+                    "of the user's chosen topic."
+                ),
+                exc=ValueError("user_selection_evidence"),
+                next_suggested_tools=["select_topic", "reject_topic"],
+            )
         try:
             selected = self.stores.workflow.select_topic(
                 job_id=job_id,
@@ -2853,6 +2994,7 @@ class AgentToolFacade:
                 "round_number": round_number,
                 "selected_topic_id": selected.topic_id,
                 "selected_topic": asdict(selected),
+                "user_selection_evidence": selection_evidence,
                 "artifact_refs": artifact_refs,
                 "next_suggested_tools": next_tools,
             },
@@ -5666,6 +5808,7 @@ class AgentToolFacade:
             )
 
         det = run_validation_deterministic_checks(draft.content)
+        skill_manifest = anti_ai_skill_manifest()
         paragraphs = [p for p in draft.content.split("\n\n") if p.strip()]
         whole_draft_context = {
             "paragraph_count": len(paragraphs),
@@ -5694,7 +5837,14 @@ class AgentToolFacade:
         user_payload = {
             "draft_id": draft.id,
             "draft_version": draft.version,
+            "draft_sha256": draft_sha256(draft.content),
             "essay_content": draft.content,
+            "skill_contract": {
+                "skill_file": skill_manifest["path"],
+                "skill_sha256": skill_manifest["sha256"],
+                "skill_line_count": skill_manifest["line_count"],
+            },
+            "skill_line_manifest": skill_manifest["lines"],
             "deterministic_findings": asdict(det),
             "whole_draft_context": whole_draft_context,
             "style_guidance_checklist": guidance_bullets,
@@ -5743,13 +5893,17 @@ class AgentToolFacade:
                         "its system prompt and produces the structured audit JSON"
                     ),
                     suggested_role="anti_ai_auditor",
+                    required_model_tier="frontier",
                     allowed_tools=["submit_work_result"],
                     return_contract=(
                         "Return one JSON object matching response_schema (the audit, not a rewrite)."
                     ),
                     subagent_prompt=(
-                        "Read the essay content in the user message. Apply the anti-AI writing "
-                        "skill from the system prompt. Score, do not rewrite. Return the audit JSON."
+                        "Use a frontier/highest-reasoning subagent. For Claude this means Opus; "
+                        "for Codex use the strongest available Codex reasoning model. "
+                        "Read the essay content in the user message. "
+                        "Apply the anti-AI writing skill from the system prompt. Score, do not "
+                        "rewrite. Return the audit JSON."
                     ),
                 ),
                 # The audit packet is structurally clean-context work.
@@ -5801,7 +5955,10 @@ class AgentToolFacade:
         are looking at.
         """
         from essay_writer.drafting.schema import (
+            AntiAIFinalDecision,
             AntiAISelfCheck,
+            AntiAISkillLineAudit,
+            AntiAIUnmetRequirement,
             EssayDraft,
             StyleGuidanceGrade,
         )
@@ -5852,7 +6009,37 @@ class AgentToolFacade:
                 exc=exc,
             )
 
+        binding_error = _validate_anti_ai_audit_binding(
+            result.payload,
+            source_draft=source_draft,
+        )
+        if binding_error is not None:
+            return binding_error
+
         audit_payload = result.payload.get("anti_ai_self_check", {}) or {}
+        line_audit = [
+            AntiAISkillLineAudit(
+                line_number=int(row.get("line_number", 0) or 0),
+                line_text_sha256=str(row.get("line_text_sha256", "")).strip(),
+                requirement=str(row.get("requirement", "")).strip(),
+                status=str(row.get("status", "")).strip(),
+                evidence=str(row.get("evidence", "")).strip(),
+                action_taken=str(row.get("action_taken", "")).strip(),
+                draft_evidence=[
+                    {
+                        "kind": str(item.get("kind", "")).strip(),
+                        "reference": str(item.get("reference", "")).strip(),
+                        "explanation": str(item.get("explanation", "")).strip(),
+                    }
+                    for item in row.get("draft_evidence", []) or []
+                    if isinstance(item, dict)
+                ],
+                whole_essay_evidence=dict(row.get("whole_essay_evidence", {}) or {}),
+                line_application=str(row.get("line_application", "")).strip(),
+            )
+            for row in audit_payload.get("line_audit", []) or []
+            if isinstance(row, dict)
+        ]
         grades = [
             StyleGuidanceGrade(
                 bullet=str(grade.get("bullet", "")).strip(),
@@ -5863,7 +6050,36 @@ class AgentToolFacade:
             for grade in audit_payload.get("style_guidance_grades", []) or []
             if isinstance(grade, dict) and str(grade.get("bullet", "")).strip()
         ]
+        unmet_requirements = [
+            AntiAIUnmetRequirement(
+                line_number=int(row.get("line_number", 0) or 0),
+                section=str(row.get("section", "")).strip(),
+                status=str(row.get("status", "")).strip(),
+                reason=str(row.get("reason", "")).strip(),
+                risk=str(row.get("risk", "")).strip(),
+            )
+            for row in audit_payload.get("unmet_requirements", []) or []
+            if isinstance(row, dict)
+        ]
+        final_decision_raw = audit_payload.get("final_decision") or {}
+        final_decision = (
+            AntiAIFinalDecision(
+                hard_rules_pass=bool(final_decision_raw.get("hard_rules_pass", False)),
+                soft_rules_pass=bool(final_decision_raw.get("soft_rules_pass", False)),
+                safe_to_claim_detector_reduction=bool(
+                    final_decision_raw.get("safe_to_claim_detector_reduction", False)
+                ),
+                reason=str(final_decision_raw.get("reason", "")).strip(),
+            )
+            if isinstance(final_decision_raw, dict)
+            else None
+        )
         audit = AntiAISelfCheck(
+            skill_file=str(audit_payload.get("skill_file", "")).strip(),
+            skill_sha256=str(audit_payload.get("skill_sha256", "")).strip(),
+            skill_line_count=int(audit_payload.get("skill_line_count", 0) or 0),
+            draft_sha256=str(audit_payload.get("draft_sha256", "")).strip(),
+            line_audit=line_audit,
             paragraph_count=int(audit_payload.get("paragraph_count", 0) or 0),
             paragraph_first_sentences=[
                 str(s) for s in audit_payload.get("paragraph_first_sentences", []) or []
@@ -5891,6 +6107,8 @@ class AgentToolFacade:
             self_check_notes=[
                 str(s) for s in audit_payload.get("self_check_notes", []) or []
             ],
+            unmet_requirements=unmet_requirements,
+            final_decision=final_decision,
         )
         passes = bool(result.payload.get("pass", False))
         revision_targets = result.payload.get("revision_targets", []) or []
@@ -5944,6 +6162,8 @@ class AgentToolFacade:
                 "source_draft_id": source_draft.id,
                 "draft_id": draft.id,
                 "draft_version": new_version,
+                "skill_sha256": audit.skill_sha256,
+                "draft_sha256": audit.draft_sha256,
                 "audit_pass": passes,
                 "audit_revision_target_count": len(revision_targets),
             }
@@ -6046,6 +6266,16 @@ class AgentToolFacade:
                 exc=exc,
                 next_suggested_tools=["prepare_draft"],
             )
+        # The anti-AI audit is draft-bound, not job-bound. A manual edit or
+        # regenerated draft invalidates any earlier audit, even if the job has
+        # an anti_ai_audit commit in its history.
+        if self.require_anti_ai_audit:
+            audit_error = _anti_ai_audit_freshness_error(
+                "prepare_validation",
+                draft=draft,
+            )
+            if audit_error is not None:
+                return audit_error
         source_cards = []
         for source_id in job.source_ids:
             try:
@@ -6464,6 +6694,7 @@ class AgentToolFacade:
             id=f"draft_{short_hash([job_id, draft_id, content, version])}",
             version=version,
             content=content,
+            anti_ai_self_check=None,
             origin="user_edit",
             created_by="user",
             parent_draft_id=parent.id,
@@ -6480,12 +6711,18 @@ class AgentToolFacade:
                 message=str(exc),
                 exc=exc,
             )
-        next_tools = ["prepare_validation"]
+        next_tools = ["prepare_anti_ai_audit"]
         artifact_refs = {"job_id": job_id, "draft_id": edited.id, "draft_version": version}
         if agent_run_id is not None:
             self.run_store.attach_commit(
                 agent_run_id,
                 artifact_refs,
+                next_suggested_tools=next_tools,
+            )
+            self.run_store.checkpoint(
+                agent_run_id,
+                current_phase="anti_ai_audit",
+                decision="user_edit_saved",
                 next_suggested_tools=next_tools,
             )
         return ToolResult(
@@ -6569,6 +6806,13 @@ class AgentToolFacade:
                 exc=ValueError(validation.draft_id),
                 next_suggested_tools=["prepare_validation"],
             )
+        if self.require_anti_ai_audit:
+            audit_error = _anti_ai_audit_freshness_error(
+                "export_markdown",
+                draft=draft,
+            )
+            if audit_error is not None:
+                return audit_error
         # Refuse to export a draft whose validation did not pass, unless the
         # caller explicitly overrides. Without this, the documented
         # "loop back through revision on failure" step is advisory only:
@@ -6790,6 +7034,41 @@ def source_locator_to_payload(locator: SourceLocator) -> dict[str, object]:
         "chunk_id": locator.chunk_id,
         "reason": locator.reason,
     }
+
+
+_FRONTIER_MODEL_TIER_ALIASES = {
+    "frontier",
+    "highest_available",
+    "highest-available",
+    "highest_reasoning",
+    "highest-reasoning",
+    "max",
+    "opus",
+    "claude-opus",
+    "claude_opus",
+    "gpt-5",
+    "gpt5",
+    "gpt-5-high",
+    "codex",
+    "codex-high",
+    "codex_high",
+}
+
+
+def _model_tier_satisfies_required(
+    requested_model_tier: str | None,
+    *,
+    required_model_tier: str,
+) -> bool:
+    requested = (requested_model_tier or "").strip().lower()
+    required = required_model_tier.strip().lower()
+    if not requested:
+        return False
+    if requested == required:
+        return True
+    if required == "frontier":
+        return requested in _FRONTIER_MODEL_TIER_ALIASES
+    return False
 
 
 def source_packet_to_payload(packet: SourceTextPacket) -> dict[str, object]:
@@ -7507,6 +7786,440 @@ def hard_tier_anti_ai_violations(det: DeterministicCheckResult) -> list[dict[str
             }
         )
     return violations
+
+
+def _anti_ai_line_reasoning_error(
+    row: dict[str, object],
+    *,
+    line_number: int,
+    line_text: str,
+    tool_name: str,
+) -> ToolResult | None:
+    application = str(row.get("line_application", "")).strip()
+    if len(application) < 25:
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_line_audit_weak_reasoning",
+            message=(
+                "anti-AI audit line_application is too thin to prove "
+                f"line-specific reasoning for skill line {line_number}."
+            ),
+            exc=ValueError("line_application"),
+        )
+    lowered_application = application.lower()
+    if f"line {line_number}" in lowered_application:
+        return None
+    line_words = [
+        word
+        for word in re.findall(r"[a-zA-Z][a-zA-Z'-]{3,}", line_text.lower())
+        if word not in {"this", "that", "with", "from", "must", "should", "will"}
+    ]
+    if line_words and any(word in lowered_application for word in line_words[:8]):
+        return None
+    return _error_result(
+        tool_name,
+        code="anti_ai_skill_line_audit_weak_reasoning",
+        message=(
+            "anti-AI audit line_application must tie its reasoning to the "
+            f"specific skill-file line {line_number}, not just a generic checklist."
+        ),
+        exc=ValueError("line_application"),
+    )
+
+
+def _anti_ai_line_draft_evidence_error(
+    row: dict[str, object],
+    *,
+    line_number: int,
+    draft_text: str,
+    tool_name: str,
+) -> ToolResult | None:
+    evidence_items = row.get("draft_evidence")
+    if not isinstance(evidence_items, list) or not evidence_items:
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_line_audit_missing_draft_evidence",
+            message=(
+                "anti-AI audit rows must include draft_evidence for every "
+                f"skill line; line {line_number} did not."
+            ),
+            exc=ValueError("draft_evidence"),
+        )
+    status = str(row.get("status", "")).strip()
+    meaningful = False
+    paragraph_count = len(_draft_paragraphs(draft_text))
+    for item in evidence_items:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind", "")).strip()
+        reference = str(item.get("reference", "")).strip()
+        explanation = str(item.get("explanation", "")).strip()
+        if len(reference) < 3 or len(explanation) < 12:
+            continue
+        if kind == "draft_quote" and reference in draft_text:
+            meaningful = True
+        elif kind == "paragraph_reference" and _valid_paragraph_reference(
+            reference,
+            paragraph_count=paragraph_count,
+        ):
+            meaningful = True
+        elif kind == "deterministic_check":
+            meaningful = True
+    if status == "context":
+        return None
+    if meaningful:
+        return None
+    return _error_result(
+        tool_name,
+        code="anti_ai_skill_line_audit_missing_draft_evidence",
+        message=(
+            "anti-AI audit non-context rows must cite draft-specific evidence "
+            f"for skill line {line_number}: an exact draft quote, paragraph "
+            "reference, or deterministic check."
+        ),
+        exc=ValueError("draft_evidence"),
+    )
+
+
+def _anti_ai_line_whole_essay_error(
+    row: dict[str, object],
+    *,
+    line_number: int,
+    paragraph_count: int,
+    tool_name: str,
+) -> ToolResult | None:
+    whole = row.get("whole_essay_evidence")
+    if not isinstance(whole, dict):
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_line_audit_missing_whole_essay_review",
+            message=(
+                "anti-AI audit rows must include whole_essay_evidence for every "
+                f"skill line; line {line_number} did not."
+            ),
+            exc=ValueError("whole_essay_evidence"),
+        )
+    scope = str(whole.get("scope", "")).strip()
+    try:
+        reviewed_count = int(whole.get("paragraph_count_reviewed", -1))
+    except (TypeError, ValueError):
+        reviewed_count = -1
+    method = str(whole.get("method", "")).strip()
+    finding = str(whole.get("finding", "")).strip()
+    if (
+        scope != "whole_essay"
+        or reviewed_count != paragraph_count
+        or len(method) < 20
+        or len(finding) < 20
+    ):
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_line_audit_missing_whole_essay_review",
+            message=(
+                "anti-AI audit rows must prove whole-essay review for each "
+                f"skill line. Line {line_number} must use scope='whole_essay', "
+                "the exact audited paragraph count, and a substantive method/finding."
+            ),
+            exc=ValueError("whole_essay_evidence"),
+        )
+    return None
+
+
+def _draft_paragraphs(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+
+
+def _valid_paragraph_reference(reference: str, *, paragraph_count: int) -> bool:
+    match = re.search(r"\bparagraph\s+(\d+)\b", reference.lower())
+    if match is None:
+        return False
+    paragraph_number = int(match.group(1))
+    return 1 <= paragraph_number <= max(1, paragraph_count)
+
+
+def _validate_anti_ai_audit_binding(
+    payload: dict[str, object],
+    *,
+    source_draft: object,
+    tool_name: str = "commit_anti_ai_audit",
+) -> ToolResult | None:
+    audit = payload.get("anti_ai_self_check")
+    if not isinstance(audit, dict):
+        return _error_result(
+            tool_name,
+            code="anti_ai_self_check_missing",
+            message="anti-AI audit payload is missing anti_ai_self_check",
+            exc=ValueError("anti_ai_self_check"),
+        )
+    manifest = anti_ai_skill_manifest()
+    expected_skill_file = str(manifest["path"])
+    expected_skill_hash = str(manifest["sha256"])
+    expected_draft_hash = draft_sha256(str(getattr(source_draft, "content")))
+    if str(audit.get("skill_file", "")) != expected_skill_file:
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_file_mismatch",
+            message="anti-AI audit skill file path does not match the current repo skill file",
+            exc=ValueError("skill_file"),
+        )
+    if str(audit.get("skill_sha256", "")) != expected_skill_hash:
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_hash_mismatch",
+            message="anti-AI audit skill hash does not match the current repo skill file",
+            exc=ValueError("skill_sha256"),
+        )
+    if int(audit.get("skill_line_count", 0) or 0) != int(manifest["line_count"]):
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_line_count_mismatch",
+            message="anti-AI audit skill line count does not match the current repo skill file",
+            exc=ValueError("skill_line_count"),
+        )
+    if str(audit.get("draft_sha256", "")) != expected_draft_hash:
+        return _error_result(
+            tool_name,
+            code="anti_ai_draft_hash_mismatch",
+            message="anti-AI audit draft hash does not match the audited draft text",
+            exc=ValueError("draft_sha256"),
+        )
+
+    rows = audit.get("line_audit", [])
+    if not isinstance(rows, list):
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_line_audit_invalid",
+            message="anti-AI audit line_audit must be a list",
+            exc=ValueError("line_audit"),
+        )
+    by_line: dict[int, dict[str, object]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            line_number = int(row.get("line_number", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if line_number in by_line:
+            return _error_result(
+                tool_name,
+                code="anti_ai_skill_line_audit_duplicate",
+                message=f"anti-AI audit has duplicate line coverage for line {line_number}",
+                exc=ValueError(line_number),
+            )
+        by_line[line_number] = row
+
+    manifest_lines = manifest["lines"]
+    assert isinstance(manifest_lines, list)
+    expected_numbers = {
+        int(line["line_number"])
+        for line in manifest_lines
+        if isinstance(line, dict)
+    }
+    present_numbers = set(by_line)
+    if present_numbers != expected_numbers:
+        missing = sorted(expected_numbers - present_numbers)
+        extra = sorted(present_numbers - expected_numbers)
+        return ToolResult(
+            ok=False,
+            tool_name=tool_name,
+            error=ToolError(
+                code="anti_ai_skill_line_audit_incomplete",
+                message="anti-AI audit must include one line_audit row for every skill file line",
+                detail={
+                    "missing_lines": missing[:20],
+                    "missing_count": len(missing),
+                    "extra_lines": extra[:20],
+                    "extra_count": len(extra),
+                },
+            ),
+            next_suggested_tools=["prepare_anti_ai_audit"],
+        )
+    for line in manifest_lines:
+        if not isinstance(line, dict):
+            continue
+        line_number = int(line["line_number"])
+        expected_line_hash = str(line["sha256"])
+        actual_line_hash = str(by_line[line_number].get("line_text_sha256", ""))
+        if actual_line_hash != expected_line_hash:
+            return ToolResult(
+                ok=False,
+                tool_name=tool_name,
+                error=ToolError(
+                    code="anti_ai_skill_line_audit_hash_mismatch",
+                    message=(
+                        "anti-AI audit line hash does not match the current "
+                        f"skill file at line {line_number}"
+                    ),
+                    detail={
+                        "line_number": line_number,
+                        "expected": expected_line_hash,
+                        "actual": actual_line_hash,
+                    },
+                ),
+                next_suggested_tools=["prepare_anti_ai_audit"],
+            )
+        row = by_line[line_number]
+        line_text = str(line.get("text", ""))
+        reasoning_error = _anti_ai_line_reasoning_error(
+            row,
+            line_number=line_number,
+            line_text=line_text,
+            tool_name=tool_name,
+        )
+        if reasoning_error is not None:
+            return reasoning_error
+        whole_essay_error = _anti_ai_line_whole_essay_error(
+            row,
+            line_number=line_number,
+            paragraph_count=len(_draft_paragraphs(str(getattr(source_draft, "content")))),
+            tool_name=tool_name,
+        )
+        if whole_essay_error is not None:
+            return whole_essay_error
+        evidence_error = _anti_ai_line_draft_evidence_error(
+            row,
+            line_number=line_number,
+            draft_text=str(getattr(source_draft, "content")),
+            tool_name=tool_name,
+        )
+        if evidence_error is not None:
+            return evidence_error
+    non_context_rows = [
+        row
+        for row in by_line.values()
+        if str(row.get("status", "")).strip() != "context"
+    ]
+    proof_tuples = [
+        (
+            str(row.get("requirement", "")).strip(),
+            str(row.get("evidence", "")).strip(),
+            str(row.get("line_application", "")).strip(),
+            str(row.get("action_taken", "")).strip(),
+        )
+        for row in non_context_rows
+    ]
+    legacy_proof_tuples = [
+        (
+            str(row.get("requirement", "")).strip(),
+            str(row.get("evidence", "")).strip(),
+            str(row.get("action_taken", "")).strip(),
+        )
+        for row in non_context_rows
+    ]
+    unique_proofs = set(proof_tuples)
+    unique_legacy_proofs = set(legacy_proof_tuples)
+    if (
+        proof_tuples
+        and (
+            len(unique_proofs) < max(1, len(proof_tuples) // 2)
+            or len(unique_legacy_proofs) < max(1, len(legacy_proof_tuples) // 2)
+        )
+    ):
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_line_audit_boilerplate",
+            message=(
+                "anti-AI audit line proof is too repetitive. requirement, "
+                "evidence, and action_taken must be line-specific enough to "
+                "show the auditor processed individual skill lines."
+            ),
+            exc=ValueError("line_audit_boilerplate"),
+        )
+    failed_or_blocked = {
+        line_number
+        for line_number, row in by_line.items()
+        if str(row.get("status", "")).strip() in {"failed", "blocked"}
+    }
+    unmet_rows = audit.get("unmet_requirements", []) or []
+    unmet_lines = {
+        int(row.get("line_number", 0) or 0)
+        for row in unmet_rows
+        if isinstance(row, dict)
+    }
+    final_decision = audit.get("final_decision")
+    hard_rules_pass = None
+    soft_rules_pass = None
+    safe_to_claim = None
+    if isinstance(final_decision, dict):
+        hard_rules_pass = bool(final_decision.get("hard_rules_pass", False))
+        soft_rules_pass = bool(final_decision.get("soft_rules_pass", False))
+        safe_to_claim = bool(final_decision.get("safe_to_claim_detector_reduction", False))
+    if failed_or_blocked:
+        top_level_pass = bool(payload.get("pass", False))
+        if (
+            not failed_or_blocked.issubset(unmet_lines)
+            or top_level_pass
+            or hard_rules_pass
+            or soft_rules_pass
+            or safe_to_claim
+        ):
+            return _error_result(
+                tool_name,
+                code="anti_ai_skill_line_audit_inconsistent",
+                message=(
+                    "failed or blocked anti-AI skill lines must be listed in "
+                    "unmet_requirements and must make pass/final_decision fail."
+                ),
+                exc=ValueError("line_audit_inconsistent"),
+            )
+    return None
+
+
+def _anti_ai_audit_freshness_error(
+    tool_name: str,
+    *,
+    draft: object,
+) -> ToolResult | None:
+    audit = getattr(draft, "anti_ai_self_check", None)
+    if audit is None:
+        return _error_result_with_next(
+            tool_name,
+            code="anti_ai_audit_required",
+            message=(
+                "The selected draft has no committed anti-AI audit. Run "
+                "prepare_anti_ai_audit -> submit_work_result -> "
+                "commit_anti_ai_audit for this exact draft before validation or export."
+            ),
+            exc=ValueError("anti_ai_audit"),
+            next_suggested_tools=["prepare_anti_ai_audit"],
+        )
+    if not getattr(audit, "skill_sha256", "") or not getattr(audit, "draft_sha256", ""):
+        return _error_result_with_next(
+            tool_name,
+            code="anti_ai_audit_required",
+            message=(
+                "The selected draft has only a draft-time self-check, not a "
+                "committed line-bound anti-AI audit. Run prepare_anti_ai_audit "
+                "for this exact draft before validation or export."
+            ),
+            exc=ValueError("anti_ai_audit"),
+            next_suggested_tools=["prepare_anti_ai_audit"],
+        )
+    manifest = anti_ai_skill_manifest()
+    expected_skill_hash = str(manifest["sha256"])
+    expected_draft_hash = draft_sha256(str(getattr(draft, "content")))
+    if (
+        getattr(audit, "skill_sha256", "") != expected_skill_hash
+        or int(getattr(audit, "skill_line_count", 0) or 0) != int(manifest["line_count"])
+        or getattr(audit, "draft_sha256", "") != expected_draft_hash
+    ):
+        return _error_result_with_next(
+            tool_name,
+            code="anti_ai_audit_stale",
+            message=(
+                "The selected draft's anti-AI audit is stale. The audit must "
+                "match the current anti-ai-detection-SKILL.md hash and the exact "
+                "draft text hash."
+            ),
+            exc=ValueError("anti_ai_audit_stale"),
+            next_suggested_tools=["prepare_anti_ai_audit"],
+        )
+    return _validate_anti_ai_audit_binding(
+        {"anti_ai_self_check": asdict(audit)},
+        source_draft=draft,
+        tool_name=tool_name,
+    )
 
 
 def _source_materialization_data(

@@ -9,6 +9,9 @@ production concern:
   must echo. Hand-written test payloads do not carry it.
 - Gap H1 (``require_agent_run``): stateful tools refuse calls that omit
   ``agent_run_id``. Many tests deliberately call tools without a run.
+- Fix #1 (``require_anti_ai_audit``): prepare_validation refuses until an
+  anti-AI audit is committed. Many tests drive draft -> validation
+  directly without running the audit stage.
 
 Tests that specifically exercise these construct the facade with the
 flag set to ``True`` explicitly; ``setdefault`` below does not override an
@@ -28,6 +31,7 @@ def _production_enforcements_off_by_default(monkeypatch):
     def patched(cls, data_dir, **kwargs):
         kwargs.setdefault("enforce_attention_challenge", False)
         kwargs.setdefault("require_agent_run", False)
+        kwargs.setdefault("require_anti_ai_audit", False)
         return original(cls, data_dir, **kwargs)
 
     monkeypatch.setattr(

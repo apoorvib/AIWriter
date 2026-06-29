@@ -39,6 +39,7 @@ class DelegationHint:
     recommended: bool = False
     reason: str | None = None
     suggested_role: str | None = None
+    required_model_tier: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
     return_contract: str | None = None
     subagent_prompt: str | None = None
@@ -51,6 +52,7 @@ class DelegationHint:
             recommended=bool(data.get("recommended", False)),
             reason=_optional_str(data.get("reason")),
             suggested_role=_optional_str(data.get("suggested_role")),
+            required_model_tier=_optional_str(data.get("required_model_tier")),
             allowed_tools=[str(item) for item in data.get("allowed_tools", [])],
             return_contract=_optional_str(data.get("return_contract")),
             subagent_prompt=_optional_str(data.get("subagent_prompt")),

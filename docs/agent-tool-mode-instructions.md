@@ -6,7 +6,7 @@ You are orchestrating EssayWriter through local Agent Tool Mode tools.
 
 1. Use only Agent Tool Mode tools for persisted essay workflow actions.
 2. Do not call Pipeline Mode, backend API routes, provider adapters, or configured app LLM clients unless the user explicitly opts into API-backed Pipeline Mode.
-3. Start or recover an AgentRun before doing stateful work.
+3. Start or recover an AgentRun before doing stateful work, and pass its `agent_run_id` to every stateful tool. The server enforces this: stateful `prepare_*`/`commit_*`/`create_job_from_artifacts`/`submit_work_result`/`export_markdown`/`dispatch_subagent`/`select_topic`/etc. reject calls that omit `agent_run_id` with `agent_run_required`. Omitting the run id would silently bypass the phase, stale-harness, and writing-style gates, so it is not allowed.
 4. Treat persisted AgentRun state as authoritative and chat memory as advisory.
 5. For model-reasoning stages, call `prepare_*`, produce JSON matching `response_schema`, call `submit_work_result`, then call the named `commit_*` tool.
 6. **For every `prepare_*` work packet, the `system_prompt` field returned by the tool IS the system message you MUST use when generating the JSON. Do not summarize it, skip it, paraphrase it, or substitute your own.** The `prompt_blocks` array contains the user message(s) in order. `response_schema` defines only the output shape. Skipping `system_prompt` silently bypasses the prompt engineering the workflow depends on — grounding rules, source-trust boundaries, anti-AI writing rules, and stage-specific output contracts. If you cannot or will not honor a packet's `system_prompt`, stop and report it instead of producing a result. **Proof of attention:** the system_prompt ends with an `ATTENTION CHECK` line containing a one-time token. You MUST copy that exact token into a free-text field of your output JSON (for example a `notes` or `self_check_notes` entry). `submit_work_result` rejects payloads that omit it with `system_prompt_not_honored`, because a missing token means the system_prompt was not read.
@@ -55,8 +55,8 @@ This is the target workflow surface. During partial implementation, call only to
 20. `prepare_topics`
 21. `submit_work_result`
 22. `commit_topics`
-23. ask the user to select or reject a topic
-24. `select_topic` or `reject_topic`
+23. show the returned `candidate_topics` to the user and ask them to select or reject a topic
+24. `select_topic` with `user_selection_evidence` or `reject_topic`
 25. `create_research_plan`
 26. `resolve_source_requests`
 27. `prepare_research_notes`
@@ -79,7 +79,7 @@ This is the target workflow surface. During partial implementation, call only to
 39. if `commit_style_revision` returns a hard-tier rejection, re-prepare and
     re-submit only the windows it names, then call `commit_style_revision`
     again with the updated `work_result_id`s
-40. `prepare_anti_ai_audit` (bounded single-skill audit on the assembled draft)
+40. `prepare_anti_ai_audit` (bounded single-skill audit on the assembled draft). REQUIRED: `prepare_validation` refuses with `anti_ai_audit_required` until a line-bound anti-AI audit has been committed for the exact draft being validated. A job-level older audit is not enough.
 41. `submit_work_result` (produce the `anti_ai_self_check` JSON)
 42. `commit_anti_ai_audit`
 43. if the audit returns `audit_pass: false` with `revision_targets`, prefer
@@ -91,7 +91,9 @@ This is the target workflow surface. During partial implementation, call only to
 46. `commit_validation`
 47. if `commit_validation` reports failure: `prepare_revision` →
     `submit_work_result` → `commit_revision`, then loop back to
-    `prepare_validation`
+    `prepare_validation`. This loop is enforced: `export_markdown` refuses
+    a draft whose latest validation did not pass (`validation_not_passing`)
+    unless you pass `allow_failed_validation=True` deliberately.
 48. `export_markdown`
 49. after the user confirms the essay is good: optionally `cleanup_agent_run`
 
@@ -100,18 +102,40 @@ This is the target workflow surface. During partial implementation, call only to
 `prepare_anti_ai_audit` exists because the anti-AI writing skill is a soft-tier
 contract that gets ignored when it lives inside a multi-goal drafting prompt.
 The audit's system prompt contains ONLY the anti-AI skill. The response schema
-forces the auditor to fill the seven self-check fields and grade each
-writing-style guidance bullet. Empty arrays will fail the audit.
+forces the auditor to fill the seven self-check fields, grade each
+writing-style guidance bullet, copy the current skill-file hash and draft hash,
+and produce one `line_audit` row for every line of `anti-ai-detection-SKILL.md`.
+Empty arrays, missing line coverage, mismatched line hashes, stale skill hashes,
+draft-evidence rows that do not point to the audited draft, missing
+whole-essay review evidence for any skill line, generic line-application
+reasoning, or a draft hash that does not match the audited draft fail the
+audit.
 
 The packet's `delegation.recommended=true` and `suggested_role="anti_ai_auditor"`.
-If your harness supports subagents, dispatch the audit to one — a clean-context
-agent with a single skill in its prompt produces better audits than the main
-orchestrator carrying eight other concerns.
+It also declares `required_model_tier="frontier"`. Dispatch it with
+`dispatch_subagent(..., model_tier="frontier")` in Codex, or with a
+provider-specific frontier alias such as `model_tier="opus"` in Claude.
+Lower tiers such as Haiku are rejected before a token is issued. A clean-context
+frontier/highest-reasoning subagent with a single skill in its prompt produces
+better audits than the main orchestrator carrying eight other concerns.
 
 A committed audit produces a NEW draft version whose `anti_ai_self_check` field
 is populated. The audit does not rewrite the prose; it only scores it. If
 `audit_pass` is false, the orchestrator should use `revision_targets` to scope
 a `prepare_revision` call before running validation.
+
+Manual edits invalidate the audit. `save_user_edit` creates a new draft with
+`anti_ai_self_check=None` and routes the run back to `prepare_anti_ai_audit`.
+After any user edit, including edits made after export, re-run and commit the
+anti-AI audit before validation or export.
+
+### Topic selection
+
+`commit_topics` returns `candidate_topics`, `requires_user_topic_selection=true`,
+and a `selection_contract`. The orchestrator must present those options to the
+user before selecting one. `select_topic` rejects calls that omit
+`user_selection_evidence`, because otherwise an agent can silently choose a
+topic without exposing the alternatives.
 
 ### Writing-style ingestion (voice calibration)
 

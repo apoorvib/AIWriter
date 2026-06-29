@@ -115,7 +115,12 @@ def _seed_job_with_selected_topic(
     )
     committed = facade.commit_topics(work_result_id=str(submitted.data["work_result_id"]))
     assert committed.ok is True
-    selected = facade.select_topic("job1", round_number=1, topic_id="topic_001")
+    selected = facade.select_topic(
+        "job1",
+        round_number=1,
+        topic_id="topic_001",
+        user_selection_evidence="User selected topic_001 from the offered topic options.",
+    )
     assert selected.ok is True
 
 

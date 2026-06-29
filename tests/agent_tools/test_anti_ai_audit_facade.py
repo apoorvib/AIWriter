@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from essay_writer.agent_tools.facade import AgentToolFacade
 from tests.agent_tools._tmp import LocalAgentTempDir
-from tests.agent_tools.helpers import dispatched_subagent, main_agent
+from tests.agent_tools.helpers import anti_ai_audit_payload, dispatched_subagent, main_agent
 from tests.agent_tools.test_outline_draft_validation_tools import (
     _seed_job_through_draft,
 )
@@ -34,6 +34,7 @@ def test_prepare_anti_ai_audit_returns_bounded_subagent_packet() -> None:
     delegation = prepared.data["delegation"]
     assert delegation["recommended"] is True
     assert delegation["suggested_role"] == "anti_ai_auditor"
+    assert delegation["required_model_tier"] == "frontier"
 
     # E: system prompt contains the anti-AI skill, and nothing else.
     assert "anti-AI prose auditor" in prepared.data["system_prompt"]
@@ -65,29 +66,25 @@ def test_commit_anti_ai_audit_writes_new_draft_version_with_audit() -> None:
         previous = facade.stores.draft_store.load_latest("job1")
 
         prepared = facade.prepare_anti_ai_audit("job1")
-        audit_payload = {
-            "pass": False,
-            "anti_ai_self_check": {
-                "paragraph_count": 2,
-                "paragraph_first_sentences": ["Cooling access.", "The writer treats this."],
-                "first_sentence_chain_summarizes_essay": True,
-                "paragraphs_under_50_words": 0,
-                "paragraphs_opening_with_topic_sentence": 2,
-                "filler_phrases_used": ["in essence"],
-                "significance_inflation_phrases": [],
-                "vague_attributions_used": [],
-                "concrete_source_handles": ["uploaded source p. 5"],
-                "style_guidance_grades": [],
-                "self_check_notes": ["First-sentence chain summarizes the whole essay"],
-            },
-            "revision_targets": [
+        audit_payload = anti_ai_audit_payload(
+            draft_text=previous.content,
+            passes=False,
+            paragraph_count=2,
+            paragraph_first_sentences=["Cooling access.", "The writer treats this."],
+            first_sentence_chain_summarizes_essay=True,
+            paragraphs_under_50_words=0,
+            paragraphs_opening_with_topic_sentence=2,
+            filler_phrases_used=["in essence"],
+            concrete_source_handles=["uploaded source p. 5"],
+            self_check_notes=["First-sentence chain summarizes the whole essay"],
+            revision_targets=[
                 {
                     "paragraph": 1,
                     "issue": "First-sentence chain summarizes the essay",
                     "action": "advance_argument",
                 }
             ],
-        }
+        )
         # The audit packet has delegation_required=True (mechanism B), so
         # submit_work_result needs a producer carrying a subagent token.
         producer = dispatched_subagent(
@@ -126,23 +123,16 @@ def test_commit_anti_ai_audit_passing_skips_revision() -> None:
         _seed_job_through_draft(facade)
 
         prepared = facade.prepare_anti_ai_audit("job1")
-        audit_payload = {
-            "pass": True,
-            "anti_ai_self_check": {
-                "paragraph_count": 3,
-                "paragraph_first_sentences": ["A.", "B short paragraph.", "C closing."],
-                "first_sentence_chain_summarizes_essay": False,
-                "paragraphs_under_50_words": 1,
-                "paragraphs_opening_with_topic_sentence": 1,
-                "filler_phrases_used": [],
-                "significance_inflation_phrases": [],
-                "vague_attributions_used": [],
-                "concrete_source_handles": ["uploaded source p. 5"],
-                "style_guidance_grades": [],
-                "self_check_notes": [],
-            },
-            "revision_targets": [],
-        }
+        source_draft = facade.stores.draft_store.load_latest("job1")
+        audit_payload = anti_ai_audit_payload(
+            draft_text=source_draft.content,
+            passes=True,
+            paragraph_count=3,
+            paragraph_first_sentences=["A.", "B short paragraph.", "C closing."],
+            paragraphs_under_50_words=1,
+            paragraphs_opening_with_topic_sentence=1,
+            concrete_source_handles=["uploaded source p. 5"],
+        )
         # mechanism (B): dispatch a subagent before submitting.
         producer = dispatched_subagent(
             facade,

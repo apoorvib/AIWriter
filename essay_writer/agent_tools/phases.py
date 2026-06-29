@@ -143,7 +143,6 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "list_drafts",
     "get_draft",
     "get_job_summary",
-    "save_user_edit",
     "run_deterministic_checks",
 })
 
@@ -244,6 +243,8 @@ TOOL_ALLOWED_PHASES: dict[str, frozenset[str]] = {
     # style_revision can still be audited).
     "prepare_anti_ai_audit": frozenset({
         PHASE_DRAFTING, PHASE_STYLE_REVISION, PHASE_ANTI_AI_AUDIT,
+        PHASE_ANTI_AI_REVISION, PHASE_VALIDATION, PHASE_REVISION,
+        PHASE_EXPORT, PHASE_COMPLETE,
     }),
     "commit_anti_ai_audit": frozenset({PHASE_ANTI_AI_AUDIT}),
 
@@ -264,6 +265,15 @@ TOOL_ALLOWED_PHASES: dict[str, frozenset[str]] = {
     "commit_revision": frozenset({
         PHASE_VALIDATION, PHASE_REVISION,
         PHASE_ANTI_AI_AUDIT, PHASE_ANTI_AI_REVISION,
+    }),
+
+    # Manual edits invalidate validation/audit state and reopen the
+    # anti-AI audit loop. They are allowed late in the workflow because users
+    # often edit after validation/export and then need to re-audit.
+    "save_user_edit": frozenset({
+        PHASE_DRAFTING, PHASE_STYLE_REVISION, PHASE_ANTI_AI_AUDIT,
+        PHASE_ANTI_AI_REVISION, PHASE_VALIDATION, PHASE_REVISION,
+        PHASE_EXPORT, PHASE_COMPLETE,
     }),
 
     # Export and cleanup.

@@ -15,7 +15,7 @@ from essay_writer.agent_tools.config import STALE_HARNESS_AFTER_PHASE_ADVANCES
 from essay_writer.agent_tools.facade import AgentToolFacade
 
 from tests.agent_tools._tmp import LocalAgentTempDir
-from tests.agent_tools.helpers import dispatched_subagent, main_agent
+from tests.agent_tools.helpers import anti_ai_audit_payload, dispatched_subagent, main_agent
 from tests.agent_tools.test_job_and_recovery_tools import (
     _seed_materialized_source,
     _seed_source_card,
@@ -99,23 +99,8 @@ def test_subagent_dispatch_gate_fires_for_audit_packet() -> None:
         facade = AgentToolFacade.from_data_dir(tmp / "data")
         _seed_job_through_draft(facade)
         prepared = facade.prepare_anti_ai_audit("job1")
-        audit_payload = {
-            "pass": True,
-            "anti_ai_self_check": {
-                "paragraph_count": 1,
-                "paragraph_first_sentences": ["A."],
-                "first_sentence_chain_summarizes_essay": False,
-                "paragraphs_under_50_words": 1,
-                "paragraphs_opening_with_topic_sentence": 1,
-                "filler_phrases_used": [],
-                "significance_inflation_phrases": [],
-                "vague_attributions_used": [],
-                "concrete_source_handles": ["source p. 1"],
-                "style_guidance_grades": [],
-                "self_check_notes": [],
-            },
-            "revision_targets": [],
-        }
+        draft = facade.stores.draft_store.find_by_id("job1", str(prepared.data["draft_id"]))
+        audit_payload = anti_ai_audit_payload(draft_text=draft.content)
         # Without a dispatch token: rejected.
         no_token = facade.submit_work_result(
             str(prepared.data["work_packet_id"]),
