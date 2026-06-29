@@ -32,16 +32,11 @@ class WorkflowStep:
 
 def _prep_specs():
     return [
-        # -- parallel prep (do in any order) --
+        # -- parallel prep (do in any order; neither needs a job yet) --
         ("source_cards", "required", False,
          {"tool": "prepare_source_card", "role": "source_card_writer",
           "commit_tool": "commit_source_card"},
          lambda c: c["source_cards_done"],
-         False),
-        ("writing_style_decision", "required", False,
-         {"tool": "ingest_writing_style_sample / skip_writing_style_calibration"},
-         lambda c: "decided" if c["job"] is not None
-                   and writing_style_decision_made(c["job"]) else None,
          False),
         ("task_spec", "required", False,
          {"tool": "prepare_task_spec", "commit_tool": "commit_task_spec"},
@@ -51,6 +46,20 @@ def _prep_specs():
         ("job_created", "required", False,
          {"tool": "create_job_from_artifacts"},
          lambda c: c["job"].id if c["job"] is not None else None,
+         True),
+        # The writing-style decision lives ON the job (a writing_style_content_id
+        # or a writing_style_skip_token), so it can only be evaluated AFTER the
+        # job exists. The create_job_from_artifacts gate already forces an
+        # agent-run-linked job to carry a decision, so this step is normally
+        # satisfied as soon as job_created is done; it stays here as an explicit,
+        # ordered checkpoint (and to force resolution before topics if a job ever
+        # lacks the decision). Placing it before job_created would let the prep
+        # loop point next_required_step at a step that cannot be completed yet.
+        ("writing_style_decision", "required", False,
+         {"tool": "ingest_writing_style_sample / attach_writing_style_to_job / "
+                  "skip_writing_style_calibration"},
+         lambda c: "decided" if c["job"] is not None
+                   and writing_style_decision_made(c["job"]) else None,
          True),
         ("topics", "required", False,
          {"tool": "prepare_topics", "commit_tool": "commit_topics"},
@@ -188,6 +197,17 @@ def build_workflow_progress(run, stores) -> dict:
 
         if tier == "recommended" and not is_done:
             warnings.append(f"recommended step '{step_id}' not done")
+
+    # Surface a skip of voice calibration so it stays visible the whole run.
+    if (
+        job is not None
+        and getattr(job, "writing_style_skip_token", None)
+        and not getattr(job, "writing_style_content_id", None)
+    ):
+        warnings.append(
+            "writing-style calibration was skipped for this job; generated prose "
+            "will not match a user voice (elevated AI-detection risk)"
+        )
 
     return {
         "segment": segment,

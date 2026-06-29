@@ -24,6 +24,24 @@ def test_step_status_is_pending_when_artifact_absent(tmp_path):
     assert by_id["topics"]["blocked_by"]  # blocked by earlier prep steps
 
 
+def test_writing_style_decision_ordered_after_job_created(tmp_path):
+    # writing_style_decision lives ON the job, so it must come AFTER job_created.
+    # If it preceded job_created (non-serial), next_required_step could point at a
+    # step that cannot be completed before the job exists, stalling the prep loop.
+    from essay_writer.agent_tools.stores import AgentStoreBundle
+    stores = AgentStoreBundle.from_data_dir(tmp_path)
+    run = AgentRun(agent_run_id="run-1", objective="x", job_id=None)
+    progress = build_workflow_progress(run, stores)
+    order = [s["step_id"] for s in progress["steps"]]
+    assert order.index("job_created") < order.index("writing_style_decision")
+    # With no job yet, the loop must never select writing_style_decision.
+    assert progress["next_required_step"] == "source_cards"
+    by_id = {s["step_id"]: s for s in progress["steps"]}
+    # It is a serial step gated behind the pending job_created step.
+    assert by_id["writing_style_decision"]["status"] == "blocked"
+    assert "job_created" in by_id["writing_style_decision"]["blocked_by"]
+
+
 def test_draft_present_but_audit_absent_keeps_audit_pending(tmp_path):
     import dataclasses
     from essay_writer.agent_tools.stores import AgentStoreBundle
