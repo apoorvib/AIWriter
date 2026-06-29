@@ -22,13 +22,20 @@
 //      next_required_step until segment !== "prep" or all_required_done.
 //   4. Present candidate topics and stop for the human topic-selection gate.
 //
-// Design note on writing_style_decision:
-//   The ledger marks writing_style_decision "done" only when a job exists AND
-//   has a writing-style decision recorded (content attached OR skip token set).
-//   Because job_created is serial and blocked by writing_style_decision, the
-//   writing_style_decision subagent is expected to ALSO call
-//   create_job_from_artifacts — making both steps done in a single pass.
-//   The job_created step as a standalone next_required_step will rarely appear.
+// Design note on writing_style_decision (FINALIZATION REQUIRED):
+//   The ledger (as of fix a2d400f) orders job_created BEFORE
+//   writing_style_decision, because the decision is recorded ON the job
+//   (content_id or skip_token) and can only be evaluated once the job exists.
+//   The create_job_from_artifacts gate requires an agent-run-linked NEW job to
+//   carry a skip_token at creation (content attaches post-job), so:
+//     - the job_created subagent must pass a writing_style_skip_token (issued via
+//       skip_writing_style_calibration against the chosen job_id), and
+//     - the writing_style_decision subagent then attaches real content
+//       (attach_writing_style_to_job) for the content path, or is already done
+//       for the skip path.
+//   The per-step prompts below still reflect the older "bundle job creation into
+//   writing_style_decision" approach; reconcile them with this ordering when you
+//   confirm the script against the live runtime.
 
 (async () => {
 
