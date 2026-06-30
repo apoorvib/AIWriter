@@ -87,6 +87,63 @@ ESSAY_DATA_DIR=./data python -m essay_writer.agent_tools.server
 
 See `docs/agent-tool-mode-mcp.md` and `.mcp.example.json`.
 
+### Claude Code Dynamic Workflows (`/essay-prep`, `/essay-write`)
+
+In Claude Code you can drive the whole Agent Tool Mode workflow with two saved
+[Dynamic Workflows](https://code.claude.com/docs/en/workflows) in
+`.claude/workflows/` instead of calling the MCP tools by hand. They move the
+step sequence into a script so no required step is skipped, and they are split
+at the mandatory topic-selection gate (a workflow cannot pause for input
+mid-run).
+
+Prerequisites:
+
+- Claude Code v2.1.154+ with Dynamic workflows enabled (toggle in `/config`).
+- The `essaywriter` MCP server configured (copy `.mcp.example.json` to
+  `.mcp.json`) and pointed at your `ESSAY_DATA_DIR`.
+- `mcp__essaywriter__*` pre-allowlisted (already in `.claude/settings.json`) so
+  the background workflow subagents are not blocked by mid-run permission
+  prompts.
+- Source documents on disk. Optionally, one or two short writing samples in your
+  own voice (convention: `inputs/writing_style/`) for anti-AI voice calibration.
+
+**Step 1 — prep (runs to the topic gate).** Invoke `/essay-prep` and describe
+your inputs in the same message, for example:
+
+```text
+/essay-prep — sources: ./inputs/sources/a.pdf, ./inputs/sources/b.pdf;
+writing style: ./inputs/writing_style/sample.md; assignment: <paste the prompt>
+```
+
+Use `writing style: skip` to proceed without voice calibration. The workflow
+ingests the sources, writes a source card for each, commits a task spec, creates
+the job, then **stops and prints the candidate topics**. Note the `agent_run_id`
+and `job_id` it reports — you need them for step 2.
+
+**Step 2 — pick a topic, then write (runs to export).** Choose a topic from the
+list, then invoke `/essay-write` with that choice and the ids from step 1:
+
+```text
+/essay-write — agent_run_id: <id>, job_id: <id>, round 1, topic_id: <id>,
+because <one line on why you picked this topic>
+```
+
+It records your topic selection, then runs research → outline → draft → anti-AI
+audit (in a fresh frontier subagent) → validation (with revision loops) →
+Markdown export.
+
+**Why no step gets skipped.** Both scripts loop on the read-only
+`get_workflow_progress(agent_run_id)` ledger, which derives from persisted state
+which required steps are actually done, and act only on the server's
+`next_required_step` until it reports `all_required_done`. A step whose artifact
+did not really persist stays `pending` and is re-attempted rather than skipped.
+Codex and other MCP harnesses drive the same tools manually (see
+`docs/agent-tool-mode-instructions.md`).
+
+> The workflow scripts are authored against the Dynamic Workflows runtime;
+> confirm the `agent()` call shape for your Claude Code version on first run (see
+> the header comment in each `.claude/workflows/*.js`).
+
 The app supports source uploads for `.pdf`, `.docx`, `.txt`, `.md`,
 `.markdown`, and `.notes` files. Assignment text can be pasted or extracted
 from the same document types.
