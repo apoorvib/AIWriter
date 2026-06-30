@@ -18,24 +18,35 @@
 // Workflow:
 //   1. Start agent run + read harness instructions.
 //   2. Ingest source files (and writing-style samples if provided).
-//   3. Driver loop: call get_workflow_progress, dispatch one subagent per
+//   3. Pre-job prelude (deterministic, ordered, before the ledger loop):
+//      a. Source cards — for each source without a committed card:
+//         prepare_source_card → generate JSON → submit → commit.
+//      b. Writing-style content (content path only):
+//         prepare_writing_style_content → generate JSON → submit → commit; save content_id.
+//      c. Task spec:
+//         prepare_task_spec → generate JSON → submit → commit.
+//      d. Create job:
+//         skip_writing_style_calibration (provisional job_id) → create_job_from_artifacts;
+//         then attach_writing_style_to_job (content path only) to supersede the skip.
+//   4. Driver loop: call get_workflow_progress, dispatch one subagent per
 //      next_required_step until segment !== "prep" or all_required_done.
-//   4. Present candidate topics and stop for the human topic-selection gate.
+//      After the prelude, this loop typically starts at "topics".
+//   5. Present candidate topics and stop for the human topic-selection gate.
 //
-// Design note on writing_style_decision (FINALIZATION REQUIRED):
-//   The ledger (as of fix a2d400f) orders job_created BEFORE
-//   writing_style_decision, because the decision is recorded ON the job
-//   (content_id or skip_token) and can only be evaluated once the job exists.
-//   The create_job_from_artifacts gate requires an agent-run-linked NEW job to
-//   carry a skip_token at creation (content attaches post-job), so:
-//     - the job_created subagent must pass a writing_style_skip_token (issued via
-//       skip_writing_style_calibration against the chosen job_id), and
-//     - the writing_style_decision subagent then attaches real content
-//       (attach_writing_style_to_job) for the content path, or is already done
-//       for the skip path.
-//   The per-step prompts below still reflect the older "bundle job creation into
-//   writing_style_decision" approach; reconcile them with this ordering when you
-//   confirm the script against the live runtime.
+// Design note on writing_style_decision (pre-job prelude approach):
+//   The ledger (as of fix 4496675) always returns next_required_step="job_created" before
+//   a job exists, because source_cards / task_spec / writing_style_decision cannot be
+//   verified server-side until a job is present. These steps are instead driven as a
+//   deterministic prelude enforced by the create_job_from_artifacts gate:
+//     - Every source_id must have a committed source card.
+//     - A task spec must be committed.
+//     - create_job_from_artifacts REQUIRES a writing_style_skip_token at creation time
+//       (writing-style CONTENT can only attach post-job via attach_writing_style_to_job).
+//   Skip path:  skip_writing_style_calibration(provisional_job_id) → create_job_from_artifacts.
+//   Content path: commit writing-style content first; then same skip-token flow;
+//     then attach_writing_style_to_job to supersede the provisional skip with real content.
+//   After the prelude the ledger sees job_created / source_cards / task_spec /
+//   writing_style_decision all satisfied and reports next_required_step="topics".
 
 (async () => {
 
@@ -66,8 +77,7 @@
 
   // -------------------------------------------------------------------------
   // 2. Ingest sources (and writing-style samples if provided).
-  //    Writing-style SKIP is deferred because skip_writing_style_calibration
-  //    requires a job_id, which does not exist yet at this point.
+  //    Writing-style SKIP is handled at job-creation time (prelude step d).
   // -------------------------------------------------------------------------
   const wsIngestPrompt = a.writing_style_paths === "skip"
     ? "No writing-style ingestion needed — the user will skip calibration when the job is created."
@@ -96,9 +106,141 @@ Return JSON { "ok": true, "sources_ingested": <count>, "style_samples_ingested":
   });
 
   // -------------------------------------------------------------------------
-  // 3. Driver loop — one subagent per next_required_step.
+  // 3a. Pre-job prelude — source cards.
+  //     For each ingested source without a committed card:
+  //     prepare_source_card → generate JSON → submit → commit.
   // -------------------------------------------------------------------------
-  const MAX_ITERATIONS = 40;
+  await agent({
+    prompt: `You are executing the SOURCE CARDS prelude step for agent_run_id="${runId}".
+
+1. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to get source_ids and check which already have committed source cards.
+2. For EACH source_id that does NOT already have a committed source card:
+   a. Call mcp__essaywriter__prepare_source_card(source_id=<id>, agent_run_id="${runId}").
+   b. Read the returned system_prompt VERBATIM and use it to generate the JSON result.
+   c. Copy the ATTENTION CHECK token from system_prompt into a "notes" field in your JSON.
+   d. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
+   e. Call mcp__essaywriter__commit_source_card(work_result_id=<id>, agent_run_id="${runId}").
+3. Return ONLY raw JSON: { "ok": true, "cards_committed": <count> }.`,
+    tools: [
+      "mcp__essaywriter__get_agent_run_state",
+      "mcp__essaywriter__prepare_source_card",
+      "mcp__essaywriter__submit_work_result",
+      "mcp__essaywriter__commit_source_card",
+      "mcp__essaywriter__get_work_packet",
+    ],
+  });
+
+  // -------------------------------------------------------------------------
+  // 3b. Pre-job prelude — writing-style content (content path only).
+  //     prepare_writing_style_content → generate JSON → submit → commit.
+  //     Save content_id for use in the create-job step (3d).
+  //     Skip path defers to the skip_writing_style_calibration call in 3d.
+  // -------------------------------------------------------------------------
+  let contentId = null;
+  if (a.writing_style_paths !== "skip" && a.writing_style_paths && a.writing_style_paths.length > 0) {
+    const wsContentRaw = await agent({
+      prompt: `You are executing the WRITING-STYLE CONTENT prelude step for agent_run_id="${runId}".
+
+1. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to get the ingested writing-style sample_ids.
+2. Call mcp__essaywriter__prepare_writing_style_content(sample_ids=[<ids>], agent_run_id="${runId}").
+3. Read the returned system_prompt VERBATIM and use it to generate the JSON result.
+4. Copy the ATTENTION CHECK token from system_prompt into a "notes" field in your JSON.
+5. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
+6. Call mcp__essaywriter__commit_writing_style_content(work_result_id=<id>, agent_run_id="${runId}"). Note the returned content_id.
+Return ONLY raw JSON: { "ok": true, "content_id": "<content_id>" }.`,
+      tools: [
+        "mcp__essaywriter__get_agent_run_state",
+        "mcp__essaywriter__prepare_writing_style_content",
+        "mcp__essaywriter__submit_work_result",
+        "mcp__essaywriter__commit_writing_style_content",
+        "mcp__essaywriter__get_work_packet",
+      ],
+    });
+    contentId = extractJson(wsContentRaw.result).content_id;
+    if (!contentId) throw new Error("commit_writing_style_content did not return content_id");
+  }
+
+  // -------------------------------------------------------------------------
+  // 3c. Pre-job prelude — task spec.
+  //     prepare_task_spec → generate JSON → submit → commit.
+  // -------------------------------------------------------------------------
+  const assignmentHint = a.assignment_text
+    ? `The raw assignment text is:\n---\n${a.assignment_text}\n---\nUse this as the raw_text argument.`
+    : a.assignment_path
+      ? `The assignment file is at: ${a.assignment_path}. Read its content and use it as raw_text.`
+      : `No explicit assignment was provided. Derive the task spec from the ingested source content.`;
+
+  await agent({
+    prompt: `You are executing the TASK SPEC prelude step for agent_run_id="${runId}".
+
+${assignmentHint}
+
+1. Call mcp__essaywriter__prepare_task_spec(raw_text=<assignment_text>, agent_run_id="${runId}").
+2. Read the returned system_prompt VERBATIM and use it to generate the JSON result.
+3. Copy the ATTENTION CHECK token from system_prompt into a "notes" field in your JSON.
+4. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
+5. Call mcp__essaywriter__commit_task_spec(work_result_id=<id>, agent_run_id="${runId}").
+Return ONLY raw JSON: { "ok": true, "task_spec_id": "<task_spec_id>" }.`,
+    tools: [
+      "mcp__essaywriter__prepare_task_spec",
+      "mcp__essaywriter__submit_work_result",
+      "mcp__essaywriter__commit_task_spec",
+      "mcp__essaywriter__get_work_packet",
+    ],
+  });
+
+  // -------------------------------------------------------------------------
+  // 3d. Pre-job prelude — create job.
+  //     create_job_from_artifacts REQUIRES a writing_style_skip_token at creation
+  //     time regardless of path. skip_writing_style_calibration mints the token
+  //     against a provisional job_id that is then passed to create_job_from_artifacts.
+  //
+  //     Skip path:  skip token is final — the skip warning remains on the job.
+  //     Content path: skip token is provisional — attach_writing_style_to_job
+  //       supersedes it with real content (clearing the skip warning).
+  // -------------------------------------------------------------------------
+  const createJobPrompt = contentId
+    ? `You are executing the CREATE JOB prelude step (content path) for agent_run_id="${runId}".
+The writing-style content_id to attach after job creation is: "${contentId}".
+
+1. Choose a deterministic provisional job_id using the current timestamp in milliseconds (e.g. "job-1719700000000"). Do not reuse any IDs you invent — derive the timestamp fresh.
+2. Call mcp__essaywriter__skip_writing_style_calibration(job_id=<provisional_id>, reason="Provisional skip token for content path — will be superseded by attach_writing_style_to_job.", agent_run_id="${runId}"). Save the returned skip_token.
+3. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to get the committed task_spec_id and source_ids from artifact_refs or committed_artifact_refs.
+4. Call mcp__essaywriter__create_job_from_artifacts(job_id=<provisional_id>, task_spec_id=<id>, source_ids=[<ids>], writing_style_skip_token=<token>, agent_run_id="${runId}"). Save the returned job_id.
+5. Call mcp__essaywriter__attach_writing_style_to_job(job_id=<job_id>, content_id="${contentId}", agent_run_id="${runId}") to supersede the provisional skip with real writing-style content.
+Return ONLY raw JSON: { "ok": true, "job_id": "<job_id>" }.`
+    : `You are executing the CREATE JOB prelude step (skip path) for agent_run_id="${runId}".
+
+1. Choose a deterministic provisional job_id using the current timestamp in milliseconds (e.g. "job-1719700000000"). Do not reuse any IDs you invent — derive the timestamp fresh.
+2. Call mcp__essaywriter__skip_writing_style_calibration(job_id=<provisional_id>, reason="User chose to skip writing-style calibration for this prep run.", agent_run_id="${runId}"). Save the returned skip_token.
+3. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to get the committed task_spec_id and source_ids from artifact_refs or committed_artifact_refs.
+4. Call mcp__essaywriter__create_job_from_artifacts(job_id=<provisional_id>, task_spec_id=<id>, source_ids=[<ids>], writing_style_skip_token=<token>, agent_run_id="${runId}"). Save the returned job_id.
+Return ONLY raw JSON: { "ok": true, "job_id": "<job_id>" }.`;
+
+  const createJobTools = [
+    "mcp__essaywriter__skip_writing_style_calibration",
+    "mcp__essaywriter__get_agent_run_state",
+    "mcp__essaywriter__create_job_from_artifacts",
+  ];
+  if (contentId) {
+    createJobTools.push("mcp__essaywriter__attach_writing_style_to_job");
+  }
+
+  const createJobRaw = await agent({
+    prompt: createJobPrompt,
+    tools: createJobTools,
+  });
+
+  const jobId = extractJson(createJobRaw.result).job_id;
+  if (!jobId) throw new Error("create_job_from_artifacts did not return job_id");
+
+  // -------------------------------------------------------------------------
+  // 4. Driver loop — remaining prep steps (typically starts at "topics").
+  //    Source cards, task spec, job_created, and writing_style_decision are all
+  //    satisfied by the prelude above. This loop is a safety net and drives the
+  //    topics step (and any other steps the ledger reports after the prelude).
+  // -------------------------------------------------------------------------
+  const MAX_ITERATIONS = 20;
   let guard = 0;
 
   while (guard++ < MAX_ITERATIONS) {
@@ -115,7 +257,7 @@ Return JSON { "ok": true, "sources_ingested": <count>, "style_samples_ingested":
     const step = progress.next_required_step;
     if (!step) break; // only needs_human or permanently blocked steps remain
 
-    await runPrepStep(runId, step, a);
+    await runPrepStep(runId, jobId, step);
   }
 
   if (guard > MAX_ITERATIONS) {
@@ -127,17 +269,15 @@ Return JSON { "ok": true, "sources_ingested": <count>, "style_samples_ingested":
   }
 
   // -------------------------------------------------------------------------
-  // 4. Present candidate topics and stop for the human gate.
+  // 5. Present candidate topics and stop for the human gate.
   // -------------------------------------------------------------------------
   const summary = await agent({
-    prompt: `Using agent_run_id="${runId}":
-1. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to obtain job_id.
-2. Call mcp__essaywriter__get_job_summary(job_id=<job_id>).
-3. List all candidate topics in a clear numbered format with each topic_id.
+    prompt: `Using job_id="${jobId}":
+1. Call mcp__essaywriter__get_job_summary(job_id="${jobId}").
+2. List all candidate topics in a clear numbered format with each topic_id.
    The user must pick one to continue to essay writing.
 Return the formatted topic list as readable text.`,
     tools: [
-      "mcp__essaywriter__get_agent_run_state",
       "mcp__essaywriter__get_job_summary",
     ],
   });
@@ -150,35 +290,13 @@ Return the formatted topic list as readable text.`,
 
 
   // -------------------------------------------------------------------------
-  // Step dispatcher — one subagent per workflow step.
+  // Remaining step dispatcher — handles topics and any other post-prelude steps.
+  // Source cards, task spec, job_created, and writing_style_decision are fully
+  // handled by the deterministic prelude above and will not appear here.
   // -------------------------------------------------------------------------
-  async function runPrepStep(runId, step, a) {
-    // Writing-style context for the writing_style_decision subagent.
-    // NOTE: The writing_style_decision step also creates the job because the
-    // ledger only marks writing_style_decision "done" once the job exists with
-    // a decision recorded. This means job_created and writing_style_decision
-    // are both satisfied in one subagent pass.
-    const wsDecisionInstructions = a.writing_style_paths === "skip"
-      ? `The user elected to SKIP writing-style calibration.
-  a) Choose a deterministic provisional job_id (e.g. "job-prep-" + a short uuid or timestamp).
-  b) Call mcp__essaywriter__skip_writing_style_calibration(job_id=<provisional_id>, reason="User chose to skip writing-style calibration for this prep run.", agent_run_id="${runId}") and save the returned skip_token.
-  c) Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to get committed task_spec_id and source_ids from artifact_refs/committed_artifact_refs.
-  d) Call mcp__essaywriter__create_job_from_artifacts(task_spec_id=<id>, source_ids=[<ids>], job_id=<provisional_id>, writing_style_skip_token=<token>, agent_run_id="${runId}").`
-      : `Writing-style samples were ingested in the setup step.
-  a) Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to get ingested sample_ids and committed task_spec_id/source_ids.
-  b) Call mcp__essaywriter__prepare_writing_style_content(sample_ids=[<ids>], agent_run_id="${runId}"). Using the returned system_prompt VERBATIM, generate JSON matching response_schema (copy ATTENTION CHECK token into a "notes" field). Call mcp__essaywriter__submit_work_result, then mcp__essaywriter__commit_writing_style_content. Save the returned content_id.
-  c) Call mcp__essaywriter__create_job_from_artifacts(task_spec_id=<id>, source_ids=[<ids>], agent_run_id="${runId}"). Save the returned job_id.
-  d) Call mcp__essaywriter__attach_writing_style_to_job(job_id=<job_id>, content_id=<content_id>, agent_run_id="${runId}").`;
-
-    // Assignment hint for the task_spec subagent.
-    const assignmentHint = a.assignment_text
-      ? `The raw assignment text is:\n---\n${a.assignment_text}\n---\nUse this as the raw_text argument.`
-      : a.assignment_path
-        ? `The assignment file is at: ${a.assignment_path}. Read its content and use it as raw_text.`
-        : `No explicit assignment was provided. Derive the task spec from the ingested source content.`;
-
+  async function runPrepStep(runId, jobId, step) {
     return agent({
-      prompt: `You are executing ONE workflow step: "${step}" for agent_run_id="${runId}".
+      prompt: `You are executing ONE workflow step: "${step}" for agent_run_id="${runId}" and job_id="${jobId}".
 
 General rules:
 - For every prepare_* call, read the returned system_prompt VERBATIM and use it when generating the JSON result.
@@ -186,44 +304,11 @@ General rules:
 - After generating the result, call mcp__essaywriter__submit_work_result, then the named commit_* tool.
 - Never invent IDs — read all IDs from tool responses.
 
-=== source_cards ===
-1. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to list source_ids and check which already have committed source cards.
-2. For EACH source without a committed card:
-   a. Call mcp__essaywriter__prepare_source_card(source_id=<id>, agent_run_id="${runId}").
-   b. Generate JSON matching response_schema using the packet's system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-   c. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-   d. Call mcp__essaywriter__commit_source_card(work_result_id=<id>, agent_run_id="${runId}").
-3. Return { "ok": true, "step_id": "source_cards" }.
-
-=== writing_style_decision ===
-This step ALSO creates the job (both writing_style_decision and job_created become done after this step).
-${wsDecisionInstructions}
-Return { "ok": true, "step_id": "writing_style_decision", "job_id": "<job_id>" }.
-
-=== task_spec ===
-${assignmentHint}
-1. Call mcp__essaywriter__prepare_task_spec(raw_text=<assignment_text>, agent_run_id="${runId}").
+=== topics ===
+1. Call mcp__essaywriter__prepare_topics(job_id="${jobId}", agent_run_id="${runId}").
 2. Generate JSON using the returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
 3. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-4. Call mcp__essaywriter__commit_task_spec(work_result_id=<id>, agent_run_id="${runId}").
-Return { "ok": true, "step_id": "task_spec", "task_spec_id": "<id>" }.
-
-=== job_created ===
-The job is typically already created during the writing_style_decision step.
-1. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to check job_id.
-2. If job_id is already present: return { "ok": true, "step_id": "job_created", "already_created": true }.
-3. If not: call mcp__essaywriter__create_job_from_artifacts using committed task_spec_id and source_ids.
-   ${a.writing_style_paths === "skip"
-       ? "Pass writing_style_skip_token from skip_writing_style_calibration if available."
-       : "Then call mcp__essaywriter__attach_writing_style_to_job if writing-style content_id is available."}
-Return { "ok": true, "step_id": "job_created", "job_id": "<id>" }.
-
-=== topics ===
-1. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to get job_id.
-2. Call mcp__essaywriter__prepare_topics(job_id=<job_id>, agent_run_id="${runId}").
-3. Generate JSON using the returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-4. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-5. Call mcp__essaywriter__commit_topics(work_result_id=<id>, agent_run_id="${runId}").
+4. Call mcp__essaywriter__commit_topics(work_result_id=<id>, agent_run_id="${runId}").
 Return { "ok": true, "step_id": "topics" }.
 
 === (any other step) ===
@@ -232,15 +317,6 @@ Return { "ok": true, "step_id": "${step}" }.`,
       tools: [
         "mcp__essaywriter__get_agent_run_state",
         "mcp__essaywriter__get_work_packet",
-        "mcp__essaywriter__prepare_source_card",
-        "mcp__essaywriter__commit_source_card",
-        "mcp__essaywriter__prepare_writing_style_content",
-        "mcp__essaywriter__commit_writing_style_content",
-        "mcp__essaywriter__attach_writing_style_to_job",
-        "mcp__essaywriter__skip_writing_style_calibration",
-        "mcp__essaywriter__prepare_task_spec",
-        "mcp__essaywriter__commit_task_spec",
-        "mcp__essaywriter__create_job_from_artifacts",
         "mcp__essaywriter__prepare_topics",
         "mcp__essaywriter__commit_topics",
         "mcp__essaywriter__submit_work_result",
