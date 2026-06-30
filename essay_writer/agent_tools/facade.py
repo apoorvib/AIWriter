@@ -474,12 +474,16 @@ class AgentToolFacade:
                 message=f"WorkPacket not found: {work_packet_id}",
                 exc=exc,
             )
-        if agent_run_id is not None:
-            _, _gate_error = self._load_run_and_gate(
-                "dispatch_subagent", agent_run_id
-            )
-            if _gate_error is not None:
-                return _gate_error
+        # Call the gate unconditionally: dispatch_subagent is in
+        # _RUN_REQUIRED_TOOLS, so when agent_run_id is None and
+        # require_agent_run is on, _load_run_and_gate is what emits the
+        # agent_run_required error. Guarding this behind "is not None" silently
+        # skipped that enforcement (bug_006).
+        _, _gate_error = self._load_run_and_gate(
+            "dispatch_subagent", agent_run_id
+        )
+        if _gate_error is not None:
+            return _gate_error
         if not role or not role.strip():
             return _error_result_with_next(
                 "dispatch_subagent",
@@ -5769,7 +5773,11 @@ class AgentToolFacade:
                 artifact_refs=artifact_refs,
             )
 
-        next_tools = ["prepare_validation"]
+        # A revision produces a NEW draft whose anti_ai_self_check is reset, so
+        # the require_anti_ai_audit gate refuses prepare_validation until the
+        # revised draft is re-audited. Route to the audit first, mirroring
+        # commit_style_revision and save_user_edit (bug_014).
+        next_tools = ["prepare_anti_ai_audit", "prepare_validation"]
         if agent_run_id is not None:
             self.run_store.attach_work_result(
                 agent_run_id,
@@ -5784,7 +5792,7 @@ class AgentToolFacade:
             )
             self.run_store.checkpoint(
                 agent_run_id,
-                current_phase="validation",
+                current_phase="anti_ai_audit",
                 decision="revision_committed",
                 next_suggested_tools=next_tools,
             )
@@ -7985,11 +7993,19 @@ def _validate_anti_ai_audit_binding(
     expected_skill_file = str(manifest["path"])
     expected_skill_hash = str(manifest["sha256"])
     expected_draft_hash = draft_sha256(str(getattr(source_draft, "content")))
-    if str(audit.get("skill_file", "")) != expected_skill_file:
+    # Compare only the basename. The audit's skill_file is an absolute,
+    # environment-specific path, so full-path equality rejects an audit
+    # re-validated on a different machine / OS / checkout root even when the
+    # skill bytes are byte-identical (bug_007). The skill_sha256 check below is
+    # the authoritative content-integrity gate; the basename check only rejects
+    # an audit that pointed at a differently-named file.
+    if os.path.basename(str(audit.get("skill_file", ""))) != os.path.basename(
+        expected_skill_file
+    ):
         return _error_result(
             tool_name,
             code="anti_ai_skill_file_mismatch",
-            message="anti-AI audit skill file path does not match the current repo skill file",
+            message="anti-AI audit skill file name does not match the current repo skill file",
             exc=ValueError("skill_file"),
         )
     if str(audit.get("skill_sha256", "")) != expected_skill_hash:

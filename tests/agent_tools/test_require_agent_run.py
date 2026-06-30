@@ -94,6 +94,38 @@ def test_required_tool_set_excludes_bootstrap_and_readonly() -> None:
         assert tool not in _RUN_REQUIRED_TOOLS
 
 
+def test_dispatch_subagent_without_run_is_rejected() -> None:
+    # bug_006: dispatch_subagent is in _RUN_REQUIRED_TOOLS but used to wrap its
+    # gate in `if agent_run_id is not None`, silently skipping the requirement.
+    from essay_writer.agent_tools.schemas import DelegationHint, WorkPacket
+
+    with LocalAgentTempDir() as tmp:
+        facade = _enforced(tmp)
+        packet = WorkPacket(
+            work_packet_id="wp-1",
+            stage="anti_ai_audit",
+            scope="job:job1",
+            instructions="x",
+            system_prompt="x",
+            prompt_blocks=[],
+            response_schema={},
+            context={},
+            artifact_refs={"job_id": "job1"},
+            commit_tool="commit_anti_ai_audit",
+            delegation=DelegationHint(recommended=True),
+            delegation_required=True,
+        )
+        facade.work_store.save_packet(packet)
+        result = facade.dispatch_subagent(
+            work_packet_id="wp-1",
+            role="anti_ai_auditor",
+            model_tier="opus",
+        )
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "agent_run_required"
+
+
 def test_disabled_flag_allows_runless_calls() -> None:
     """With the flag off (conftest default), runless stateful calls are
     allowed for backward compatibility."""

@@ -91,11 +91,17 @@ def _write_specs():
          {"tool": "prepare_draft", "commit_tool": "commit_draft"},
          lambda c: c["job"].draft_id if c["job"] is not None else None,
          True),
+        # Scan the whole draft history, not just the latest draft: a later
+        # required step (anti_ai_audit / revision / user edit) writes a new
+        # draft version with a different origin, which would otherwise flip this
+        # step back to pending and emit a false "not done" warning for the rest
+        # of the run (bug_005). Once a style_revision draft exists, it stays done.
         ("style_revision", "recommended", False,
          {"tool": "prepare_style_revision", "commit_tool": "commit_style_revision"},
-         lambda c: "revised" if c["draft"] is not None
-                   and getattr(c["draft"], "origin", "") in
-                   {"style_revision"} else None,
+         lambda c: "revised" if c["job"] is not None and any(
+             getattr(d, "origin", "") == "style_revision"
+             for d in c["stores"].draft_store.list_versions(c["job"].id)
+         ) else None,
          True),
         ("anti_ai_audit", "required", False,
          {"tool": "prepare_anti_ai_audit", "role": "anti_ai_auditor",
@@ -148,6 +154,7 @@ def build_workflow_progress(run, stores) -> dict:
     ctx = {
         "job": job,
         "draft": draft,
+        "stores": stores,
         "validation_store": stores.validation_store,
         "task_spec_id": getattr(job, "task_spec_id", None) if job else None,
         "source_cards_done": _source_cards_done(stores, job),

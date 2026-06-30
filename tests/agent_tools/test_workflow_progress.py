@@ -78,3 +78,35 @@ def test_draft_present_but_audit_absent_keeps_audit_pending(tmp_path):
     assert by_id["anti_ai_audit"]["status"] == "pending"
     assert progress["next_required_step"] == "anti_ai_audit"
     assert progress["all_required_done"] is False
+
+
+def test_style_revision_stays_done_after_later_draft_version(tmp_path):
+    # A style_revision draft committed earlier must keep style_revision "done"
+    # even after a later step writes a new draft version with a different origin
+    # (e.g. the anti-AI audit -> system_revision). Otherwise the ledger emits a
+    # false "recommended step 'style_revision' not done" warning (bug_005).
+    import dataclasses
+    from essay_writer.agent_tools.stores import AgentStoreBundle
+    from essay_writer.drafting.schema import EssayDraft
+
+    stores = AgentStoreBundle.from_data_dir(tmp_path)
+    job = stores.workflow.create_job(task_spec_id="ts-1", source_ids=["src-1"])
+    stores.draft_store.save(EssayDraft(
+        id="draft-1", job_id=job.id, version=1,
+        selected_topic_id="topic-1", content="A.\n\nB.", origin="style_revision",
+    ))
+    # A later version with a non-style_revision origin (as commit_anti_ai_audit
+    # produces) becomes the latest draft.
+    stores.draft_store.save(EssayDraft(
+        id="draft-2", job_id=job.id, version=2,
+        selected_topic_id="topic-1", content="A.\n\nB.", origin="system_revision",
+    ))
+    stores.job_store.save(dataclasses.replace(
+        job, selected_topic_id="topic-1", draft_id="draft-2",
+    ))
+
+    run = AgentRun(agent_run_id="run-1", objective="x", job_id=job.id)
+    progress = build_workflow_progress(run, stores)
+    by_id = {s["step_id"]: s for s in progress["steps"]}
+    assert by_id["style_revision"]["status"] == "done"
+    assert not any("style_revision" in w for w in progress["warnings"])
