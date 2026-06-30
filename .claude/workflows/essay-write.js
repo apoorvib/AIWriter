@@ -1,294 +1,177 @@
-// /essay-write — drives Agent Tool Mode write segment to export.
-//
-// IMPORTANT: agent() call shape follows the plan skeleton; confirm against
-// the installed Claude Code Dynamic Workflows runtime before first real run.
-//
-// The top-level async IIFE is required for `node --check` compatibility.
-// The Claude Code Dynamic Workflows runtime evaluates this script in an async
-// context with `args` and `agent` injected into scope; the IIFE wrapper can
-// be removed if the runtime already provides a top-level async scope.
-//
+export const meta = {
+  name: 'essay-write',
+  description:
+    'EssayWriter Agent Tool Mode write segment: record the chosen topic, then research, outline, draft, anti-AI audit, validation (with revision loops), and Markdown export.',
+  whenToUse:
+    'Run after /essay-prep, once you have chosen a topic from the candidate list it printed.',
+  phases: [
+    { title: 'Recover', detail: 'recover run + read harness instructions' },
+    { title: 'Select topic', detail: 'commit the human topic choice' },
+    { title: 'Write', detail: 'ledger-driven research -> draft -> audit -> validation -> export' },
+  ],
+}
+
 // args: {
-//   agent_run_id: string,              // from /essay-prep run
-//   job_id: string,                    // from /essay-prep run
-//   round_number: number,              // topic round number (usually 1)
-//   topic_id: string,                  // the topic the user selected
-//   user_selection_evidence: string,   // user's reasoning or confirmation text
+//   agent_run_id: string,             // printed by /essay-prep
+//   job_id: string,                   // printed by /essay-prep
+//   round_number?: number,            // topic round (default 1)
+//   topic_id: string,                 // the topic you chose
+//   user_selection_evidence?: string, // one line on why (required by the server)
 // }
-//
-// Workflow:
-//   1. Recover agent run + read harness instructions.
-//   2. Commit the user's topic choice via select_topic.
-//   3. Driver loop: call get_workflow_progress, dispatch one subagent per
-//      next_required_step until all_required_done.
-//      - Anti-AI audit step uses a two-call frontier dispatch (setup + opus auditor).
-//      - Targeted verifiers (Approach C) run after audit and validation steps.
-//   4. Return export-ready confirmation.
+const a = args || {}
+const runId = a.agent_run_id
+const jobId = a.job_id
+if (!runId) throw new Error('args.agent_run_id is required (from /essay-prep)')
+if (!jobId) throw new Error('args.job_id is required (from /essay-prep)')
+if (!a.topic_id) throw new Error('args.topic_id is required (choose one from the prep topic list)')
+const roundNumber = a.round_number || 1
+const evidence = a.user_selection_evidence || 'User selected this topic from the prep candidate list.'
 
-(async () => {
+const PROGRESS_SCHEMA = {
+  type: 'object',
+  properties: {
+    all_required_done: { type: 'boolean' },
+    next_required_step: { type: ['string', 'null'] },
+  },
+  required: ['all_required_done', 'next_required_step'],
+  additionalProperties: true,
+}
+const AUDIT_DISPATCH_SCHEMA = {
+  type: 'object',
+  properties: {
+    work_packet_id: { type: 'string' },
+    subagent_token: { type: 'string' },
+  },
+  required: ['work_packet_id', 'subagent_token'],
+  additionalProperties: false,
+}
+const AUDIT_RESULT_SCHEMA = {
+  type: 'object',
+  properties: { audit_pass: { type: 'boolean' } },
+  required: ['audit_pass'],
+  additionalProperties: true,
+}
 
-  const a = args || {};
-  const runId = a.agent_run_id;
-  const jobId = a.job_id;
+phase('Recover')
+await agent(
+  `Call mcp__essaywriter__recover_agent_run(agent_run_id="${runId}") then ` +
+    `mcp__essaywriter__get_harness_instructions(agent_run_id="${runId}"). Confirm you are oriented.`,
+  { label: 'recover', phase: 'Recover' },
+)
 
-  if (!runId) throw new Error("args.agent_run_id is required");
-  if (!jobId) throw new Error("args.job_id is required");
-  if (!a.topic_id) throw new Error("args.topic_id is required");
+phase('Select topic')
+await agent(
+  `Commit the user's topic choice (the human gate that split prep from write). Call ` +
+    `mcp__essaywriter__select_topic(job_id="${jobId}", round_number=${roundNumber}, ` +
+    `topic_id="${a.topic_id}", user_selection_evidence=${JSON.stringify(evidence)}, ` +
+    `agent_run_id="${runId}").`,
+  { label: 'select-topic', phase: 'Select topic' },
+)
 
-  // Robustly extract a JSON object from an agent result string.
-  function extractJson(raw) {
-    if (!raw) throw new Error("Empty agent result");
-    try { return JSON.parse(raw); } catch (_) {}
-    const m = raw.match(/\{[\s\S]*\}/);
-    if (!m) throw new Error("No JSON object found in agent result: " + raw);
-    return JSON.parse(m[0]);
+phase('Write')
+let lastStep = null
+for (let i = 0; i < 60; i++) {
+  const progress = await agent(
+    `Call mcp__essaywriter__get_workflow_progress(agent_run_id="${runId}") and return ` +
+      `all_required_done and next_required_step from its data.`,
+    { schema: PROGRESS_SCHEMA, label: `progress-${i}`, phase: 'Write' },
+  )
+  if (!progress || progress.all_required_done) break
+  const step = progress.next_required_step
+  if (!step) break
+
+  // If validation is the next step again right after we ran it, the latest
+  // validation did not pass -> run a corrective revision (which resets the
+  // draft's audit, so the loop will re-audit then re-validate).
+  if (step === 'validation' && lastStep === 'validation') {
+    await runRevisionStep('validation did not pass; revise against the failing diagnostics')
+    lastStep = 'revision'
+    continue
   }
 
-  // -------------------------------------------------------------------------
-  // 1. Recover the run and read harness instructions.
-  // -------------------------------------------------------------------------
-  await agent({
-    prompt: `Call mcp__essaywriter__recover_agent_run(agent_run_id="${runId}") then call mcp__essaywriter__get_harness_instructions(agent_run_id="${runId}"). Return ONLY raw JSON (no markdown, no extra text): { "ok": true }.`,
-    tools: [
-      "mcp__essaywriter__recover_agent_run",
-      "mcp__essaywriter__get_harness_instructions",
-    ],
-  });
-
-  // -------------------------------------------------------------------------
-  // 2. Commit the human topic choice (the gate that forced segmentation).
-  // -------------------------------------------------------------------------
-  await agent({
-    prompt: `Call mcp__essaywriter__select_topic(job_id="${jobId}", round_number=${a.round_number || 1}, topic_id="${a.topic_id}", user_selection_evidence=${JSON.stringify(a.user_selection_evidence || "")}, agent_run_id="${runId}"). Return ONLY raw JSON: { "ok": true }.`,
-    tools: ["mcp__essaywriter__select_topic"],
-  });
-
-  // -------------------------------------------------------------------------
-  // 3. Driver loop — one subagent per next_required_step.
-  // -------------------------------------------------------------------------
-  const MAX_ITERATIONS = 60;
-  let guard = 0;
-
-  while (guard++ < MAX_ITERATIONS) {
-    const progressRaw = await agent({
-      prompt: `Call mcp__essaywriter__get_workflow_progress(agent_run_id="${runId}") and return the tool result JSON verbatim, with no additional text or markdown wrapping.`,
-      tools: ["mcp__essaywriter__get_workflow_progress"],
-    });
-
-    const progress = extractJson(progressRaw.result);
-
-    if (progress.all_required_done) break;
-
-    const step = progress.next_required_step;
-    if (!step) break; // only needs_human or permanently blocked steps remain
-
-    if (step === "anti_ai_audit") {
-      // Two-call frontier dispatch: setup mints the token, then the opus auditor consumes it.
-      await runAuditStep(runId, jobId);
-      // Targeted verifier: confirm anti_ai_self_check populated, revise if needed.
-      await verifyAuditOrRevise(runId, jobId);
-    } else {
-      await runWriteStep(runId, step);
-      // Targeted verifier: confirm validation passed, revise + re-validate if needed.
-      if (step === "validation") {
-        await verifyValidationOrRevise(runId, jobId);
-      }
+  if (step === 'anti_ai_audit') {
+    const auditPass = await runAuditStep()
+    lastStep = 'anti_ai_audit'
+    if (auditPass === false) {
+      await runRevisionStep('the anti-AI audit did not pass; apply its revision_targets', 'anti_ai')
+      lastStep = 'revision'
     }
+    continue
   }
 
-  if (guard > MAX_ITERATIONS) {
-    return (
-      `WARNING: driver loop hit the ${MAX_ITERATIONS}-iteration guard without ` +
-      `completing all write steps. Inspect agent_run_id=${runId} via ` +
-      `mcp__essaywriter__get_workflow_progress to diagnose.`
-    );
-  }
+  await runWriteStep(step)
+  lastStep = step
+}
 
-  return `Write segment complete for agent_run_id=${runId}. Export ready. Review the exported essay, then optionally run cleanup.`;
+return (
+  `Write segment complete for agent_run_id=${runId}, job_id=${jobId}. ` +
+  `The validated essay was exported to Markdown. Review it (mcp__essaywriter__get_draft / ` +
+  `the export under your data dir), then optionally run cleanup.`
+)
 
+async function runWriteStep(step) {
+  return agent(
+    `Execute exactly ONE EssayWriter write-segment step "${step}" for agent_run_id="${runId}", ` +
+      `job_id="${jobId}".\n` +
+      `Rules for any prepare_*/commit_* stage: call the step's prepare_* tool; read the returned ` +
+      `system_prompt VERBATIM and use it to generate JSON matching its response_schema; copy the ` +
+      `ATTENTION CHECK token from the system_prompt into a "notes" field (submit_work_result rejects ` +
+      `payloads without it); call mcp__essaywriter__submit_work_result; then call the named commit_* ` +
+      `tool. Never invent ids — read every id from a tool response.\n` +
+      `Step map:\n` +
+      `- research_plan: call mcp__essaywriter__create_research_plan(job_id="${jobId}", agent_run_id="${runId}") ` +
+      `then mcp__essaywriter__resolve_source_requests(job_id="${jobId}", agent_run_id="${runId}").\n` +
+      `- research_notes: prepare_research_notes -> submit -> commit_research_notes.\n` +
+      `- outline: prepare_outline -> submit -> commit_outline.\n` +
+      `- draft: prepare_draft -> submit -> commit_draft.\n` +
+      `- style_revision: prepare_style_revision (if it returns a windowed plan, call ` +
+      `prepare_style_revision_window for each window) -> submit -> commit_style_revision.\n` +
+      `- validation: prepare_validation -> submit -> commit_validation.\n` +
+      `- export: call mcp__essaywriter__export_markdown(job_id="${jobId}", agent_run_id="${runId}").\n` +
+      `Use the matching mcp__essaywriter__ tools. Report what you committed.`,
+    { label: `step:${step}`, phase: 'Write' },
+  )
+}
 
-  // -------------------------------------------------------------------------
-  // General write step dispatcher — prepare → submit → commit.
-  // -------------------------------------------------------------------------
-  async function runWriteStep(runId, step) {
-    return agent({
-      prompt: `You are executing ONE workflow step: "${step}" for agent_run_id="${runId}" and job_id="${jobId}".
+// The anti-AI audit packet is delegation_required + frontier-tier: prepare it,
+// mint a one-use dispatch token, then run a fresh Opus auditor that consumes it.
+async function runAuditStep() {
+  const setup = await agent(
+    `For job_id="${jobId}", agent_run_id="${runId}": call ` +
+      `mcp__essaywriter__prepare_anti_ai_audit(job_id="${jobId}", agent_run_id="${runId}") and note its ` +
+      `work_packet_id. Then call mcp__essaywriter__dispatch_subagent(work_packet_id=<that id>, ` +
+      `role="anti_ai_auditor", model_tier="opus", agent_run_id="${runId}"). Return the work_packet_id ` +
+      `and the subagent_token.`,
+    { schema: AUDIT_DISPATCH_SCHEMA, label: 'audit-dispatch', phase: 'Write' },
+  )
+  if (!setup) return null
+  const result = await agent(
+    `You are a clean-context anti-AI auditor. Call ` +
+      `mcp__essaywriter__get_work_packet(work_packet_id="${setup.work_packet_id}") and read its ` +
+      `system_prompt VERBATIM — it contains ONLY the anti-AI writing skill. Produce the audit JSON ` +
+      `matching the packet's response_schema: fill every required field, include one line_audit row ` +
+      `per skill line, copy the skill and draft hashes from the packet, and copy the ATTENTION CHECK ` +
+      `token into a "notes"/self_check_notes field. Call ` +
+      `mcp__essaywriter__submit_work_result(work_packet_id="${setup.work_packet_id}", payload=<audit>, ` +
+      `producer={ "type": "subagent", "role": "anti_ai_auditor", "subagent_token": "${setup.subagent_token}" }, ` +
+      `agent_run_id="${runId}"); then call ` +
+      `mcp__essaywriter__commit_anti_ai_audit(work_result_id=<id>, agent_run_id="${runId}"). ` +
+      `Return audit_pass (true if the committed audit passed).`,
+    { schema: AUDIT_RESULT_SCHEMA, model: 'opus', label: 'audit', phase: 'Write' },
+  )
+  return result ? result.audit_pass : null
+}
 
-General rules:
-- For every prepare_* call, read the returned system_prompt VERBATIM and use it when generating the JSON result.
-- Copy the ATTENTION CHECK token from system_prompt into a "notes" field in your output JSON. mcp__essaywriter__submit_work_result rejects payloads missing this token.
-- After generating the result, call mcp__essaywriter__submit_work_result, then the named commit_* tool.
-- Never invent IDs — read all IDs from tool responses.
-
-=== research_plan ===
-1. Call mcp__essaywriter__create_research_plan(job_id="${jobId}", agent_run_id="${runId}").
-2. Call mcp__essaywriter__resolve_source_requests(job_id="${jobId}", agent_run_id="${runId}") to resolve any source fetch requests.
-Return { "ok": true, "step_id": "research_plan" }.
-
-=== research_notes ===
-1. Call mcp__essaywriter__prepare_research_notes(job_id="${jobId}", agent_run_id="${runId}").
-2. Generate JSON using the returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-3. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-4. Call mcp__essaywriter__commit_research_notes(work_result_id=<id>, agent_run_id="${runId}").
-Return { "ok": true, "step_id": "research_notes" }.
-
-=== outline ===
-1. Call mcp__essaywriter__prepare_outline(job_id="${jobId}", agent_run_id="${runId}").
-2. Generate JSON using the returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-3. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-4. Call mcp__essaywriter__commit_outline(work_result_id=<id>, agent_run_id="${runId}").
-Return { "ok": true, "step_id": "outline" }.
-
-=== draft ===
-1. Call mcp__essaywriter__prepare_draft(job_id="${jobId}", agent_run_id="${runId}").
-2. Generate JSON using the returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-3. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-4. Call mcp__essaywriter__commit_draft(work_result_id=<id>, agent_run_id="${runId}").
-Return { "ok": true, "step_id": "draft" }.
-
-=== style_revision ===
-1. Call mcp__essaywriter__prepare_style_revision(job_id="${jobId}", agent_run_id="${runId}").
-   If the server returns a window-based packet, also call mcp__essaywriter__prepare_style_revision_window as directed.
-2. Generate JSON using the returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-3. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-4. Call mcp__essaywriter__commit_style_revision(work_result_id=<id>, agent_run_id="${runId}").
-Return { "ok": true, "step_id": "style_revision" }.
-
-=== validation ===
-1. Call mcp__essaywriter__prepare_validation(job_id="${jobId}", agent_run_id="${runId}").
-2. Generate JSON using the returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-3. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-4. Call mcp__essaywriter__commit_validation(work_result_id=<id>, agent_run_id="${runId}").
-Return { "ok": true, "step_id": "validation" }.
-
-=== export ===
-1. Call mcp__essaywriter__export_markdown(job_id="${jobId}", agent_run_id="${runId}").
-Return { "ok": true, "step_id": "export" }.
-
-=== (any other step) ===
-Call the step's prepare_* tool, generate JSON using system_prompt VERBATIM (ATTENTION CHECK token → "notes"), call mcp__essaywriter__submit_work_result, then the commit_* tool.
-Return { "ok": true, "step_id": "${step}" }.`,
-      tools: [
-        "mcp__essaywriter__create_research_plan",
-        "mcp__essaywriter__resolve_source_requests",
-        "mcp__essaywriter__prepare_research_notes",
-        "mcp__essaywriter__commit_research_notes",
-        "mcp__essaywriter__prepare_outline",
-        "mcp__essaywriter__commit_outline",
-        "mcp__essaywriter__prepare_draft",
-        "mcp__essaywriter__commit_draft",
-        "mcp__essaywriter__prepare_style_revision",
-        "mcp__essaywriter__prepare_style_revision_window",
-        "mcp__essaywriter__commit_style_revision",
-        "mcp__essaywriter__prepare_validation",
-        "mcp__essaywriter__commit_validation",
-        "mcp__essaywriter__export_markdown",
-        "mcp__essaywriter__submit_work_result",
-        "mcp__essaywriter__get_work_packet",
-      ],
-    });
-  }
-
-  // -------------------------------------------------------------------------
-  // Anti-AI audit — delegation_required + frontier.
-  // Two calls: setup mints the dispatch token; a fresh opus auditor consumes it.
-  // -------------------------------------------------------------------------
-  async function runAuditStep(runId, jobId) {
-    const setupRaw = await agent({
-      prompt: `Call mcp__essaywriter__prepare_anti_ai_audit(job_id="${jobId}", agent_run_id="${runId}"). Save the returned work_packet_id. Then call mcp__essaywriter__dispatch_subagent(work_packet_id=<that packet id>, role="anti_ai_auditor", model_tier="opus", agent_run_id="${runId}"). Return ONLY raw JSON (no markdown): { "work_packet_id": "<id>", "subagent_token": "<token>" }.`,
-      tools: [
-        "mcp__essaywriter__prepare_anti_ai_audit",
-        "mcp__essaywriter__dispatch_subagent",
-      ],
-    });
-
-    const setup = extractJson(setupRaw.result);
-
-    await agent({
-      model: "opus",
-      prompt: `You are a clean-context anti-AI auditor operating with a pre-minted dispatch token.
-
-1. Call mcp__essaywriter__get_work_packet(work_packet_id="${setup.work_packet_id}") to fetch your packet. Read the system_prompt VERBATIM — it contains the full anti-AI detection skill instructions.
-2. Apply ONLY the anti-AI detection skill described in the system_prompt. Produce the audit JSON that matches the response_schema in the packet (every line_audit row populated, copy the ATTENTION CHECK token into a "notes" field).
-3. Call mcp__essaywriter__submit_work_result(work_packet_id="${setup.work_packet_id}", payload=<audit json>, producer={ "type": "subagent", "role": "anti_ai_auditor", "subagent_token": "${setup.subagent_token}" }, agent_run_id="${runId}"). Save the returned work_result_id.
-4. Call mcp__essaywriter__commit_anti_ai_audit(work_result_id=<id>, agent_run_id="${runId}").
-Return ONLY raw JSON: { "ok": true, "audit_pass": <true|false> }.`,
-      tools: [
-        "mcp__essaywriter__get_work_packet",
-        "mcp__essaywriter__submit_work_result",
-        "mcp__essaywriter__commit_anti_ai_audit",
-      ],
-    });
-  }
-
-  // -------------------------------------------------------------------------
-  // Verifier: confirm anti_ai_self_check is populated; revise if needed.
-  // -------------------------------------------------------------------------
-  async function verifyAuditOrRevise(runId, jobId) {
-    const vRaw = await agent({
-      prompt: `Read-only verifier. Call mcp__essaywriter__get_draft(job_id="${jobId}"). Inspect the returned draft object for the anti_ai_self_check field — confirm it is populated (non-null, non-empty) and report its final_decision. Return ONLY raw JSON: { "audit_pass": <true|false>, "revision_targets": ["<target1>", ...] }. Set audit_pass to false and populate revision_targets if anti_ai_self_check is missing or indicates issues requiring revision.`,
-      tools: ["mcp__essaywriter__get_draft"],
-    });
-
-    const v = extractJson(vRaw.result);
-
-    if (v.audit_pass === false && (v.revision_targets || []).length > 0) {
-      await agent({
-        prompt: `An anti-AI revision is required. Flagged targets: ${JSON.stringify((v.revision_targets || []).join("; "))}.
-
-1. Call mcp__essaywriter__prepare_revision(job_id="${jobId}", selected_lenses=["anti_ai"], user_instruction=${JSON.stringify((v.revision_targets || []).join("; "))}, agent_run_id="${runId}").
-2. Read the returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-3. Call mcp__essaywriter__get_work_packet(work_packet_id=<id>) if needed for additional packet details.
-4. Generate revised content matching the response_schema.
-5. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-6. Call mcp__essaywriter__commit_revision(work_result_id=<id>, agent_run_id="${runId}").
-Return ONLY raw JSON: { "ok": true }.`,
-        tools: [
-          "mcp__essaywriter__prepare_revision",
-          "mcp__essaywriter__commit_revision",
-          "mcp__essaywriter__submit_work_result",
-          "mcp__essaywriter__get_work_packet",
-        ],
-      });
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Verifier: confirm validation passed; revise + re-validate if needed.
-  // -------------------------------------------------------------------------
-  async function verifyValidationOrRevise(runId, jobId) {
-    const vRaw = await agent({
-      prompt: `Read-only verifier. Call mcp__essaywriter__get_workflow_progress(agent_run_id="${runId}"). Inspect the steps array for the "validation" step — check if its status is "done" or equivalent to passing. Return ONLY raw JSON: { "passing": <true|false> }.`,
-      tools: ["mcp__essaywriter__get_workflow_progress"],
-    });
-
-    const v = extractJson(vRaw.result);
-
-    if (v.passing === false) {
-      // Run ONLY the corrective revision here. Do NOT inline re-validation: a
-      // revision resets the new draft's anti-AI audit, and the
-      // require_anti_ai_audit gate refuses prepare_validation until that draft
-      // is re-audited (bug_014). Returning lets the outer driver loop re-run the
-      // anti_ai_audit step (which is now pending) and then validation, in order.
-      await agent({
-        prompt: `Validation did not pass for job_id="${jobId}". Run ONE corrective revision; the driver loop will re-audit and re-validate afterward.
-
-1. Call mcp__essaywriter__get_workflow_progress(agent_run_id="${runId}") to identify the failing validation diagnostics.
-2. Call mcp__essaywriter__prepare_revision(job_id="${jobId}", agent_run_id="${runId}") scoped to those failing diagnostics.
-   Read the returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-3. Generate revised content matching the response_schema.
-4. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-5. Call mcp__essaywriter__commit_revision(work_result_id=<id>, agent_run_id="${runId}").
-Return ONLY raw JSON: { "ok": true }.`,
-        tools: [
-          "mcp__essaywriter__get_workflow_progress",
-          "mcp__essaywriter__prepare_revision",
-          "mcp__essaywriter__commit_revision",
-          "mcp__essaywriter__submit_work_result",
-          "mcp__essaywriter__get_work_packet",
-        ],
-      });
-    }
-  }
-
-})();
+async function runRevisionStep(reason, lens) {
+  const lensClause = lens
+    ? `Use selected_lenses=["${lens}"]. `
+    : `Scope it to the failing validation diagnostics (call mcp__essaywriter__get_workflow_progress first to read them). `
+  return agent(
+    `${reason} for job_id="${jobId}". Run ONE corrective revision; the driver loop will re-audit and ` +
+      `re-validate afterward. Call mcp__essaywriter__prepare_revision(job_id="${jobId}", agent_run_id="${runId}"). ` +
+      `${lensClause}Read the returned system_prompt VERBATIM and generate JSON matching its ` +
+      `response_schema (copy the ATTENTION CHECK token into a "notes" field). Call ` +
+      `mcp__essaywriter__submit_work_result then mcp__essaywriter__commit_revision.`,
+    { label: 'revision', phase: 'Write' },
+  )
+}
