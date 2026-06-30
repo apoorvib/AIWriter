@@ -265,27 +265,25 @@ Return ONLY raw JSON: { "ok": true }.`,
     const v = extractJson(vRaw.result);
 
     if (v.passing === false) {
+      // Run ONLY the corrective revision here. Do NOT inline re-validation: a
+      // revision resets the new draft's anti-AI audit, and the
+      // require_anti_ai_audit gate refuses prepare_validation until that draft
+      // is re-audited (bug_014). Returning lets the outer driver loop re-run the
+      // anti_ai_audit step (which is now pending) and then validation, in order.
       await agent({
-        prompt: `Validation did not pass for job_id="${jobId}". Run a corrective revision and re-validate.
+        prompt: `Validation did not pass for job_id="${jobId}". Run ONE corrective revision; the driver loop will re-audit and re-validate afterward.
 
-1. Call mcp__essaywriter__get_workflow_progress(agent_run_id="${runId}") to identify the failing diagnostics from the validation step.
-2. Call mcp__essaywriter__prepare_revision(job_id="${jobId}", agent_run_id="${runId}") scoped to the failing diagnostics from step 1.
+1. Call mcp__essaywriter__get_workflow_progress(agent_run_id="${runId}") to identify the failing validation diagnostics.
+2. Call mcp__essaywriter__prepare_revision(job_id="${jobId}", agent_run_id="${runId}") scoped to those failing diagnostics.
    Read the returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-3. Call mcp__essaywriter__get_work_packet(work_packet_id=<id>) if needed for additional packet details.
-4. Generate revised content matching the response_schema.
-5. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
-6. Call mcp__essaywriter__commit_revision(work_result_id=<id>, agent_run_id="${runId}").
-7. Call mcp__essaywriter__prepare_validation(job_id="${jobId}", agent_run_id="${runId}"). Read returned system_prompt VERBATIM (ATTENTION CHECK token → "notes").
-8. Generate validation JSON matching the response_schema.
-9. Call mcp__essaywriter__submit_work_result for the validation packet.
-10. Call mcp__essaywriter__commit_validation(work_result_id=<id>, agent_run_id="${runId}").
+3. Generate revised content matching the response_schema.
+4. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
+5. Call mcp__essaywriter__commit_revision(work_result_id=<id>, agent_run_id="${runId}").
 Return ONLY raw JSON: { "ok": true }.`,
         tools: [
           "mcp__essaywriter__get_workflow_progress",
           "mcp__essaywriter__prepare_revision",
           "mcp__essaywriter__commit_revision",
-          "mcp__essaywriter__prepare_validation",
-          "mcp__essaywriter__commit_validation",
           "mcp__essaywriter__submit_work_result",
           "mcp__essaywriter__get_work_packet",
         ],

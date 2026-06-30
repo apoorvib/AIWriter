@@ -89,7 +89,7 @@
     ? `For each path in ${JSON.stringify(a.source_paths)}, call mcp__essaywriter__ingest_source_file(document_path=<path>, agent_run_id="${runId}").`
     : "No source paths provided — skip source ingestion.";
 
-  await agent({
+  const ingestRaw = await agent({
     prompt: `You are ingesting source files and writing-style samples for agent_run_id="${runId}".
 
 Source ingestion:
@@ -98,12 +98,26 @@ ${srcIngestPrompt}
 Writing-style ingestion:
 ${wsIngestPrompt}
 
-Return JSON { "ok": true, "sources_ingested": <count>, "style_samples_ingested": <count> }.`,
+Collect the source_id returned by EACH ingest_source_file call, in order.
+Return ONLY raw JSON { "ok": true, "source_ids": [<every ingested source_id, in order>], "style_samples_ingested": <count> }.`,
     tools: [
       "mcp__essaywriter__ingest_source_file",
       "mcp__essaywriter__ingest_writing_style_sample",
     ],
   });
+
+  // The script holds the full ingested source_id list in a variable (bug_010):
+  // AgentRun.artifact_refs dict-merges and keeps only the LAST source_id, so a
+  // subagent reading the run state would commit a card for one source and drop
+  // the rest. Thread the list explicitly instead.
+  const sourceIds = extractJson(ingestRaw.result).source_ids || [];
+  if (a.source_paths && a.source_paths.length > 0 && sourceIds.length === 0) {
+    throw new Error("ingestion returned no source_ids");
+  }
+
+  // Mint the provisional job_id in the SCRIPT, not the clockless LLM (bug_004).
+  // runId is unique per run, so this cannot collide with another prep run.
+  const provisionalJobId = `job-prov-${runId}`;
 
   // -------------------------------------------------------------------------
   // 3a. Pre-job prelude — source cards.
@@ -113,16 +127,15 @@ Return JSON { "ok": true, "sources_ingested": <count>, "style_samples_ingested":
   await agent({
     prompt: `You are executing the SOURCE CARDS prelude step for agent_run_id="${runId}".
 
-1. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to get source_ids and check which already have committed source cards.
-2. For EACH source_id that does NOT already have a committed source card:
+The ingested source_ids are: ${JSON.stringify(sourceIds)}.
+Commit a source card for EVERY one of those source_ids — do not skip any. For each:
    a. Call mcp__essaywriter__prepare_source_card(source_id=<id>, agent_run_id="${runId}").
    b. Read the returned system_prompt VERBATIM and use it to generate the JSON result.
    c. Copy the ATTENTION CHECK token from system_prompt into a "notes" field in your JSON.
    d. Call mcp__essaywriter__submit_work_result(work_packet_id=<id>, payload=<json>, agent_run_id="${runId}").
    e. Call mcp__essaywriter__commit_source_card(work_result_id=<id>, agent_run_id="${runId}").
-3. Return ONLY raw JSON: { "ok": true, "cards_committed": <count> }.`,
+Return ONLY raw JSON: { "ok": true, "cards_committed": <count> }.`,
     tools: [
-      "mcp__essaywriter__get_agent_run_state",
       "mcp__essaywriter__prepare_source_card",
       "mcp__essaywriter__submit_work_result",
       "mcp__essaywriter__commit_source_card",
@@ -201,20 +214,24 @@ Return ONLY raw JSON: { "ok": true, "task_spec_id": "<task_spec_id>" }.`,
   // -------------------------------------------------------------------------
   const createJobPrompt = contentId
     ? `You are executing the CREATE JOB prelude step (content path) for agent_run_id="${runId}".
-The writing-style content_id to attach after job creation is: "${contentId}".
+Use these exact values — do NOT invent any IDs:
+- provisional job_id: "${provisionalJobId}"
+- source_ids: ${JSON.stringify(sourceIds)}
+- writing-style content_id to attach after creation: "${contentId}"
 
-1. Choose a deterministic provisional job_id using the current timestamp in milliseconds (e.g. "job-1719700000000"). Do not reuse any IDs you invent — derive the timestamp fresh.
-2. Call mcp__essaywriter__skip_writing_style_calibration(job_id=<provisional_id>, reason="Provisional skip token for content path — will be superseded by attach_writing_style_to_job.", agent_run_id="${runId}"). Save the returned skip_token.
-3. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to get the committed task_spec_id and source_ids from artifact_refs or committed_artifact_refs.
-4. Call mcp__essaywriter__create_job_from_artifacts(job_id=<provisional_id>, task_spec_id=<id>, source_ids=[<ids>], writing_style_skip_token=<token>, agent_run_id="${runId}"). Save the returned job_id.
-5. Call mcp__essaywriter__attach_writing_style_to_job(job_id=<job_id>, content_id="${contentId}", agent_run_id="${runId}") to supersede the provisional skip with real writing-style content.
+1. Call mcp__essaywriter__skip_writing_style_calibration(job_id="${provisionalJobId}", reason="Provisional skip token for content path — will be superseded by attach_writing_style_to_job.", agent_run_id="${runId}"). Save the returned skip_token.
+2. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to read the committed task_spec_id from artifact_refs/committed_artifact_refs.
+3. Call mcp__essaywriter__create_job_from_artifacts(job_id="${provisionalJobId}", task_spec_id=<id>, source_ids=${JSON.stringify(sourceIds)}, writing_style_skip_token=<token>, agent_run_id="${runId}"). Save the returned job_id.
+4. Call mcp__essaywriter__attach_writing_style_to_job(job_id=<job_id>, content_id="${contentId}", agent_run_id="${runId}") to supersede the provisional skip with real writing-style content.
 Return ONLY raw JSON: { "ok": true, "job_id": "<job_id>" }.`
     : `You are executing the CREATE JOB prelude step (skip path) for agent_run_id="${runId}".
+Use these exact values — do NOT invent any IDs:
+- provisional job_id: "${provisionalJobId}"
+- source_ids: ${JSON.stringify(sourceIds)}
 
-1. Choose a deterministic provisional job_id using the current timestamp in milliseconds (e.g. "job-1719700000000"). Do not reuse any IDs you invent — derive the timestamp fresh.
-2. Call mcp__essaywriter__skip_writing_style_calibration(job_id=<provisional_id>, reason="User chose to skip writing-style calibration for this prep run.", agent_run_id="${runId}"). Save the returned skip_token.
-3. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to get the committed task_spec_id and source_ids from artifact_refs or committed_artifact_refs.
-4. Call mcp__essaywriter__create_job_from_artifacts(job_id=<provisional_id>, task_spec_id=<id>, source_ids=[<ids>], writing_style_skip_token=<token>, agent_run_id="${runId}"). Save the returned job_id.
+1. Call mcp__essaywriter__skip_writing_style_calibration(job_id="${provisionalJobId}", reason="User chose to skip writing-style calibration for this prep run.", agent_run_id="${runId}"). Save the returned skip_token.
+2. Call mcp__essaywriter__get_agent_run_state(agent_run_id="${runId}") to read the committed task_spec_id from artifact_refs/committed_artifact_refs.
+3. Call mcp__essaywriter__create_job_from_artifacts(job_id="${provisionalJobId}", task_spec_id=<id>, source_ids=${JSON.stringify(sourceIds)}, writing_style_skip_token=<token>, agent_run_id="${runId}"). Save the returned job_id.
 Return ONLY raw JSON: { "ok": true, "job_id": "<job_id>" }.`;
 
   const createJobTools = [
