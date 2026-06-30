@@ -49,6 +49,12 @@ def build_server(data_dir: str | Path | None = None) -> Any:
         return result(facade.get_agent_run_state(agent_run_id=agent_run_id))
 
     @app.tool()
+    def get_workflow_progress(agent_run_id: str) -> dict[str, object]:
+        """Read-only completion ledger: which required workflow steps are done,
+        and the first undone required step. Drives Dynamic Workflow loops."""
+        return result(facade.get_workflow_progress(agent_run_id=agent_run_id))
+
+    @app.tool()
     def list_agent_runs(status: str | None = None, limit: int = 20) -> dict[str, object]:
         return result(facade.list_agent_runs(status=status, limit=limit))
 
@@ -191,6 +197,7 @@ def build_server(data_dir: str | Path | None = None) -> Any:
     def dispatch_subagent(
         work_packet_id: str,
         role: str,
+        model_tier: str | None = None,
         agent_run_id: str | None = None,
     ) -> dict[str, object]:
         """Issue a subagent dispatch token for a work packet.
@@ -204,6 +211,7 @@ def build_server(data_dir: str | Path | None = None) -> Any:
             facade.dispatch_subagent(
                 work_packet_id=work_packet_id,
                 role=role,
+                model_tier=model_tier,
                 agent_run_id=agent_run_id,
             )
         )
@@ -250,13 +258,21 @@ def build_server(data_dir: str | Path | None = None) -> Any:
         source_ids: list[str],
         job_id: str | None = None,
         agent_run_id: str | None = None,
+        writing_style_skip_token: str | None = None,
     ) -> dict[str, object]:
+        """Create the essay job from a committed task spec and sources.
+
+        The writing-style gate fires here. Either attach writing-style
+        content to the job beforehand, or pass a ``writing_style_skip_token``
+        issued by ``skip_writing_style_calibration`` for the same ``job_id``.
+        """
         return result(
             facade.create_job_from_artifacts(
                 task_spec_id,
                 source_ids,
                 job_id=job_id,
                 agent_run_id=agent_run_id,
+                writing_style_skip_token=writing_style_skip_token,
             )
         )
 
@@ -299,9 +315,18 @@ def build_server(data_dir: str | Path | None = None) -> Any:
         job_id: str,
         round_number: int,
         topic_id: str,
+        user_selection_evidence: str | None = None,
         agent_run_id: str | None = None,
     ) -> dict[str, object]:
-        return result(facade.select_topic(job_id, round_number, topic_id, agent_run_id=agent_run_id))
+        return result(
+            facade.select_topic(
+                job_id,
+                round_number,
+                topic_id,
+                user_selection_evidence=user_selection_evidence,
+                agent_run_id=agent_run_id,
+            )
+        )
 
     @app.tool()
     def reject_topic(

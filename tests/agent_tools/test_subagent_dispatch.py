@@ -14,30 +14,14 @@ from essay_writer.agent_tools.facade import AgentToolFacade
 from essay_writer.agent_tools.schemas import WorkProducer
 
 from tests.agent_tools._tmp import LocalAgentTempDir
-from tests.agent_tools.helpers import dispatched_subagent, main_agent
+from tests.agent_tools.helpers import anti_ai_audit_payload, dispatched_subagent, main_agent
 from tests.agent_tools.test_outline_draft_validation_tools import (
     _seed_job_through_draft,
 )
 
 
 def _audit_payload() -> dict[str, object]:
-    return {
-        "pass": True,
-        "anti_ai_self_check": {
-            "paragraph_count": 1,
-            "paragraph_first_sentences": ["A."],
-            "first_sentence_chain_summarizes_essay": False,
-            "paragraphs_under_50_words": 1,
-            "paragraphs_opening_with_topic_sentence": 1,
-            "filler_phrases_used": [],
-            "significance_inflation_phrases": [],
-            "vague_attributions_used": [],
-            "concrete_source_handles": ["source p. 1"],
-            "style_guidance_grades": [],
-            "self_check_notes": [],
-        },
-        "revision_targets": [],
-    }
+    return anti_ai_audit_payload()
 
 
 def test_audit_packet_requires_subagent_dispatch_token() -> None:
@@ -71,6 +55,7 @@ def test_audit_packet_accepts_valid_dispatch_token() -> None:
             facade,
             work_packet_id=str(prepared.data["work_packet_id"]),
             role="anti_ai_auditor",
+            model_tier="opus",
         )
         result = facade.submit_work_result(
             str(prepared.data["work_packet_id"]),
@@ -78,6 +63,46 @@ def test_audit_packet_accepts_valid_dispatch_token() -> None:
             producer=producer,
         )
     assert result.ok is True
+
+
+def test_audit_packet_requires_frontier_model_tier_for_dispatch() -> None:
+    with LocalAgentTempDir() as tmp:
+        facade = AgentToolFacade.from_data_dir(tmp / "data")
+        _seed_job_through_draft(facade)
+        prepared = facade.prepare_anti_ai_audit("job1")
+
+        missing = facade.dispatch_subagent(
+            work_packet_id=str(prepared.data["work_packet_id"]),
+            role="anti_ai_auditor",
+        )
+        haiku = facade.dispatch_subagent(
+            work_packet_id=str(prepared.data["work_packet_id"]),
+            role="anti_ai_auditor",
+            model_tier="haiku",
+        )
+        frontier = facade.dispatch_subagent(
+            work_packet_id=str(prepared.data["work_packet_id"]),
+            role="anti_ai_auditor",
+            model_tier="frontier",
+        )
+        opus_alias = facade.dispatch_subagent(
+            work_packet_id=str(prepared.data["work_packet_id"]),
+            role="anti_ai_auditor",
+            model_tier="opus",
+        )
+
+    assert missing.ok is False
+    assert missing.error is not None
+    assert missing.error.code == "subagent_model_tier_required"
+    assert haiku.ok is False
+    assert haiku.error is not None
+    assert haiku.error.code == "subagent_model_tier_required"
+    assert frontier.ok is True
+    assert frontier.data["model_tier"] == "frontier"
+    assert frontier.data["required_model_tier"] == "frontier"
+    assert opus_alias.ok is True
+    assert opus_alias.data["model_tier"] == "opus"
+    assert opus_alias.data["required_model_tier"] == "frontier"
 
 
 def test_audit_packet_rejects_wrong_packet_token() -> None:
@@ -91,6 +116,7 @@ def test_audit_packet_rejects_wrong_packet_token() -> None:
         dispatch = facade.dispatch_subagent(
             work_packet_id=str(prepared_a.data["work_packet_id"]),
             role="anti_ai_auditor",
+            model_tier="opus",
         )
         # Pretend we submit it against a fake/other packet id.
         producer = WorkProducer(
@@ -152,6 +178,64 @@ def test_non_required_packets_do_not_need_dispatch_token() -> None:
         # prepare_outline at this point returns OK without any subagent
         # token. The key assertion: it works.
     assert prepared.ok is True
+
+
+def test_dispatch_rejects_packet_with_no_delegation_intent() -> None:
+    """T2.4: dispatch_subagent must refuse a packet that is neither
+    delegation_required nor delegation.recommended (e.g. an outline)."""
+    with LocalAgentTempDir() as tmp:
+        facade = AgentToolFacade.from_data_dir(tmp / "data")
+        _seed_job_through_draft(facade)
+        # prepare_outline has recommended=False, delegation_required=False.
+        prepared = facade.prepare_outline("job1")
+        result = facade.dispatch_subagent(
+            work_packet_id=str(prepared.data["work_packet_id"]),
+            role="prose_window_rewriter",
+        )
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "delegation_not_applicable"
+
+
+def test_dispatch_token_cannot_be_reused_for_a_different_payload() -> None:
+    """T2.3: a dispatch token authorizes one submission. Reusing it with
+    a different payload is rejected with subagent_dispatch_token_consumed."""
+    with LocalAgentTempDir() as tmp:
+        facade = AgentToolFacade.from_data_dir(tmp / "data")
+        _seed_job_through_draft(facade)
+        prepared = facade.prepare_anti_ai_audit("job1")
+        packet_id = str(prepared.data["work_packet_id"])
+        producer = dispatched_subagent(facade, work_packet_id=packet_id, role="anti_ai_auditor")
+
+        first = facade.submit_work_result(packet_id, payload=_audit_payload(), producer=producer)
+        # Reuse the SAME token with a DIFFERENT payload.
+        other_payload = _audit_payload()
+        other_payload["anti_ai_self_check"]["self_check_notes"] = ["changed"]
+        reuse = facade.submit_work_result(packet_id, payload=other_payload, producer=producer)
+
+    assert first.ok is True
+    assert reuse.ok is False
+    assert reuse.error is not None
+    assert reuse.error.code == "subagent_dispatch_token_consumed"
+
+
+def test_dispatch_token_tolerates_idempotent_retry() -> None:
+    """T2.3: re-submitting the SAME payload with a consumed token is an
+    idempotent retry and must be allowed (the store dedups)."""
+    with LocalAgentTempDir() as tmp:
+        facade = AgentToolFacade.from_data_dir(tmp / "data")
+        _seed_job_through_draft(facade)
+        prepared = facade.prepare_anti_ai_audit("job1")
+        packet_id = str(prepared.data["work_packet_id"])
+        producer = dispatched_subagent(facade, work_packet_id=packet_id, role="anti_ai_auditor")
+        payload = _audit_payload()
+
+        first = facade.submit_work_result(packet_id, payload=payload, producer=producer)
+        retry = facade.submit_work_result(packet_id, payload=payload, producer=producer)
+
+    assert first.ok is True
+    assert retry.ok is True
+    assert retry.data["work_result_id"] == first.data["work_result_id"]
 
 
 def test_large_source_card_packet_sets_delegation_required() -> None:

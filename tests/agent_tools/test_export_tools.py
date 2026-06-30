@@ -47,6 +47,8 @@ def test_export_markdown_persists_export_and_updates_job() -> None:
     assert exported.data["export_id"] == "final_export_001"
     assert exported.data["format"] == "markdown"
     assert "# " in exported.data["preview"]
+    assert "## Source Map" not in exported.data["content"]
+    assert "## Validation" not in exported.data["content"]
     assert job.final_export_id == "final_export_001"
 
 

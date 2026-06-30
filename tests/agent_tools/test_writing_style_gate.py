@@ -164,6 +164,43 @@ def test_gate_is_no_op_without_agent_run_id() -> None:
     assert result.ok is True
 
 
+def test_skip_calibration_rejects_empty_job_id() -> None:
+    """T2.1: a skip token must be scoped to a concrete job id."""
+    with LocalAgentTempDir() as tmp:
+        facade, agent_run_id = _ready_facade(tmp)
+        result = facade.skip_writing_style_calibration(
+            job_id="   ",
+            reason="trying to skip without a real job id",
+            agent_run_id=agent_run_id,
+        )
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "job_id_required"
+
+
+def test_skip_token_requires_explicit_job_id_at_create() -> None:
+    """T2.1: passing a skip token to create_job_from_artifacts with
+    job_id=None is rejected, so a single token cannot satisfy every
+    auto-id'd job creation."""
+    with LocalAgentTempDir() as tmp:
+        facade, agent_run_id = _ready_facade(tmp)
+        skip = facade.skip_writing_style_calibration(
+            job_id="job1",
+            reason="scoped to job1",
+            agent_run_id=agent_run_id,
+        )
+        result = facade.create_job_from_artifacts(
+            task_spec_id="task1",
+            source_ids=["src1"],
+            job_id=None,  # no concrete id -> token can't be scoped
+            agent_run_id=agent_run_id,
+            writing_style_skip_token=str(skip.data["skip_token"]),
+        )
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "writing_style_skip_token_requires_job_id"
+
+
 def test_discovered_samples_are_surfaced_in_error(tmp_path: Path) -> None:
     """If samples already exist in ``inputs/writing_style/`` under the
     current working directory, the error response surfaces their paths

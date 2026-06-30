@@ -31,6 +31,40 @@ class StyleGuidanceGrade:
 
 
 @dataclass(frozen=True)
+class AntiAISkillLineAudit:
+    """One line-level proof row for the anti-AI skill document."""
+
+    line_number: int
+    line_text_sha256: str
+    requirement: str
+    status: str
+    evidence: str
+    action_taken: str
+    draft_evidence: list[dict[str, str]] = field(default_factory=list)
+    whole_essay_evidence: dict[str, object] = field(default_factory=dict)
+    line_application: str = ""
+
+
+@dataclass(frozen=True)
+class AntiAIUnmetRequirement:
+    """A skill-line requirement the agent could not satisfy."""
+
+    line_number: int
+    section: str
+    status: str
+    reason: str
+    risk: str
+
+
+@dataclass(frozen=True)
+class AntiAIFinalDecision:
+    hard_rules_pass: bool
+    soft_rules_pass: bool
+    safe_to_claim_detector_reduction: bool
+    reason: str
+
+
+@dataclass(frozen=True)
 class AntiAISelfCheck:
     """Anti-AI self-audit produced by the drafting and style-revision stages.
 
@@ -38,6 +72,11 @@ class AntiAISelfCheck:
     against the draft `content` so the validator can spot self-grade mismatches.
     See the anti-AI skill 7-step self-check section."""
 
+    skill_file: str = ""
+    skill_sha256: str = ""
+    skill_line_count: int = 0
+    draft_sha256: str = ""
+    line_audit: list[AntiAISkillLineAudit] = field(default_factory=list)
     paragraph_count: int = 0
     paragraph_first_sentences: list[str] = field(default_factory=list)
     first_sentence_chain_summarizes_essay: bool = True
@@ -49,6 +88,8 @@ class AntiAISelfCheck:
     concrete_source_handles: list[str] = field(default_factory=list)
     style_guidance_grades: list[StyleGuidanceGrade] = field(default_factory=list)
     self_check_notes: list[str] = field(default_factory=list)
+    unmet_requirements: list[AntiAIUnmetRequirement] = field(default_factory=list)
+    final_decision: AntiAIFinalDecision | None = None
 
 
 DraftOrigin = Literal[

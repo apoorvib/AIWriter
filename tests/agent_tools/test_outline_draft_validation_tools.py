@@ -313,7 +313,9 @@ def test_prepare_commit_revision_records_new_draft_version() -> None:
     assert revised.version == 2
     assert revised.origin == "system_revision"
     assert revised.parent_draft_id == previous_draft.id
-    assert committed.next_suggested_tools == ["prepare_validation"]
+    # A revision resets anti_ai_self_check, so the audit must run before
+    # validation (the require_anti_ai_audit gate refuses validation otherwise).
+    assert committed.next_suggested_tools == ["prepare_anti_ai_audit", "prepare_validation"]
 
 
 def test_prepare_commit_validation_records_validation_complete() -> None:

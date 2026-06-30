@@ -43,22 +43,5 @@ def _markdown_content(title: str, draft: EssayDraft, validation: ValidationRepor
         f"# {title}",
         "",
         draft.content.strip(),
-        "",
-        "## Source Map",
     ]
-    if draft.section_source_map:
-        for section in draft.section_source_map:
-            note_text = ", ".join(section.note_ids) if section.note_ids else "none"
-            source_text = ", ".join(section.source_ids) if section.source_ids else "none"
-            lines.append(f"- {section.heading or section.section_id}: notes {note_text}; sources {source_text}")
-    else:
-        lines.append("- No section-level source map was provided.")
-    lines.extend(
-        [
-            "",
-            "## Validation",
-            f"- Passes: {validation.passes}",
-            f"- Overall quality: {validation.llm_judgment.overall_quality:.2f}",
-        ]
-    )
     return "\n".join(lines).rstrip() + "\n"

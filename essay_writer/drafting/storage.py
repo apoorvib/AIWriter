@@ -7,7 +7,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 from essay_writer.drafting.schema import (
+    AntiAIFinalDecision,
+    AntiAISkillLineAudit,
     AntiAISelfCheck,
+    AntiAIUnmetRequirement,
     EssayDraft,
     SectionSourceMap,
     StyleGuidanceGrade,
@@ -85,7 +88,57 @@ def _draft_from_payload(payload: dict) -> EssayDraft:
             for grade in grades_raw
             if isinstance(grade, dict) and str(grade.get("bullet", "")).strip()
         ]
+        line_audit = [
+            AntiAISkillLineAudit(
+                line_number=int(row.get("line_number", 0) or 0),
+                line_text_sha256=str(row.get("line_text_sha256", "")),
+                requirement=str(row.get("requirement", "")),
+                status=str(row.get("status", "")),
+                evidence=str(row.get("evidence", "")),
+                action_taken=str(row.get("action_taken", "")),
+                draft_evidence=[
+                    {
+                        "kind": str(item.get("kind", "")),
+                        "reference": str(item.get("reference", "")),
+                        "explanation": str(item.get("explanation", "")),
+                    }
+                    for item in row.get("draft_evidence", []) or []
+                    if isinstance(item, dict)
+                ],
+                whole_essay_evidence=dict(row.get("whole_essay_evidence", {}) or {}),
+                line_application=str(row.get("line_application", "")),
+            )
+            for row in audit.get("line_audit", []) or []
+            if isinstance(row, dict)
+        ]
+        unmet_requirements = [
+            AntiAIUnmetRequirement(
+                line_number=int(row.get("line_number", 0) or 0),
+                section=str(row.get("section", "")),
+                status=str(row.get("status", "")),
+                reason=str(row.get("reason", "")),
+                risk=str(row.get("risk", "")),
+            )
+            for row in audit.get("unmet_requirements", []) or []
+            if isinstance(row, dict)
+        ]
+        final_decision_raw = audit.get("final_decision")
+        final_decision = None
+        if isinstance(final_decision_raw, dict):
+            final_decision = AntiAIFinalDecision(
+                hard_rules_pass=bool(final_decision_raw.get("hard_rules_pass", False)),
+                soft_rules_pass=bool(final_decision_raw.get("soft_rules_pass", False)),
+                safe_to_claim_detector_reduction=bool(
+                    final_decision_raw.get("safe_to_claim_detector_reduction", False)
+                ),
+                reason=str(final_decision_raw.get("reason", "")),
+            )
         payload["anti_ai_self_check"] = AntiAISelfCheck(
+            skill_file=str(audit.get("skill_file", "")),
+            skill_sha256=str(audit.get("skill_sha256", "")),
+            skill_line_count=int(audit.get("skill_line_count", 0) or 0),
+            draft_sha256=str(audit.get("draft_sha256", "")),
+            line_audit=line_audit,
             paragraph_count=int(audit.get("paragraph_count", 0) or 0),
             paragraph_first_sentences=[
                 str(s) for s in audit.get("paragraph_first_sentences", []) or []
@@ -109,6 +162,8 @@ def _draft_from_payload(payload: dict) -> EssayDraft:
             ],
             style_guidance_grades=grades,
             self_check_notes=[str(s) for s in audit.get("self_check_notes", []) or []],
+            unmet_requirements=unmet_requirements,
+            final_decision=final_decision,
         )
     else:
         payload["anti_ai_self_check"] = None

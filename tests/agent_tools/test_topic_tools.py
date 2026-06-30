@@ -46,6 +46,7 @@ def test_prepare_submit_commit_and_select_topic_happy_path_with_recovery_refs() 
             "job1",
             round_number=1,
             topic_id="topic_001",
+            user_selection_evidence="User selected topic_001 after seeing the topic options.",
             agent_run_id=agent_run_id,
         )
         recovered = facade.recover_agent_run(agent_run_id=agent_run_id)
@@ -64,6 +65,8 @@ def test_prepare_submit_commit_and_select_topic_happy_path_with_recovery_refs() 
     assert committed.ok is True
     assert committed.data["round_number"] == 1
     assert committed.data["candidate_topic_ids"] == ["topic_001"]
+    assert committed.data["requires_user_topic_selection"] is True
+    assert committed.data["candidate_topics"][0]["id"] == "topic_001"
     assert committed.data["next_suggested_tools"] == ["select_topic", "reject_topic"]
     assert selected.ok is True
     assert selected.data["selected_topic_id"] == "topic_001"
@@ -72,6 +75,27 @@ def test_prepare_submit_commit_and_select_topic_happy_path_with_recovery_refs() 
     assert recovered.data["committed_artifact_refs"]["selected_topic_id"] == "topic_001"
     assert recovered.data["committed_artifact_refs"]["job_id"] == "job1"
     assert recovered.data["next_suggested_tools"] == ["create_research_plan"]
+
+
+def test_select_topic_requires_user_selection_evidence() -> None:
+    with LocalAgentTempDir() as tmp:
+        facade = AgentToolFacade.from_data_dir(tmp / "data")
+        _seed_ready_job(facade)
+        prepared = facade.prepare_topics("job1")
+        submitted = facade.submit_work_result(
+            str(prepared.data["work_packet_id"]),
+            payload=_topic_payload(),
+            producer=main_agent(),
+        )
+        committed = facade.commit_topics(work_result_id=str(submitted.data["work_result_id"]))
+
+        selected = facade.select_topic("job1", round_number=1, topic_id="topic_001")
+
+    assert committed.ok is True
+    assert selected.ok is False
+    assert selected.error is not None
+    assert selected.error.code == "topic_selection_user_confirmation_required"
+    assert selected.next_suggested_tools == ["select_topic", "reject_topic"]
 
 
 def test_commit_topics_with_blocking_questions_does_not_record_round() -> None:

@@ -3,7 +3,7 @@
 When a ``WorkPacket`` has ``delegation_required=True``, ``submit_work_result``
 will reject results that are not accompanied by a valid subagent
 dispatch token. The token is issued by ``dispatch_subagent(packet_id,
-role)`` and recorded server-side. This makes "run the audit inline in
+role, model_tier)`` and recorded server-side. This makes "run the audit inline in
 the main orchestrator" structurally impossible for packets that the
 harness wants delegated.
 
@@ -30,6 +30,7 @@ class SubagentDispatchToken:
     token: str
     work_packet_id: str
     role: str
+    model_tier: str | None = None
     created_at: str = field(default_factory=utc_now_iso)
     consumed: bool = False
     consumed_at: str | None = None
@@ -40,6 +41,11 @@ class SubagentDispatchToken:
             token=str(data["token"]),
             work_packet_id=str(data["work_packet_id"]),
             role=str(data["role"]),
+            model_tier=(
+                str(data["model_tier"])
+                if data.get("model_tier") is not None
+                else None
+            ),
             created_at=str(data.get("created_at", utc_now_iso())),
             consumed=bool(data.get("consumed", False)),
             consumed_at=(
@@ -67,6 +73,7 @@ class SubagentTokenStore:
         *,
         work_packet_id: str,
         role: str,
+        model_tier: str | None = None,
     ) -> SubagentDispatchToken:
         if not role or not role.strip():
             raise ValueError("subagent dispatch role must be a non-empty string")
@@ -76,6 +83,7 @@ class SubagentTokenStore:
             token=token_id,
             work_packet_id=work_packet_id,
             role=role.strip(),
+            model_tier=model_tier.strip().lower() if model_tier else None,
         )
         write_json_atomic(self.base_dir / f"{token_id}.json", asdict(record))
         return record
@@ -121,6 +129,7 @@ class SubagentTokenStore:
             token=record.token,
             work_packet_id=record.work_packet_id,
             role=record.role,
+            model_tier=record.model_tier,
             created_at=record.created_at,
             consumed=True,
             consumed_at=utc_now_iso(),

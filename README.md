@@ -87,6 +87,122 @@ ESSAY_DATA_DIR=./data python -m essay_writer.agent_tools.server
 
 See `docs/agent-tool-mode-mcp.md` and `.mcp.example.json`.
 
+### Claude Code Dynamic Workflows (`/essay-prep`, `/essay-write`)
+
+In Claude Code you can drive the whole Agent Tool Mode workflow with two saved
+[Dynamic Workflows](https://code.claude.com/docs/en/workflows) in
+`.claude/workflows/` instead of calling the MCP tools by hand. They move the
+step sequence into a script so no required step is skipped, and they are split
+at the mandatory topic-selection gate (a workflow cannot pause for input
+mid-run).
+
+Prerequisites:
+
+- Claude Code v2.1.154+ with Dynamic workflows enabled (toggle in `/config`).
+- The `essaywriter` MCP server configured (copy `.mcp.example.json` to
+  `.mcp.json`) and pointed at your `ESSAY_DATA_DIR`.
+- `mcp__essaywriter__*` pre-allowlisted (already in `.claude/settings.json`) so
+  the background workflow subagents are not blocked by mid-run permission
+  prompts.
+- Source documents on disk. Optionally, one or two short writing samples in your
+  own voice (convention: `inputs/writing_style/`) for anti-AI voice calibration.
+
+**How you pass inputs.** You do not type raw JSON. A Dynamic Workflow reads a
+global called `args`; when you invoke the command you describe the inputs in
+plain language and Claude maps your words onto the fields the script documents in
+its header comment. The examples below show what you type and the `args` Claude
+builds from it.
+
+**Step 1 — prep (runs to the topic gate).** `/essay-prep` accepts
+`source_paths` (list), `writing_style_paths` (list or `"skip"`), and
+`assignment_text` **or** `assignment_path`. Type the command followed by a normal
+sentence:
+
+```text
+/essay-prep Use these sources: ./inputs/sources/carbon-pricing.pdf and
+./inputs/sources/ipcc-summary.pdf. My writing sample is at
+./inputs/writing_style/my-old-essay.md. Assignment: Write a 1500-word
+argumentative essay on whether carbon pricing is effective climate policy,
+cite at least two sources, MLA format.
+```
+
+Claude turns that into:
+
+```js
+args = {
+  source_paths: [
+    "./inputs/sources/carbon-pricing.pdf",
+    "./inputs/sources/ipcc-summary.pdf",
+  ],
+  writing_style_paths: ["./inputs/writing_style/my-old-essay.md"],
+  assignment_text: "Write a 1500-word argumentative essay on whether carbon pricing...",
+}
+```
+
+Variations: say "skip the writing style step" for `writing_style_paths: "skip"`;
+point at a file ("the assignment is in `./inputs/assignment.txt`") to use
+`assignment_path` instead of `assignment_text`.
+
+The workflow ingests the sources, writes a source card for each, commits a task
+spec, creates the job, then **stops and prints the candidate topics**, e.g.:
+
+```text
+Prep complete — agent_run_id: agrun_20260630_a1b2c3
+Choose a topic, then run /essay-write:
+  1. topic_001 — "Carbon pricing vs. cap-and-trade: ..."
+  2. topic_002 — "Why revenue recycling determines carbon-tax effectiveness"
+  3. topic_003 — ...
+(job_id: job-prov-agrun_20260630_a1b2c3)
+```
+
+Copy the `agent_run_id`, the `job_id`, and the `topic_id` you want — those feed
+step 2.
+
+**Step 2 — pick a topic, then write (runs to export).** `/essay-write` accepts
+`agent_run_id`, `job_id`, `round_number` (usually `1`), `topic_id` (the one you
+picked), and `user_selection_evidence` (a sentence on why — this is required; the
+server refuses a topic chosen with no reasoning). Type:
+
+```text
+/essay-write Continue agent_run_id agrun_20260630_a1b2c3, job_id
+job-prov-agrun_20260630_a1b2c3, round 1. I'm picking topic_002 because it has
+the strongest source evidence and directly matches the assignment's focus on
+policy effectiveness.
+```
+
+Claude turns that into:
+
+```js
+args = {
+  agent_run_id: "agrun_20260630_a1b2c3",
+  job_id: "job-prov-agrun_20260630_a1b2c3",
+  round_number: 1,
+  topic_id: "topic_002",
+  user_selection_evidence: "strongest source evidence; matches the assignment's focus on policy effectiveness",
+}
+```
+
+It records your topic selection, then runs research → outline → draft → anti-AI
+audit (in a fresh frontier subagent) → validation (with revision loops) →
+Markdown export.
+
+The mental model: prep's inputs are *file paths + the assignment*; write's inputs
+are *the three ids prep printed + your chosen `topic_id` + one line of reasoning*.
+You never hand-write `args` — you say it in words and Claude fills the fields from
+the script's header.
+
+**Why no step gets skipped.** Both scripts loop on the read-only
+`get_workflow_progress(agent_run_id)` ledger, which derives from persisted state
+which required steps are actually done, and act only on the server's
+`next_required_step` until it reports `all_required_done`. A step whose artifact
+did not really persist stays `pending` and is re-attempted rather than skipped.
+Codex and other MCP harnesses drive the same tools manually (see
+`docs/agent-tool-mode-instructions.md`).
+
+> The workflow scripts are authored against the Dynamic Workflows runtime;
+> confirm the `agent()` call shape for your Claude Code version on first run (see
+> the header comment in each `.claude/workflows/*.js`).
+
 The app supports source uploads for `.pdf`, `.docx`, `.txt`, `.md`,
 `.markdown`, and `.notes` files. Assignment text can be pasted or extracted
 from the same document types.

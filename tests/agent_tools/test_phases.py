@@ -16,6 +16,7 @@ from essay_writer.agent_tools.phases import (
     PACKET_SUBMIT_TOOLS,
     PHASE_BOOTSTRAP,
     PHASE_DRAFTING,
+    PHASE_EXPORT,
     PHASE_JOB_CREATION,
     PHASE_MODE_LEGACY,
     PHASE_MODE_STRICT,
@@ -274,6 +275,22 @@ def test_create_job_blocked_during_drafting() -> None:
     )
     assert result.allowed is False
     assert PHASE_JOB_CREATION in result.expected_phases
+
+
+def test_post_export_edit_can_reenter_anti_ai_audit() -> None:
+    audit_result = check_tool_allowed(
+        "prepare_anti_ai_audit",
+        current_phase=PHASE_EXPORT,
+        phase_mode=PHASE_MODE_STRICT,
+    )
+    edit_result = check_tool_allowed(
+        "save_user_edit",
+        current_phase=PHASE_EXPORT,
+        phase_mode=PHASE_MODE_STRICT,
+    )
+
+    assert audit_result.allowed is True
+    assert edit_result.allowed is True
 
 
 # ---------------------------------------------------------------------------
