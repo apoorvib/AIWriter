@@ -51,7 +51,16 @@
       "mcp__essaywriter__commit_anti_ai_audit",
       "mcp__essaywriter__prepare_revision",
       "PowerShell($j = Get-Content \"C:\\\\Users\\\\Apoorv\\\\.claude\\\\projects\\\\C--Apoorv-Startups-EssayWriter-AIWriter\\\\83777ddf-2bd7-44a2-81c3-ce79e9a2ef13\\\\tool-results\\\\mcp-essaywriter-prepare_revision-1779532107304.txt\" -Raw | ConvertFrom-Json; \"PACKET_ID: \" + $j.data.work_packet_id; \"---SCHEMA---\"; $j.data.response_schema | ConvertTo-Json -Depth 20 -Compress)",
-      "mcp__essaywriter__commit_revision"
+      "mcp__essaywriter__commit_revision",
+      "Bash(git checkout *)",
+      "Bash(bash C:/Users/Apoorv/.claude/plugins/cache/claude-plugins-official/superpowers/6.0.3/skills/subagent-driven-development/scripts/task-brief C:/Apoorv/Startups/EssayWriter/AIWriter/docs/superpowers/plans/2026-06-29-workflow-orchestration.md 4)",
+      "Bash(git -C 'C:/Apoorv/Startups/EssayWriter/AIWriter' rev-parse HEAD)",
+      "Bash(echo \"BASE=$\\(git -C 'C:/Apoorv/Startups/EssayWriter/AIWriter' rev-parse HEAD\\)\")",
+      "Bash(SKILL=\"C:/Users/Apoorv/.claude/plugins/cache/claude-plugins-official/superpowers/6.0.3/skills/subagent-driven-development\"\nbash \"$SKILL/scripts/review-package\" dd84a7a 8708bc5)",
+      "Bash(node --check \"C:/Apoorv/Startups/EssayWriter/AIWriter/.claude/workflows/essay-prep.js\")",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(node --check .claude/workflows/essay-prep.js)",
+      "Bash(node --check .claude/workflows/essay-write.js)"
     ]
   },
   "enableAllProjectMcpServers": true,

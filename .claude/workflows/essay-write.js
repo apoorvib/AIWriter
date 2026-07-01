@@ -11,21 +11,12 @@ export const meta = {
   ],
 }
 
-// args: {
-//   agent_run_id: string,             // printed by /essay-prep
-//   job_id: string,                   // printed by /essay-prep
-//   round_number?: number,            // topic round (default 1)
-//   topic_id: string,                 // the topic you chose
-//   user_selection_evidence?: string, // one line on why (required by the server)
-// }
-const a = args || {}
-const runId = a.agent_run_id
-const jobId = a.job_id
-if (!runId) throw new Error('args.agent_run_id is required (from /essay-prep)')
-if (!jobId) throw new Error('args.job_id is required (from /essay-prep)')
-if (!a.topic_id) throw new Error('args.topic_id is required (choose one from the prep topic list)')
-const roundNumber = a.round_number || 1
-const evidence = a.user_selection_evidence || 'User selected this topic from the prep candidate list.'
+// args may arrive in EITHER shape:
+//   • a structured object (programmatic callers):
+//       { agent_run_id, job_id, topic_id, round_number?, user_selection_evidence? }
+//   • a raw STRING — the /essay-write slash command passes the user's text
+//       verbatim. It is normalized into the object shape below (after the
+//       schema definitions) via a parse-args agent.
 
 const PROGRESS_SCHEMA = {
   type: 'object',
@@ -51,6 +42,46 @@ const AUDIT_RESULT_SCHEMA = {
   required: ['audit_pass'],
   additionalProperties: true,
 }
+const ARGS_SCHEMA = {
+  type: 'object',
+  properties: {
+    agent_run_id: { type: 'string' },
+    job_id: { type: 'string' },
+    topic_id: { type: 'string' },
+    round_number: { type: ['integer', 'null'] },
+    user_selection_evidence: { type: ['string', 'null'] },
+  },
+  required: ['agent_run_id', 'job_id', 'topic_id'],
+  additionalProperties: false,
+}
+
+// Normalize args into a structured object. The slash command delivers a raw
+// string; programmatic callers pass an object. A string is parsed into the id
+// fields via a parse-args agent (grouped under the Recover phase).
+let a = args || {}
+if (typeof a === 'string') {
+  const raw = a
+  const parsed = await agent(
+    `Extract identifiers from this /essay-write request and return JSON. ` +
+      `Copy IDs verbatim; never invent one.\n` +
+      `Request:\n---\n${raw}\n---\n` +
+      `Fields:\n` +
+      `- agent_run_id: the run id (looks like "agrun_..."), printed by /essay-prep.\n` +
+      `- job_id: the job id (looks like "job-prov-agrun_..." or "job-..."), printed by /essay-prep.\n` +
+      `- topic_id: the chosen topic id (looks like "topic_003").\n` +
+      `- round_number: the topic round integer if stated, else 1.\n` +
+      `- user_selection_evidence: a one-line reason for the choice if given, else null.`,
+    { schema: ARGS_SCHEMA, label: 'parse-args', phase: 'Recover' },
+  )
+  a = parsed || {}
+}
+const runId = a.agent_run_id
+const jobId = a.job_id
+if (!runId) throw new Error('args.agent_run_id is required (from /essay-prep)')
+if (!jobId) throw new Error('args.job_id is required (from /essay-prep)')
+if (!a.topic_id) throw new Error('args.topic_id is required (choose one from the prep topic list)')
+const roundNumber = a.round_number || 1
+const evidence = a.user_selection_evidence || 'User selected this topic from the prep candidate list.'
 
 phase('Recover')
 await agent(

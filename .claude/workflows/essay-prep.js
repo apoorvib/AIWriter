@@ -15,24 +15,13 @@ export const meta = {
   ],
 }
 
-// args: {
-//   source_paths: string[],                  // paths to source documents to ingest
-//   writing_style_paths?: string[] | "skip",  // writing-style sample paths, or "skip"
-//   assignment_text?: string,                // raw assignment text
-//   assignment_path?: string,                // OR a path to an assignment file
-// }
-const a = args || {}
-const sourcePaths = Array.isArray(a.source_paths) ? a.source_paths : []
-const skipStyle =
-  a.writing_style_paths === 'skip' ||
-  !a.writing_style_paths ||
-  (Array.isArray(a.writing_style_paths) && a.writing_style_paths.length === 0)
-const stylePaths = skipStyle || !Array.isArray(a.writing_style_paths) ? [] : a.writing_style_paths
-const assignmentInstruction = a.assignment_text
-  ? `The raw assignment text is:\n---\n${a.assignment_text}\n---\nUse it as the raw_text argument.`
-  : a.assignment_path
-    ? `Read the assignment from the file at ${a.assignment_path} (use a read tool) and use its content as raw_text.`
-    : `No explicit assignment was provided; derive a reasonable task spec from the ingested source content.`
+// args may arrive in EITHER shape:
+//   • a structured object (programmatic callers):
+//       { source_paths: string[], writing_style_paths?: string[] | "skip",
+//         assignment_text?: string, assignment_path?: string }
+//   • a raw STRING — the /essay-prep slash command passes the user's request
+//       verbatim. It is normalized into the object shape in the Setup phase
+//       below (via a parse-args agent) before any derivation happens.
 
 const RUN_SCHEMA = {
   type: 'object',
@@ -58,8 +47,72 @@ const JOB_SCHEMA = {
   required: ['job_id'],
   additionalProperties: false,
 }
+const ARGS_SCHEMA = {
+  type: 'object',
+  properties: {
+    source_paths: { type: 'array', items: { type: 'string' } },
+    writing_style_paths: {
+      anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string' }],
+    },
+    assignment_text: { type: 'string' },
+  },
+  required: ['source_paths', 'assignment_text'],
+  additionalProperties: false,
+}
 
 phase('Setup')
+
+// Normalize args into a structured object. The slash command delivers a raw
+// string; programmatic callers pass an object. If source_paths is not already
+// an array, use a parse-args agent to extract the fields from the request.
+let a = args || {}
+if (typeof a === 'string' || !Array.isArray(a.source_paths)) {
+  const raw = typeof a === 'string' ? a : a.assignment_text || JSON.stringify(a)
+  const parsed = await agent(
+    `Extract structured fields from this essay-prep request and return JSON.\n` +
+      `Request:\n---\n${raw}\n---\n` +
+      `Fields:\n` +
+      `- source_paths: array of EVERY local file path to ingest as a SOURCE/reading ` +
+      `document (e.g. "./testpdfs/Foo.pdf"). Copy each path exactly, including spaces. ` +
+      `Empty array if none are mentioned.\n` +
+      `- writing_style_paths: array of file paths that are WRITING-STYLE samples, or the ` +
+      `string "skip" if the user said to skip style calibration or named no style samples.\n` +
+      `- assignment_text: the essay instructions themselves, as a single string.`,
+    { schema: ARGS_SCHEMA, label: 'parse-args', phase: 'Setup' },
+  )
+  a = {
+    source_paths: Array.isArray(parsed && parsed.source_paths) ? parsed.source_paths : [],
+    writing_style_paths:
+      parsed && parsed.writing_style_paths != null ? parsed.writing_style_paths : 'skip',
+    assignment_text:
+      (parsed && parsed.assignment_text) ||
+      (typeof args === 'string' ? args : args && args.assignment_text),
+    assignment_path: typeof args === 'object' && args ? args.assignment_path : undefined,
+  }
+}
+
+const sourcePaths = Array.isArray(a.source_paths) ? a.source_paths : []
+const skipStyle =
+  a.writing_style_paths === 'skip' ||
+  !a.writing_style_paths ||
+  (Array.isArray(a.writing_style_paths) && a.writing_style_paths.length === 0)
+const stylePaths = skipStyle || !Array.isArray(a.writing_style_paths) ? [] : a.writing_style_paths
+const assignmentInstruction = a.assignment_text
+  ? `The raw assignment text is:\n---\n${a.assignment_text}\n---\nUse it as the raw_text argument.`
+  : a.assignment_path
+    ? `Read the assignment from the file at ${a.assignment_path} (use a read tool) and use its content as raw_text.`
+    : `No explicit assignment was provided; derive a reasonable task spec from the ingested source content.`
+
+// Guard: essay-prep is meaningless without sources. Fail loudly instead of
+// silently proceeding with zero sources, which let the backend fall back to a
+// stale source from a previous run — the original /essay-prep failure mode.
+if (sourcePaths.length === 0) {
+  throw new Error(
+    'essay-prep: could not resolve any source_paths from args. Pass ' +
+      '{ source_paths: [...] } or include explicit document path(s) in the request.',
+  )
+}
+
 const setup = await agent(
   `You are bootstrapping an EssayWriter Agent Tool Mode run. Call the MCP tool ` +
     `mcp__essaywriter__start_agent_run with objective="Essay prep". Take the agent_run_id ` +
