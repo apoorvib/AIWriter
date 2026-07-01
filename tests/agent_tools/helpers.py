@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import re
+
 from essay_writer.agent_tools.schemas import WorkProducer
-from essay_writer.drafting.anti_ai_skill import anti_ai_skill_manifest, draft_sha256
+from essay_writer.drafting.anti_ai_skill import (
+    anti_ai_block_manifest,
+    anti_ai_skill_manifest,
+    draft_sha256,
+)
 
 
 class ExplodingLLMClient:
@@ -42,6 +48,68 @@ def dispatched_subagent(
     )
 
 
+def anti_ai_block_rows(
+    draft_text: str,
+    *,
+    omit_last_block: bool = False,
+) -> list[dict[str, object]]:
+    """Build one valid ``block_audit`` row per block of the skill file.
+
+    Structural blocks get a light ``status="context"`` row; guidance blocks get
+    a full row (draft quote evidence, whole-essay review, block-tied reasoning)
+    that passes every ``commit_anti_ai_audit`` gate.
+    """
+    block_manifest = anti_ai_block_manifest()
+    blocks = block_manifest["blocks"]
+    if omit_last_block:
+        blocks = blocks[:-1]
+    draft_quote = draft_text.strip().splitlines()[0][:120] if draft_text.strip() else "n/a"
+    paragraph_count_reviewed = len(
+        [part for part in re.split(r"\n\s*\n", draft_text) if part.strip()]
+    )
+    rows: list[dict[str, object]] = []
+    for block in blocks:
+        block_index = int(block["block_index"])
+        is_structural = bool(block["is_structural"])
+        # Keep guidance rows lean (just over each validator threshold) so the
+        # fixture reflects an economical real audit, not a padded worst case.
+        row: dict[str, object] = {
+            "block_index": block_index,
+            "block_text_sha256": block["block_text_sha256"],
+            "status": "context" if is_structural else "passed",
+            "finding": (
+                f"Block {block_index}: structural context."
+                if is_structural
+                else f"Block {block_index}: guidance met by draft."
+            ),
+            "block_application": (
+                "" if is_structural else f"Block {block_index} applied to whole draft."
+            ),
+            "draft_evidence": [
+                {
+                    "kind": "not_applicable" if is_structural else "draft_quote",
+                    "reference": (
+                        f"block {block_index} context" if is_structural else draft_quote
+                    ),
+                    "explanation": (
+                        "structural context line"
+                        if is_structural
+                        else f"block {block_index} vs draft sentence"
+                    ),
+                }
+            ],
+        }
+        if not is_structural:
+            row["whole_essay_evidence"] = {
+                "scope": "whole_essay",
+                "paragraph_count_reviewed": paragraph_count_reviewed,
+                "method": f"reviewed all {paragraph_count_reviewed} paragraphs for block {block_index}",
+                "finding": f"whole-essay review block {block_index}: draft acceptable",
+            }
+        rows.append(row)
+    return rows
+
+
 def anti_ai_audit_payload(
     *,
     draft_text: str = "Cooling access should be treated as housing policy.",
@@ -55,59 +123,10 @@ def anti_ai_audit_payload(
     concrete_source_handles: list[str] | None = None,
     self_check_notes: list[str] | None = None,
     revision_targets: list[dict[str, object]] | None = None,
-    omit_last_line: bool = False,
+    omit_last_block: bool = False,
 ) -> dict[str, object]:
     manifest = anti_ai_skill_manifest()
-    lines = manifest["lines"][:-1] if omit_last_line else manifest["lines"]
-    draft_quote = draft_text.strip().splitlines()[0][:120] if draft_text.strip() else ""
-    paragraph_count_reviewed = len([part for part in draft_text.split("\n\n") if part.strip()])
-    line_rows = []
-    for line in lines:
-        line_number = int(line["line_number"])
-        line_text = str(line["text"])
-        status = "context" if not line_text.strip() else "passed"
-        excerpt = line_text.strip()[:80] or "<blank>"
-        line_rows.append(
-            {
-                "line_number": line_number,
-                "line_text_sha256": line["sha256"],
-                "requirement": f"Line {line_number} requirement from skill text: {excerpt}",
-                "status": status,
-                "evidence": f"Line {line_number} checked against draft and workflow contract.",
-                "draft_evidence": [
-                    {
-                        "kind": "not_applicable" if status == "context" else "draft_quote",
-                        "reference": (
-                            f"line {line_number} is context-only"
-                            if status == "context"
-                            else draft_quote
-                        ),
-                        "explanation": (
-                            f"Line {line_number} has no direct prose requirement."
-                            if status == "context"
-                            else f"Line {line_number} was checked against this exact draft sentence."
-                        ),
-                    }
-                ],
-                "whole_essay_evidence": {
-                    "scope": "whole_essay",
-                    "paragraph_count_reviewed": paragraph_count_reviewed,
-                    "method": (
-                        f"Reviewed all {paragraph_count_reviewed} paragraphs before "
-                        f"deciding skill line {line_number}."
-                    ),
-                    "finding": (
-                        f"Whole-essay review for line {line_number} found the fixture "
-                        "draft acceptable or context-only."
-                    ),
-                },
-                "line_application": (
-                    f"Line {line_number} applies to the fixture draft through the quoted "
-                    f"sentence or is classified as context: {excerpt}"
-                ),
-                "action_taken": f"Applied or classified line {line_number} during audit.",
-            }
-        )
+    block_rows = anti_ai_block_rows(draft_text, omit_last_block=omit_last_block)
     return {
         "pass": passes,
         "anti_ai_self_check": {
@@ -115,7 +134,7 @@ def anti_ai_audit_payload(
             "skill_sha256": manifest["sha256"],
             "skill_line_count": manifest["line_count"],
             "draft_sha256": draft_sha256(draft_text),
-            "line_audit": line_rows,
+            "block_audit": block_rows,
             "paragraph_count": paragraph_count,
             "paragraph_first_sentences": paragraph_first_sentences or ["A."],
             "first_sentence_chain_summarizes_essay": first_sentence_chain_summarizes_essay,
