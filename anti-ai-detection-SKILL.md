@@ -7,7 +7,7 @@ description: "Use this skill when the user is writing academic or submitted work
 
 ## Reality Check
 
-AI prose regresses to the mean: it is correct, balanced, and predictable. Detection tools exploit this by measuring perplexity (word predictability) and burstiness (sentence length variation). The goal is to break the patterns that make text statistically machine-like, not to introduce errors. The deeper goal is to sound like a specific person thinking through a specific source, not a machine producing balanced coverage.
+AI prose regresses to the mean: it is correct, balanced, and predictable. Detection tools exploit this by measuring perplexity (word predictability) and burstiness (sentence length variation). The goal is to BREAK these patterns and sound like a specific HUMAN thinking through a specific source, not a machine producing balanced coverage.
 
 ## Core Prose Standard
 
@@ -27,8 +27,6 @@ What helps most:
 ---
 
 ## HARD BAN: DASH AND COLON HABITS
-
-The em dash is the single most cited indicator of AI text. En dashes and colon-heavy explanation patterns have also become common model habits. Colons are especially suspicious when they create a neat "claim: explanation" rhythm, introduce tidy lists, or turn a sentence into a labeled summary.
 
 **Rule: Never use em dashes. Zero. Not one.**
 
@@ -50,7 +48,7 @@ Avoid colons as a default explanation tool. A colon is allowed only when the ass
 
 **Governing principle:** Prefer concrete verbs and plain nouns over Latinate abstractions and register-inflated substitutes. "Use" not "utilize." "Show" not "showcase." "Help" not "facilitate." If a word would feel stiff said aloud in a normal conversation, it's a candidate for replacement.
 
-The specific list below is calibrated to detection patterns observed through early 2026. Detectors update; models trained against these exact words have shifted to other words. Treat the list as illustrative of the _kind_ of word to avoid, not as the complete set. When in doubt, apply the governing principle.
+The specific list below is calibrated to detection patterns observed through early 2026. Treat the list as illustrative of the _kind_ of word to avoid, not as the complete set. When in doubt, apply the governing principle.
 
 **High-risk words (early 2026):**
 delve, tapestry, landscape (metaphorical), realm, embark, multifaceted, pivotal, underscores, showcasing, highlighting, emphasizing, foster, leverage, utilize, facilitate, enhance, streamline, elevate, robust, seamless, quietly, silently
@@ -79,7 +77,7 @@ crucial, vital, essential (when rotated interchangeably), nuanced, comprehensive
 
 Patterns to avoid: "not just X, but Y," "X goes beyond Y," "X is more than just Y," "it's not about X, it's about Y."
 
-**Rule:** Max one instance per 1,000 words. Prefer direct, affirmative statements. Instead of "It's not about working harder, it's about working smarter," write "Working smarter matters more than working harder."
+**Rule:** AVOID. Instead, prefer direct, affirmative statements. Instead of "It's not about working harder, it's about working smarter," write "Working smarter matters more than working harder."
 
 ### Participial Phrase Overuse ("X, doing Y")
 
@@ -87,7 +85,7 @@ Instruction-tuned models use present participial constructions (main clause + co
 
 Examples to avoid: "The system processes the data, revealing key patterns" / "She walked through the market, noting the changes."
 
-**Rule:** Max one participial phrase per 300 words. Rewrite as two sentences, or restructure so the -ing clause comes first.
+**Rule:** Avoid completely if possible.
 
 ### Correlative Conjunctions
 
@@ -112,21 +110,19 @@ AI sentences cluster around 15–20 words. Detection tools measure this as "burs
 - At least one sentence per page should exceed 30 words
 - Alternate long and short. The rhythm should feel uneven.
 
-**Anti-mechanical guard:** Short sentences must earn their brevity: end on a point, not a filler. "This matters." earns it. "It was good." doesn't. If you can't find a real reason for a short sentence, rewrite a long one to be longer instead of padding with a short filler. Burstiness from forced filler reads as a different AI tell ("chopped" prose) and some detectors now flag it. Similarly, do not manufacture burstiness by splitting long compound sentences into fragments. If the user's natural writing style favors long sentences with conjunctions and parenthetical asides, preserve that rhythm. Artificial shortening is as detectable as artificial uniformity.
+**Anti-mechanical guard:** Short sentences must earn their brevity: end on a point, not a filler. "This matters." earns it. "It was good." doesn't. If you can't find a real reason for a short sentence, rewrite a long one to be longer instead of padding with a short filler. Artificial shortening is as detectable as artificial uniformity.
 
 **No fake emphasis chains:** Do not stack clipped mini-sentences to simulate human rhythm. "The board's role is advisory. It can recommend. It cannot compel." sounds synthetic, not natural. If two or three ultra-short declarative sentences appear in a row, combine them into normal prose unless you are quoting speech or source language.
 
 ### Over-Chopping (Splitting Natural Clauses)
 
-LLMs often compensate for uniform sentence length by splitting one continuous observation into two short sentences. This creates its own AI tell. If two clauses share a subject, continue the same observation, or would sound natural when spoken together, keep them together. Use a conjunction, semicolon, parenthetical aside, or another normal sentence shape rather than chopping the thought apart just to create variation.
+LLMs often compensate for uniform sentence length by splitting one continuous observation into two short sentences. This creates its own AI tell.
 
-**Rule:** Before splitting a sentence in two, check whether the clauses belong to the same line of thought. If they do, keep them together. Short sentences should exist because the thought is genuinely short, not because a longer sentence was mechanically broken apart.
+**Rule:** Before splitting a sentence in two, check whether the clauses belong to the same line of thought. If they do, keep them together.
 
 ### Stacked Mini-Sentence Endings
 
-LLMs often end paragraphs with two or three clipped declarative sentences meant to land with rhetorical force. "They do not face the street. They ignore it." and "This was not a plan. It was an erasure." both read as manufactured emphasis. If the final observation is worth making, fold it into the preceding sentence or cut it.
-
-**Rule:** Do not end a paragraph with two or more consecutive sentences under 8 words unless quoting source language. One short closing sentence is fine. Two in a row is a tell.
+**IMPORTANT:** LLMs often end paragraphs with two or three clipped declarative sentences meant to land with rhetorical force. "They do not face the street. They ignore it." and "This was not a plan. It was an erasure." both read as manufactured emphasis. YOU MUST NOT DO THIS. If the final observation is worth making, fold it into the preceding sentence or cut it.
 
 ### Semantic Repetition
 
@@ -142,19 +138,17 @@ Example: "This improves clarity." → "It makes communication clearer." → "The
 
 ### Argument Development
 
-AI paragraphs often have good sentence-to-sentence flow but weak whole-argument development. Paragraphs circle the same point rather than advancing it; locally coherent, globally flat. This is the hardest tell to fake because fixing it requires actual thinking, not rewriting.
-
 **Rule:** Each paragraph should move the argument forward, not restate the thesis in new clothes. If you can read the first and last paragraph and feel nothing was missed, the middle isn't doing real work.
 
 ### Drafting Friction
 
-Human writing contains small irregularities that signal real thinking: an idea qualified mid-sentence, a point that takes longer than expected, an aside that doesn't resolve cleanly. AI text feels "too complete": every thread tied off, no loose ends, no sign of a mind working through difficulty.
+Human writing contains small irregularities that signal real thinking: an idea qualified mid-sentence, a point that takes longer than expected, an aside that doesn't resolve cleanly.
 
 **Rule:** Don't smooth everything out. A sentence that trails into qualification, or a paragraph that ends on an unresolved tension, reads more human than one that wraps up neatly.
 
 ### The AI Paragraph Template
 
-Almost every AI paragraph follows: (1) topic sentence → (2) supporting detail → (3) more detail → (4) wrap-up or transition. This is a dead giveaway when every paragraph does it.
+Almost every AI paragraph follows: (1) topic sentence → (2) supporting detail → (3) more detail → (4) wrap-up or transition. This is a dead giveaway when every paragraph does it. AVOID.
 
 ### Uniform Paragraph Length
 
@@ -177,8 +171,6 @@ AI paragraphs cluster at 3–5 sentences and 60–100 words each.
 
 ### Paragraph Endings
 
-AI wraps nearly every paragraph with a neat summary or transition. Human writers often just stop.
-
 **Rules:**
 
 - Not every paragraph needs a concluding sentence
@@ -195,8 +187,6 @@ AI frequently produces: "Despite its [positive qualities], [subject] faces chall
 
 ## TRANSITIONS: Stop Signposting
 
-AI tells the reader what it is about to do, does it, then tells the reader what it did.
-
 ### Avoid:
 
 - "Let's now turn to..." / "Having examined X, we can now consider Y"
@@ -209,6 +199,10 @@ AI tells the reader what it is about to do, does it, then tells the reader what 
 ---
 
 ## TONE AND VOICE
+
+### Voice Calibration
+
+**Rule:** When the user provides writing samples, match their actual rhythm, word choices, and quirks. The user's voice wins over every statistical rule in this document. With no sample, ask for 2–3 short paragraphs before a heavy rewrite.
 
 ### Avoid Excessive Hedging
 
@@ -240,15 +234,11 @@ AI covers every angle equally and wraps every point cleanly. Human writers take 
 
 If a sentence sounds like something a person would actually say, it is fine. If it sounds like a press release written by committee, rewrite it.
 
-### Register Bleed-Through
-
-Academic AI output tends to hit one register and hold it, usually "polished undergraduate." Real student writing shifts register as the writer tires or gets interested. Early paragraphs tend to be more careful; later paragraphs get looser, more direct, occasionally sharper. If the essay is long (>1000 words), the last third should read slightly differently from the first third: a bit more direct, a bit less hedged, sentences landing harder. Don't keep the same tight register end-to-end.
-
 ---
 
 ## THE RULE OF THREE
 
-AI defaults to grouping things in threes because it has learned this is "good writing." It is now a structural tell when overused, but humans use triplets constantly in real prose. The problem is density, not the triplet itself.
+AI defaults to grouping things in threes because it has learned this is "good writing." 
 
 **Rules:**
 
@@ -299,19 +289,10 @@ Run these in order. Stop at the first one you fail and fix before continuing.
 
 ## Additional High-Risk Patterns
 
-Apply these in order: first calibrate to the user's actual voice, then remove inflated wording, then fix sentence-pattern tells, then force source specificity, then check the ending.
-
-### Voice Calibration
-
-Detection tools measure how much your text resembles the average output of an LLM. The best defense is text that resembles you specifically, not "human writing in general." Generic "human-sounding" output produced by following anti-AI rules still comes from the same underlying probability distribution as the AI text it is replacing, and detectors can pick that up.
-
-**Rule:** Before rewriting any submitted academic work, the user should provide 2 to 3 paragraphs of their own writing from another context (a different class, a personal email, a journal entry). The rewrite should match the user's actual sentence rhythm, word choices, hedging habits, and structural quirks rather than producing generic clean prose. If the user's samples show long, conjunction-heavy sentences with embedded parenthetical asides, the rewrite must preserve that habit even when other rules in this document push toward shorter sentences. The user's voice wins over statistical targets. If no sample is provided, ask for one before doing a heavy rewrite.
-
 ### Copula Avoidance
 
-LLMs systematically avoid plain "is," "are," "was," and "has." They reach for inflated substitutes that gesture at function or role: "serves as," "functions as," "acts as," "stands as," "represents," "constitutes," "embodies," "operates as." Detectors notice this because human writers default to plain copulas and only reach for the inflated version when the meaning genuinely requires it.
 
-**Rule:** Default to "is," "are," "was," "has." Use "serves as," "functions as," "acts as," "represents," and similar only when the inflated verb carries meaning the plain copula would lose. If "is" works, use "is."
+**Rule:** Default to "is," "are," "was," "has." Rarely use "serves as," "functions as," "acts as," "represents," and similar (only when the inflated verb carries meaning the plain copula would lose). If "is" works, use "is."
 Examples:
 
 "The board acts as an arbiter" → "The board is an arbiter"
@@ -326,8 +307,6 @@ LLMs use multi-word phrases where a single word works. "In order to" instead of 
 
 ### Significance Inflation
 
-LLMs frame their own observations as important rather than letting the content demonstrate importance. Tells include: "the most important," "the key issue," "deserves attention," "worth noting," "the crucial point," "matters here," "the heart of the matter," "what is striking," "what is notable."
-
 **Rule:** Cut self-importance framing. State the observation directly without telling the reader it is significant. If the point is significant, the prose will show it. If the prose does not show it, adding "this is important" will not fix the prose.
 Examples:
 
@@ -336,19 +315,13 @@ Examples:
 
 ### Synonym Cycling
 
-LLMs avoid repeating the same noun and reach for variants: protagonist becomes "main character" becomes "central figure" becomes "hero." This is taught as good style in school but is actually a strong AI tell, because real writers repeat the clearest word. The variants often introduce small meaning shifts the writer didn't intend.
-
 **Rule:** Repeat the clearest noun rather than cycling through synonyms. "Building" stays "building." "Developer" stays "developer." "Board" stays "board." Vary only when the alternate word carries meaningfully different information (e.g., "the building" vs. "the proposal" vs. "the project" if those genuinely refer to different things).
 
 ### False Ranges
 
-LLMs love "from X to Y" constructions to suggest comprehensive coverage. "From bustling cities to serene landscapes," "from solo developers to enterprise teams," "from a member of Congress to city council members." The pattern signals comprehensiveness without actually establishing it, and detectors flag it.
-
 **Rule:** Use "from X to Y" only when describing a literal range with a clear axis (years, distances, dollar amounts, temperatures). For lists of items, just list the items. "Representatives from a congressional office and several council offices" is better than "spanning every level from a member of Congress to council members."
 
 ### Superficial -ing Analyses
-
-LLMs string together present participles to fake analytical depth: "showcasing," "highlighting," "reflecting," "symbolizing," "underscoring," "demonstrating," "illustrating," "embodying." These verbs claim that something means something without doing the work of showing how.
 
 **Rule:** Cut "showcasing," "highlighting," "reflecting," "symbolizing," "underscoring," "demonstrating," "illustrating," "embodying" when used as present participles attached to a main clause. Either delete the participle phrase entirely or rewrite as a separate sentence that actually argues for the connection.
 Example:
@@ -357,102 +330,10 @@ Example:
 
 ### Vague Attributions
 
-LLMs cite generic authorities to add weight without committing to a source. "Experts believe," "studies show," "industry observers note," "scholars argue," "many have suggested," "it is widely understood." Real academic writing names the specific source.
-
 **Rule:** Either name the specific source ("Arnstein argues," "the board's resolution states," "Davidoff writes in his 1965 article") or remove the attribution and state the claim directly. Never use "experts," "scholars," "observers," or "many" as the subject of a sentence.
 
 ### Generic Conclusions
 
-LLMs end with vague forward-looking statements: "The future looks bright," "exciting times lie ahead," "much remains to be seen," "only time will tell," "the implications will continue to unfold." These are filler that sounds like a conclusion without making any actual claim.
-
 **Rule:** End on a specific claim or a specific question, never on a forward-looking generality. If the essay has nothing specific to say at the end, the essay is not done. "Whether the LPC acts on the recommendation remains to be seen" is borderline acceptable only because the LPC is named and the action is concrete. "Time will tell whether community participation matters" would not be acceptable.
 
 ---
-
-## Paragraph-Level Before/After Gallery
-
-Rules in the abstract are easy to ignore. The samples below show the exact rewrites this skill expects. Pattern-match against them when revising.
-
-### Example 1: Uniform topic-sentence paragraph shape
-
-**Before (AI-flagged at high confidence):**
-
-> The algorithm itself operates on two static objects before the dynamic-programming pass begins. The first is the local cost matrix C, where each entry stores a pairwise distance. The matrix is, in effect, a heatmap of similarity, and the alignment task amounts to finding a route through its low-cost valleys. The second is the warping path, a sequence of cells through C that must satisfy three conditions: boundary, monotonicity, and step size.
-
-What flags it: opens with the topic sentence, every subsequent sentence supports it, ends on a tidy parallel-structure summary. Locally coherent, globally flat.
-
-**After (real-writer rhythm):**
-
-> Two objects matter before the dynamic-programming pass begins. The local cost matrix C stores every pairwise distance between the two sequences, so cell (i, j) reports how unlike x_i and y_j are. Think of C as a similarity heatmap whose low-cost valleys mark candidate alignments. On top of C the algorithm carves a warping path, which is a list of cells the alignment will actually use. That path is not free; it has to start at one corner, end at the other, never move backward, and never jump.
-
-What changed: opener leads with the noun count, not a topic claim. The middle adds a worked-example reading ("Think of C as..."). The close lands on a concrete constraint list, not a parallel-structure paraphrase of the opener.
-
-### Example 2: Paragraph-length variance
-
-**Before (uniform 100-150 word paragraphs throughout):**
-
-> [Paragraph 1, 130 words.] [Paragraph 2, 140 words.] [Paragraph 3, 125 words.] [Paragraph 4, 135 words.] ...
-
-What flags it: even paragraph rhythm reads as machine output regardless of content.
-
-**After (real-writer variance):**
-
-> [Paragraph 1, 130 words, sets up the problem.]
->
-> Then a beat. One sentence.
->
-> [Paragraph 3, 220 words, the deep dive.] [Paragraph 4, 60 words, a short pivot.] [Paragraph 5, 150 words, the close.]
-
-What changed: at least one paragraph is two sentences. One paragraph runs much longer than the others because the writer cared more about it.
-
-### Example 3: Filler removal
-
-**Before:** "In order to make the algorithm tractable, the designers introduced global constraints. In essence, these constraints define a feasible region around the diagonal. Essentially, only paths inside this region are evaluated."
-
-**After:** "To make the algorithm tractable, the designers introduced global constraints. These constraints define a feasible region around the diagonal. Only paths inside the region are evaluated."
-
-What changed: "in order to" → "to". Deleted "In essence,". Deleted "Essentially,". Three filler hits go away without changing the meaning.
-
-### Example 4: Significance inflation
-
-**Before:** "The most important consequence is that the recurrence runs in O(NM) time. What is striking here is that this matches the cost of the matrix fill itself, which deserves attention because it bounds the algorithm's scaling."
-
-**After:** "The recurrence runs in O(NM) time, which matches the matrix-fill cost and bounds how the algorithm scales."
-
-What changed: deleted "The most important consequence is", deleted "What is striking here is that", deleted "which deserves attention because". The point survives and the sentence is faster.
-
-### Example 5: Vague attribution → named source
-
-**Before:** "Experts believe that DTW is poorly suited to indexing because it does not obey the triangle inequality. Studies show that this limits its use in time-series databases."
-
-**After:** "Senin notes that DTW does not obey the triangle inequality, which is what limits its use in indexing schemes for time-series databases (p. 19)."
-
-What changed: "Experts believe" → "Senin notes". Removed "Studies show that". Added a page reference as a concrete handle.
-
-### Example 6: Generic forward-looking closing
-
-**Before:** "Only time will tell how the field will continue to develop, but the implications for time-series analysis will only continue to unfold."
-
-**After:** "The successor algorithm the report names (CSDTW) bolts a hidden-Markov-model layer onto DTW, which is the review's tacit admission that the basic recurrence is a starting point and not an endpoint."
-
-What changed: vague futurology replaced with a specific named successor and a specific judgment about what its existence implies.
-
----
-
-## How to Use This Skill in a Schema-Constrained Stage
-
-If your output JSON has an `anti_ai_self_check` field, populating that object IS how you run this skill. The expected workflow at generation time:
-
-1. Write the draft.
-2. Re-read it once.
-3. List the first sentence of every paragraph in `paragraph_first_sentences`. Read the list alone. If it summarizes the essay, your middle paragraphs are restating, not advancing. Rewrite at least one middle paragraph before you finalize.
-4. Count `paragraph_count` and `paragraphs_under_50_words`. If the essay is >1000 words and `paragraphs_under_50_words == 0`, add a short paragraph.
-5. Search your text for every entry in the filler-phrases list. Put any you used in `filler_phrases_used`. If the list is non-empty, rewrite to remove them.
-6. Search for every entry in the significance-inflation list. Same drill into `significance_inflation_phrases`.
-7. Search for vague-authority subjects ("experts believe", "studies show"). Same drill into `vague_attributions_used`.
-8. List every concrete source handle the prose actually contains (page numbers, named-source-plus-date parentheticals, quoted phrases of 8+ characters) in `concrete_source_handles`. If empty, add at least one.
-9. For each bullet in `<style_guidance_checklist>`, fill one `style_guidance_grades` row. `followed: true` requires a `where` quote or paragraph reference.
-10. If you removed any phrases during this pass, note them briefly in `self_check_notes` so the validator can confirm you actually ran the check.
-
-A response with everything at zero / empty / true-without-evidence is treated as a failed audit.
-
