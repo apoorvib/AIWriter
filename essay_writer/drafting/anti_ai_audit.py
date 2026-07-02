@@ -26,31 +26,50 @@ from essay_writer.drafting.anti_ai_skill import ANTI_AI_SKILL_DOCUMENT
 from essay_writer.drafting.prompts import ANTI_AI_SELF_CHECK_SCHEMA
 
 
-ANTI_AI_LINE_AUDIT_SCHEMA: dict[str, Any] = {
+_WHOLE_ESSAY_EVIDENCE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "scope",
+        "paragraph_count_reviewed",
+        "method",
+        "finding",
+    ],
+    "properties": {
+        "scope": {"type": "string", "enum": ["whole_essay"]},
+        "paragraph_count_reviewed": {"type": "integer", "minimum": 0},
+        "method": {"type": "string"},
+        "finding": {"type": "string"},
+    },
+}
+
+
+# One audit row per blank-line block of anti-ai-detection-SKILL.md (~191 blocks)
+# instead of one per line (~458). Block coverage keeps the audit payload small
+# enough to submit inline while still forcing full, hash-bound coverage of the
+# skill. `whole_essay_evidence` is optional here: it is required by the commit
+# validator only for non-`context` rows, so the ~69 structural blocks stay
+# light and only the ~122 guidance blocks carry a full whole-essay review.
+ANTI_AI_BLOCK_AUDIT_SCHEMA: dict[str, Any] = {
     "type": "array",
     "items": {
         "type": "object",
         "additionalProperties": False,
         "required": [
-            "line_number",
-            "line_text_sha256",
-            "requirement",
+            "block_index",
+            "block_text_sha256",
             "status",
-            "evidence",
             "draft_evidence",
-            "whole_essay_evidence",
-            "line_application",
-            "action_taken",
+            "finding",
+            "block_application",
         ],
         "properties": {
-            "line_number": {"type": "integer", "minimum": 1},
-            "line_text_sha256": {"type": "string"},
-            "requirement": {"type": "string"},
+            "block_index": {"type": "integer", "minimum": 1},
+            "block_text_sha256": {"type": "string"},
             "status": {
                 "type": "string",
-                "enum": ["passed", "failed", "blocked", "context"],
+                "enum": ["passed", "failed", "blocked", "not_applicable", "context"],
             },
-            "evidence": {"type": "string"},
             "draft_evidence": {
                 "type": "array",
                 "minItems": 1,
@@ -73,24 +92,9 @@ ANTI_AI_LINE_AUDIT_SCHEMA: dict[str, Any] = {
                     },
                 },
             },
-            "whole_essay_evidence": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": [
-                    "scope",
-                    "paragraph_count_reviewed",
-                    "method",
-                    "finding",
-                ],
-                "properties": {
-                    "scope": {"type": "string", "enum": ["whole_essay"]},
-                    "paragraph_count_reviewed": {"type": "integer", "minimum": 0},
-                    "method": {"type": "string"},
-                    "finding": {"type": "string"},
-                },
-            },
-            "line_application": {"type": "string"},
-            "action_taken": {"type": "string"},
+            "finding": {"type": "string"},
+            "block_application": {"type": "string"},
+            "whole_essay_evidence": _WHOLE_ESSAY_EVIDENCE_SCHEMA,
         },
     },
 }
@@ -103,7 +107,7 @@ ANTI_AI_AUDIT_SELF_CHECK_SCHEMA: dict[str, Any] = {
         "skill_sha256",
         "skill_line_count",
         "draft_sha256",
-        "line_audit",
+        "block_audit",
         *ANTI_AI_SELF_CHECK_SCHEMA["required"],
         "unmet_requirements",
         "final_decision",
@@ -114,15 +118,15 @@ ANTI_AI_AUDIT_SELF_CHECK_SCHEMA: dict[str, Any] = {
         "skill_sha256": {"type": "string"},
         "skill_line_count": {"type": "integer", "minimum": 1},
         "draft_sha256": {"type": "string"},
-        "line_audit": ANTI_AI_LINE_AUDIT_SCHEMA,
+        "block_audit": ANTI_AI_BLOCK_AUDIT_SCHEMA,
         "unmet_requirements": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["line_number", "section", "status", "reason", "risk"],
+                "required": ["block_index", "section", "status", "reason", "risk"],
                 "properties": {
-                    "line_number": {"type": "integer", "minimum": 1},
+                    "block_index": {"type": "integer", "minimum": 1},
                     "section": {"type": "string"},
                     "status": {
                         "type": "string",
@@ -175,11 +179,13 @@ ANTI-AI SELF-CHECK (this is what you return):
 For each item in the 7-step self-check in the skill, populate the matching field
 in `anti_ai_self_check`. The user message also contains:
 
-- `skill_line_manifest`: every line in the repo-local anti-AI skill document,
-  with line numbers and SHA-256 hashes. You MUST produce one `line_audit` row
-  for every line, including frontmatter, headings, bullets, blank lines, and
-  examples. Use `status: "context"` for lines that are structural/contextual
-  rather than direct requirements.
+- `block_manifest`: every blank-line-separated block (paragraph) of the
+  repo-local anti-AI skill document, with a `block_index`, the exact block
+  `text`, a `block_text_sha256`, and an `is_structural` hint. You MUST produce
+  exactly one `block_audit` row for every block. Use `status: "context"` for
+  structural blocks (headings, the `---` frontmatter/rules, and blocks that
+  carry no prose requirement — `is_structural: true` is your hint). For every
+  guidance block, apply that block's guidance to the WHOLE draft.
 - `deterministic_findings`: counts the application already computed (em dashes,
   filler hits, paragraph counts). Use these as ground truth for the count-shaped
   fields, but list the actual offending phrases in the array fields.
@@ -197,20 +203,23 @@ Also bind the audit to the exact files you read:
 - copy `skill_file`, `skill_sha256`, and `skill_line_count` from the user
   message into `anti_ai_self_check`.
 - copy `draft_sha256` from the user message into `anti_ai_self_check`.
-- every `line_audit.line_number` and `line_audit.line_text_sha256` must match
-  the supplied `skill_line_manifest`; missing or mismatched line rows cause
+- every `block_audit.block_index` and `block_audit.block_text_sha256` must match
+  the supplied `block_manifest`; missing, extra, or mismatched block rows cause
   commit rejection.
-- every non-context `line_audit` row must include `draft_evidence` tied to the
+- every non-context `block_audit` row must include `draft_evidence` tied to the
   audited draft: a valid paragraph reference, an exact draft quote, or a named
   deterministic check. Do not use `not_applicable` for a prose rule that was
   actually checked against the draft.
-- every `line_audit` row must include `whole_essay_evidence` with
+- every non-context `block_audit` row must include `whole_essay_evidence` with
   `scope: "whole_essay"` and `paragraph_count_reviewed` equal to the actual
-  audited draft paragraph count. This proves the line was checked against the
-  entire essay, not only a convenient local excerpt.
-- every `line_audit` row must include `line_application`: a line-specific
-  explanation of how that exact skill-file line affected the audit decision.
-- list every blocked or failed skill-line requirement in `unmet_requirements`.
+  audited draft paragraph count. This proves the block was checked against the
+  entire essay, not only a convenient local excerpt. Structural `context` rows
+  may omit `whole_essay_evidence`.
+- every non-context `block_audit` row must include `block_application`: a
+  block-specific explanation of how that exact skill block affected the audit
+  decision.
+- list every blocked or failed skill block in `unmet_requirements`, referencing
+  its `block_index`.
 - fill `final_decision` honestly. If voice calibration is missing, do not claim
   detector-risk reduction is safe.
 

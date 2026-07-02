@@ -5,13 +5,7 @@ description: "Use this skill when the user is writing academic or submitted work
 
 # Anti-AI Detection: Writing Text That Reads as Human
 
-## Who This Skill Is For
-
-This skill reduces detector-risk signals while preserving readable, submittable academic prose. It is calibrated for cases where the user is worried about AI-detection tools such as Turnitin, GPTZero, Copyleaks, or Originality.ai.
-
-## Detector Reality Check
-
-AI-detection tools are unreliable and can produce false positives, especially on heavily polished, formulaic, or non-native English writing. Grammarly-heavy human text can also get flagged.
+## Reality Check
 
 AI prose regresses to the mean: it is correct, balanced, and predictable. Detection tools exploit this by measuring perplexity (word predictability) and burstiness (sentence length variation). The goal is to break the patterns that make text statistically machine-like, not to introduce errors. The deeper goal is to sound like a specific person thinking through a specific source, not a machine producing balanced coverage.
 
@@ -59,7 +53,7 @@ Avoid colons as a default explanation tool. A colon is allowed only when the ass
 The specific list below is calibrated to detection patterns observed through early 2026. Detectors update; models trained against these exact words have shifted to other words. Treat the list as illustrative of the _kind_ of word to avoid, not as the complete set. When in doubt, apply the governing principle.
 
 **High-risk words (early 2026):**
-delve, tapestry, landscape (metaphorical), realm, embark, multifaceted, pivotal, underscores, showcasing, highlighting, emphasizing, foster, leverage, utilize, facilitate, enhance, streamline, elevate, robust, seamless
+delve, tapestry, landscape (metaphorical), realm, embark, multifaceted, pivotal, underscores, showcasing, highlighting, emphasizing, foster, leverage, utilize, facilitate, enhance, streamline, elevate, robust, seamless, quietly, silently
 
 **Contextually risky words (suspicious in clusters):**
 crucial, vital, essential (when rotated interchangeably), nuanced, comprehensive, intricate, noteworthy, bustling, enigmatic, captivating, enduring, cornerstone, game-changer, treasure trove, testament to

@@ -79,7 +79,7 @@ This is the target workflow surface. During partial implementation, call only to
 39. if `commit_style_revision` returns a hard-tier rejection, re-prepare and
     re-submit only the windows it names, then call `commit_style_revision`
     again with the updated `work_result_id`s
-40. `prepare_anti_ai_audit` (bounded single-skill audit on the assembled draft). REQUIRED: `prepare_validation` refuses with `anti_ai_audit_required` until a line-bound anti-AI audit has been committed for the exact draft being validated. A job-level older audit is not enough.
+40. `prepare_anti_ai_audit` (bounded single-skill audit on the assembled draft). REQUIRED: `prepare_validation` refuses with `anti_ai_audit_required` until a block-bound anti-AI audit has been committed for the exact draft being validated. A job-level older audit is not enough.
 41. `submit_work_result` (produce the `anti_ai_self_check` JSON)
 42. `commit_anti_ai_audit`
 43. if the audit returns `audit_pass: false` with `revision_targets`, prefer
@@ -104,12 +104,15 @@ contract that gets ignored when it lives inside a multi-goal drafting prompt.
 The audit's system prompt contains ONLY the anti-AI skill. The response schema
 forces the auditor to fill the seven self-check fields, grade each
 writing-style guidance bullet, copy the current skill-file hash and draft hash,
-and produce one `line_audit` row for every line of `anti-ai-detection-SKILL.md`.
-Empty arrays, missing line coverage, mismatched line hashes, stale skill hashes,
+and produce one `block_audit` row for every blank-line block (paragraph) of
+`anti-ai-detection-SKILL.md` (~191 blocks, not the ~458 lines — block coverage
+keeps the committed payload small enough to submit inline). Empty arrays,
+missing block coverage, mismatched block hashes, stale skill hashes,
 draft-evidence rows that do not point to the audited draft, missing
-whole-essay review evidence for any skill line, generic line-application
+whole-essay review evidence for any guidance block, generic block-application
 reasoning, or a draft hash that does not match the audited draft fail the
-audit.
+audit. Structural blocks (headings, rules) may use a light `status:"context"`
+row.
 
 The packet's `delegation.recommended=true` and `suggested_role="anti_ai_auditor"`.
 It also declares `required_model_tier="frontier"`. Dispatch it with

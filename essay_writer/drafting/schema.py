@@ -31,25 +31,29 @@ class StyleGuidanceGrade:
 
 
 @dataclass(frozen=True)
-class AntiAISkillLineAudit:
-    """One line-level proof row for the anti-AI skill document."""
+class AntiAISkillBlockAudit:
+    """One block-level proof row for the anti-AI skill document.
 
-    line_number: int
-    line_text_sha256: str
-    requirement: str
+    A block is a blank-line-separated paragraph of the skill file (~191 total),
+    which replaces the old per-line row (~458) so the committed audit payload is
+    small enough to submit inline. Structural blocks carry a light
+    ``status="context"`` row; guidance blocks carry full draft evidence and a
+    whole-essay review."""
+
+    block_index: int
+    block_text_sha256: str
     status: str
-    evidence: str
-    action_taken: str
+    finding: str = ""
+    block_application: str = ""
     draft_evidence: list[dict[str, str]] = field(default_factory=list)
     whole_essay_evidence: dict[str, object] = field(default_factory=dict)
-    line_application: str = ""
 
 
 @dataclass(frozen=True)
 class AntiAIUnmetRequirement:
-    """A skill-line requirement the agent could not satisfy."""
+    """A skill block the agent could not satisfy."""
 
-    line_number: int
+    block_index: int
     section: str
     status: str
     reason: str
@@ -76,7 +80,7 @@ class AntiAISelfCheck:
     skill_sha256: str = ""
     skill_line_count: int = 0
     draft_sha256: str = ""
-    line_audit: list[AntiAISkillLineAudit] = field(default_factory=list)
+    block_audit: list[AntiAISkillBlockAudit] = field(default_factory=list)
     paragraph_count: int = 0
     paragraph_first_sentences: list[str] = field(default_factory=list)
     first_sentence_chain_summarizes_essay: bool = True

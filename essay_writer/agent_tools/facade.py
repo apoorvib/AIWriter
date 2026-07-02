@@ -50,7 +50,11 @@ from essay_writer.drafting.anti_ai_audit import (
     ANTI_AI_AUDIT_SCHEMA,
     ANTI_AI_AUDIT_SYSTEM_PROMPT,
 )
-from essay_writer.drafting.anti_ai_skill import anti_ai_skill_manifest, draft_sha256
+from essay_writer.drafting.anti_ai_skill import (
+    anti_ai_block_manifest,
+    anti_ai_skill_manifest,
+    draft_sha256,
+)
 from essay_writer.drafting.prompts import DRAFTING_SCHEMA, DRAFTING_SYSTEM_PROMPT
 from essay_writer.drafting.schema import utc_now_iso
 from essay_writer.drafting.style_revision import (
@@ -5847,6 +5851,7 @@ class AgentToolFacade:
 
         det = run_validation_deterministic_checks(draft.content)
         skill_manifest = anti_ai_skill_manifest()
+        block_manifest = anti_ai_block_manifest()
         paragraphs = [p for p in draft.content.split("\n\n") if p.strip()]
         whole_draft_context = {
             "paragraph_count": len(paragraphs),
@@ -5882,7 +5887,10 @@ class AgentToolFacade:
                 "skill_sha256": skill_manifest["sha256"],
                 "skill_line_count": skill_manifest["line_count"],
             },
-            "skill_line_manifest": skill_manifest["lines"],
+            # Per-block coverage: one audit row per blank-line block of the skill
+            # file (~191) replaces the per-line manifest (~458 rows). This is the
+            # change that keeps the audit payload small enough to submit inline.
+            "block_manifest": block_manifest["blocks"],
             "deterministic_findings": asdict(det),
             "whole_draft_context": whole_draft_context,
             "style_guidance_checklist": guidance_bullets,
@@ -5995,7 +6003,7 @@ class AgentToolFacade:
         from essay_writer.drafting.schema import (
             AntiAIFinalDecision,
             AntiAISelfCheck,
-            AntiAISkillLineAudit,
+            AntiAISkillBlockAudit,
             AntiAIUnmetRequirement,
             EssayDraft,
             StyleGuidanceGrade,
@@ -6055,14 +6063,13 @@ class AgentToolFacade:
             return binding_error
 
         audit_payload = result.payload.get("anti_ai_self_check", {}) or {}
-        line_audit = [
-            AntiAISkillLineAudit(
-                line_number=int(row.get("line_number", 0) or 0),
-                line_text_sha256=str(row.get("line_text_sha256", "")).strip(),
-                requirement=str(row.get("requirement", "")).strip(),
+        block_audit = [
+            AntiAISkillBlockAudit(
+                block_index=int(row.get("block_index", 0) or 0),
+                block_text_sha256=str(row.get("block_text_sha256", "")).strip(),
                 status=str(row.get("status", "")).strip(),
-                evidence=str(row.get("evidence", "")).strip(),
-                action_taken=str(row.get("action_taken", "")).strip(),
+                finding=str(row.get("finding", "")).strip(),
+                block_application=str(row.get("block_application", "")).strip(),
                 draft_evidence=[
                     {
                         "kind": str(item.get("kind", "")).strip(),
@@ -6073,9 +6080,8 @@ class AgentToolFacade:
                     if isinstance(item, dict)
                 ],
                 whole_essay_evidence=dict(row.get("whole_essay_evidence", {}) or {}),
-                line_application=str(row.get("line_application", "")).strip(),
             )
-            for row in audit_payload.get("line_audit", []) or []
+            for row in audit_payload.get("block_audit", []) or []
             if isinstance(row, dict)
         ]
         grades = [
@@ -6090,7 +6096,7 @@ class AgentToolFacade:
         ]
         unmet_requirements = [
             AntiAIUnmetRequirement(
-                line_number=int(row.get("line_number", 0) or 0),
+                block_index=int(row.get("block_index", 0) or 0),
                 section=str(row.get("section", "")).strip(),
                 status=str(row.get("status", "")).strip(),
                 reason=str(row.get("reason", "")).strip(),
@@ -6117,7 +6123,7 @@ class AgentToolFacade:
             skill_sha256=str(audit_payload.get("skill_sha256", "")).strip(),
             skill_line_count=int(audit_payload.get("skill_line_count", 0) or 0),
             draft_sha256=str(audit_payload.get("draft_sha256", "")).strip(),
-            line_audit=line_audit,
+            block_audit=block_audit,
             paragraph_count=int(audit_payload.get("paragraph_count", 0) or 0),
             paragraph_first_sentences=[
                 str(s) for s in audit_payload.get("paragraph_first_sentences", []) or []
@@ -7826,49 +7832,52 @@ def hard_tier_anti_ai_violations(det: DeterministicCheckResult) -> list[dict[str
     return violations
 
 
-def _anti_ai_line_reasoning_error(
+def _anti_ai_block_reasoning_error(
     row: dict[str, object],
     *,
-    line_number: int,
-    line_text: str,
+    block_index: int,
+    block_text: str,
     tool_name: str,
 ) -> ToolResult | None:
-    application = str(row.get("line_application", "")).strip()
+    # Structural/context blocks carry no prose requirement; skip reasoning depth.
+    if str(row.get("status", "")).strip() == "context":
+        return None
+    application = str(row.get("block_application", "")).strip()
     if len(application) < 25:
         return _error_result(
             tool_name,
-            code="anti_ai_skill_line_audit_weak_reasoning",
+            code="anti_ai_block_audit_weak_reasoning",
             message=(
-                "anti-AI audit line_application is too thin to prove "
-                f"line-specific reasoning for skill line {line_number}."
+                "anti-AI audit block_application is too thin to prove "
+                f"block-specific reasoning for skill block {block_index}."
             ),
-            exc=ValueError("line_application"),
+            exc=ValueError("block_application"),
         )
     lowered_application = application.lower()
-    if f"line {line_number}" in lowered_application:
+    if f"block {block_index}" in lowered_application:
         return None
-    line_words = [
+    block_words = [
         word
-        for word in re.findall(r"[a-zA-Z][a-zA-Z'-]{3,}", line_text.lower())
+        for word in re.findall(r"[a-zA-Z][a-zA-Z'-]{3,}", block_text.lower())
         if word not in {"this", "that", "with", "from", "must", "should", "will"}
     ]
-    if line_words and any(word in lowered_application for word in line_words[:8]):
+    if block_words and any(word in lowered_application for word in block_words[:12]):
         return None
     return _error_result(
         tool_name,
-        code="anti_ai_skill_line_audit_weak_reasoning",
+        code="anti_ai_block_audit_weak_reasoning",
         message=(
-            "anti-AI audit line_application must tie its reasoning to the "
-            f"specific skill-file line {line_number}, not just a generic checklist."
+            "anti-AI audit block_application must tie its reasoning to the "
+            f"specific skill-file block {block_index}, not just a generic checklist."
         ),
-        exc=ValueError("line_application"),
+        exc=ValueError("block_application"),
     )
 
 
-def _anti_ai_line_draft_evidence_error(
+def _anti_ai_block_draft_evidence_error(
     row: dict[str, object],
     *,
-    line_number: int,
+    block_index: int,
     draft_text: str,
     tool_name: str,
 ) -> ToolResult | None:
@@ -7876,10 +7885,10 @@ def _anti_ai_line_draft_evidence_error(
     if not isinstance(evidence_items, list) or not evidence_items:
         return _error_result(
             tool_name,
-            code="anti_ai_skill_line_audit_missing_draft_evidence",
+            code="anti_ai_block_audit_missing_draft_evidence",
             message=(
                 "anti-AI audit rows must include draft_evidence for every "
-                f"skill line; line {line_number} did not."
+                f"skill block; block {block_index} did not."
             ),
             exc=ValueError("draft_evidence"),
         )
@@ -7909,31 +7918,35 @@ def _anti_ai_line_draft_evidence_error(
         return None
     return _error_result(
         tool_name,
-        code="anti_ai_skill_line_audit_missing_draft_evidence",
+        code="anti_ai_block_audit_missing_draft_evidence",
         message=(
             "anti-AI audit non-context rows must cite draft-specific evidence "
-            f"for skill line {line_number}: an exact draft quote, paragraph "
+            f"for skill block {block_index}: an exact draft quote, paragraph "
             "reference, or deterministic check."
         ),
         exc=ValueError("draft_evidence"),
     )
 
 
-def _anti_ai_line_whole_essay_error(
+def _anti_ai_block_whole_essay_error(
     row: dict[str, object],
     *,
-    line_number: int,
+    block_index: int,
     paragraph_count: int,
     tool_name: str,
 ) -> ToolResult | None:
+    # Structural/context blocks may omit whole_essay_evidence (this is what
+    # keeps the ~69 structural rows light). Only guidance rows must prove it.
+    if str(row.get("status", "")).strip() == "context":
+        return None
     whole = row.get("whole_essay_evidence")
     if not isinstance(whole, dict):
         return _error_result(
             tool_name,
-            code="anti_ai_skill_line_audit_missing_whole_essay_review",
+            code="anti_ai_block_audit_missing_whole_essay_review",
             message=(
-                "anti-AI audit rows must include whole_essay_evidence for every "
-                f"skill line; line {line_number} did not."
+                "anti-AI audit non-context rows must include whole_essay_evidence "
+                f"for every guidance block; block {block_index} did not."
             ),
             exc=ValueError("whole_essay_evidence"),
         )
@@ -7952,10 +7965,10 @@ def _anti_ai_line_whole_essay_error(
     ):
         return _error_result(
             tool_name,
-            code="anti_ai_skill_line_audit_missing_whole_essay_review",
+            code="anti_ai_block_audit_missing_whole_essay_review",
             message=(
                 "anti-AI audit rows must prove whole-essay review for each "
-                f"skill line. Line {line_number} must use scope='whole_essay', "
+                f"guidance block. Block {block_index} must use scope='whole_essay', "
                 "the exact audited paragraph count, and a substantive method/finding."
             ),
             exc=ValueError("whole_essay_evidence"),
@@ -8030,39 +8043,40 @@ def _validate_anti_ai_audit_binding(
             exc=ValueError("draft_sha256"),
         )
 
-    rows = audit.get("line_audit", [])
+    rows = audit.get("block_audit", [])
     if not isinstance(rows, list):
         return _error_result(
             tool_name,
-            code="anti_ai_skill_line_audit_invalid",
-            message="anti-AI audit line_audit must be a list",
-            exc=ValueError("line_audit"),
+            code="anti_ai_block_audit_invalid",
+            message="anti-AI audit block_audit must be a list",
+            exc=ValueError("block_audit"),
         )
-    by_line: dict[int, dict[str, object]] = {}
+    by_block: dict[int, dict[str, object]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
         try:
-            line_number = int(row.get("line_number", 0) or 0)
+            block_index = int(row.get("block_index", 0) or 0)
         except (TypeError, ValueError):
             continue
-        if line_number in by_line:
+        if block_index in by_block:
             return _error_result(
                 tool_name,
-                code="anti_ai_skill_line_audit_duplicate",
-                message=f"anti-AI audit has duplicate line coverage for line {line_number}",
-                exc=ValueError(line_number),
+                code="anti_ai_block_audit_duplicate",
+                message=f"anti-AI audit has duplicate coverage for block {block_index}",
+                exc=ValueError(block_index),
             )
-        by_line[line_number] = row
+        by_block[block_index] = row
 
-    manifest_lines = manifest["lines"]
-    assert isinstance(manifest_lines, list)
+    block_manifest = anti_ai_block_manifest()
+    manifest_blocks = block_manifest["blocks"]
+    assert isinstance(manifest_blocks, list)
     expected_numbers = {
-        int(line["line_number"])
-        for line in manifest_lines
-        if isinstance(line, dict)
+        int(block["block_index"])
+        for block in manifest_blocks
+        if isinstance(block, dict)
     }
-    present_numbers = set(by_line)
+    present_numbers = set(by_block)
     if present_numbers != expected_numbers:
         missing = sorted(expected_numbers - present_numbers)
         extra = sorted(present_numbers - expected_numbers)
@@ -8070,116 +8084,94 @@ def _validate_anti_ai_audit_binding(
             ok=False,
             tool_name=tool_name,
             error=ToolError(
-                code="anti_ai_skill_line_audit_incomplete",
-                message="anti-AI audit must include one line_audit row for every skill file line",
+                code="anti_ai_block_audit_incomplete",
+                message="anti-AI audit must include one block_audit row for every skill file block",
                 detail={
-                    "missing_lines": missing[:20],
+                    "missing_blocks": missing[:20],
                     "missing_count": len(missing),
-                    "extra_lines": extra[:20],
+                    "extra_blocks": extra[:20],
                     "extra_count": len(extra),
                 },
             ),
             next_suggested_tools=["prepare_anti_ai_audit"],
         )
-    for line in manifest_lines:
-        if not isinstance(line, dict):
+    draft_content = str(getattr(source_draft, "content"))
+    paragraph_count = len(_draft_paragraphs(draft_content))
+    for block in manifest_blocks:
+        if not isinstance(block, dict):
             continue
-        line_number = int(line["line_number"])
-        expected_line_hash = str(line["sha256"])
-        actual_line_hash = str(by_line[line_number].get("line_text_sha256", ""))
-        if actual_line_hash != expected_line_hash:
+        block_index = int(block["block_index"])
+        expected_block_hash = str(block["block_text_sha256"])
+        row = by_block[block_index]
+        actual_block_hash = str(row.get("block_text_sha256", ""))
+        if actual_block_hash != expected_block_hash:
             return ToolResult(
                 ok=False,
                 tool_name=tool_name,
                 error=ToolError(
-                    code="anti_ai_skill_line_audit_hash_mismatch",
+                    code="anti_ai_block_audit_hash_mismatch",
                     message=(
-                        "anti-AI audit line hash does not match the current "
-                        f"skill file at line {line_number}"
+                        "anti-AI audit block hash does not match the current "
+                        f"skill file at block {block_index}"
                     ),
                     detail={
-                        "line_number": line_number,
-                        "expected": expected_line_hash,
-                        "actual": actual_line_hash,
+                        "block_index": block_index,
+                        "expected": expected_block_hash,
+                        "actual": actual_block_hash,
                     },
                 ),
                 next_suggested_tools=["prepare_anti_ai_audit"],
             )
-        row = by_line[line_number]
-        line_text = str(line.get("text", ""))
-        reasoning_error = _anti_ai_line_reasoning_error(
+        block_text = str(block.get("text", ""))
+        reasoning_error = _anti_ai_block_reasoning_error(
             row,
-            line_number=line_number,
-            line_text=line_text,
+            block_index=block_index,
+            block_text=block_text,
             tool_name=tool_name,
         )
         if reasoning_error is not None:
             return reasoning_error
-        whole_essay_error = _anti_ai_line_whole_essay_error(
+        whole_essay_error = _anti_ai_block_whole_essay_error(
             row,
-            line_number=line_number,
-            paragraph_count=len(_draft_paragraphs(str(getattr(source_draft, "content")))),
+            block_index=block_index,
+            paragraph_count=paragraph_count,
             tool_name=tool_name,
         )
         if whole_essay_error is not None:
             return whole_essay_error
-        evidence_error = _anti_ai_line_draft_evidence_error(
+        evidence_error = _anti_ai_block_draft_evidence_error(
             row,
-            line_number=line_number,
-            draft_text=str(getattr(source_draft, "content")),
+            block_index=block_index,
+            draft_text=draft_content,
             tool_name=tool_name,
         )
         if evidence_error is not None:
             return evidence_error
     non_context_rows = [
         row
-        for row in by_line.values()
+        for row in by_block.values()
         if str(row.get("status", "")).strip() != "context"
     ]
-    proof_tuples = [
-        (
-            str(row.get("requirement", "")).strip(),
-            str(row.get("evidence", "")).strip(),
-            str(row.get("line_application", "")).strip(),
-            str(row.get("action_taken", "")).strip(),
-        )
-        for row in non_context_rows
-    ]
-    legacy_proof_tuples = [
-        (
-            str(row.get("requirement", "")).strip(),
-            str(row.get("evidence", "")).strip(),
-            str(row.get("action_taken", "")).strip(),
-        )
-        for row in non_context_rows
-    ]
-    unique_proofs = set(proof_tuples)
-    unique_legacy_proofs = set(legacy_proof_tuples)
-    if (
-        proof_tuples
-        and (
-            len(unique_proofs) < max(1, len(proof_tuples) // 2)
-            or len(unique_legacy_proofs) < max(1, len(legacy_proof_tuples) // 2)
-        )
-    ):
+    proof_findings = [str(row.get("finding", "")).strip() for row in non_context_rows]
+    if proof_findings and len(set(proof_findings)) < max(1, len(proof_findings) // 2):
         return _error_result(
             tool_name,
-            code="anti_ai_skill_line_audit_boilerplate",
+            code="anti_ai_block_audit_boilerplate",
             message=(
-                "anti-AI audit line proof is too repetitive. requirement, "
-                "evidence, and action_taken must be line-specific enough to "
-                "show the auditor processed individual skill lines."
+                "anti-AI audit block findings are too repetitive. Each guidance "
+                "block's finding must be block-specific enough to show the auditor "
+                "processed individual skill blocks."
             ),
-            exc=ValueError("line_audit_boilerplate"),
+            exc=ValueError("block_audit_boilerplate"),
         )
     failed_or_blocked = {
-        line_number
-        for line_number, row in by_line.items()
+        block_index
+        for block_index, row in by_block.items()
         if str(row.get("status", "")).strip() in {"failed", "blocked"}
     }
     unmet_rows = audit.get("unmet_requirements", []) or []
-    unmet_lines = {
-        int(row.get("line_number", 0) or 0)
+    unmet_blocks = {
+        int(row.get("block_index", 0) or 0)
         for row in unmet_rows
         if isinstance(row, dict)
     }
@@ -8194,7 +8186,7 @@ def _validate_anti_ai_audit_binding(
     if failed_or_blocked:
         top_level_pass = bool(payload.get("pass", False))
         if (
-            not failed_or_blocked.issubset(unmet_lines)
+            not failed_or_blocked.issubset(unmet_blocks)
             or top_level_pass
             or hard_rules_pass
             or soft_rules_pass
@@ -8202,12 +8194,12 @@ def _validate_anti_ai_audit_binding(
         ):
             return _error_result(
                 tool_name,
-                code="anti_ai_skill_line_audit_inconsistent",
+                code="anti_ai_block_audit_inconsistent",
                 message=(
-                    "failed or blocked anti-AI skill lines must be listed in "
+                    "failed or blocked anti-AI skill blocks must be listed in "
                     "unmet_requirements and must make pass/final_decision fail."
                 ),
-                exc=ValueError("line_audit_inconsistent"),
+                exc=ValueError("block_audit_inconsistent"),
             )
     return None
 
@@ -8236,7 +8228,7 @@ def _anti_ai_audit_freshness_error(
             code="anti_ai_audit_required",
             message=(
                 "The selected draft has only a draft-time self-check, not a "
-                "committed line-bound anti-AI audit. Run prepare_anti_ai_audit "
+                "committed block-bound anti-AI audit. Run prepare_anti_ai_audit "
                 "for this exact draft before validation or export."
             ),
             exc=ValueError("anti_ai_audit"),
