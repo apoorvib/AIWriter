@@ -1,0 +1,9 @@
+{
+  "id": "general",
+  "version": "1",
+  "kind": "format",
+  "description": "Write clear general-purpose prose when no narrower format applies.",
+  "formats": ["general"],
+  "triggers": ["write", "rewrite", "statement", "note"],
+  "priority": 100
+}

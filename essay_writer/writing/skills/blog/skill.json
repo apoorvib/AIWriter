@@ -1,0 +1,9 @@
+{
+  "id": "blog",
+  "version": "1",
+  "kind": "format",
+  "description": "Write structured blog posts and articles grounded in disclosed sources.",
+  "formats": ["blog", "article"],
+  "triggers": ["blog", "article", "explainer", "guide", "op-ed"],
+  "priority": 100
+}

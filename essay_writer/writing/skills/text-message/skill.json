@@ -1,0 +1,9 @@
+{
+  "id": "text-message",
+  "version": "1",
+  "kind": "format",
+  "description": "Write concise conversational texts and direct messages.",
+  "formats": ["text-message", "text", "message", "dm"],
+  "triggers": ["text", "message", "dm", "sms", "whatsapp"],
+  "priority": 100
+}
