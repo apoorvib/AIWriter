@@ -2933,3 +2933,17 @@ Caveats:
 - Files changed: `docs/agent-tool-mode-instructions.md`, `essay_writer/agent_tools/facade.py`, `tests/agent_tools/helpers.py`, `tests/agent_tools/test_anti_ai_audit_facade.py`, `tests/agent_tools/test_subagent_dispatch.py`, `session-log.md`.
 - Tests/commands run: `pytest tests\agent_tools\test_subagent_dispatch.py tests\agent_tools\test_anti_ai_audit_facade.py tests\agent_tools\test_schema_roundtrip.py -q` (21 passed); `pytest tests\agent_tools -q` (239 passed, 1 skipped); `python -m compileall essay_writer tests\agent_tools` (passed).
 - Caveats/follow-ups: The MCP gate verifies the declared tier string; the harness still must map `frontier` to the strongest available Codex runtime.
+
+## 2026-07-03 - Codex - MCP Dynamic Workflow Documentation Reconciliation
+
+- Summary: Reconciled the operational Dynamic Workflow documentation with the current implementation. Documented the fixed prep prelude, write-only completion-ledger loop, bundled research planning/source resolution, non-automatic recommended style revision, topic-selection evidence fallback, 60-iteration limit without a final ledger assertion, manual JavaScript runtime verification, and the required anti-AI audit when style revision is skipped. Preserved the approved orchestration design spec as historical intent.
+- Files changed: `README.md`, `docs/agent-tool-mode-mcp.md`, `docs/agent-tool-mode-instructions.md`, `session-log.md`.
+- Tests/commands run: `pytest tests\agent_tools\test_mcp_server.py tests\agent_tools\test_workflow_progress.py tests\agent_tools\test_workflow_progress_facade.py tests\agent_tools\test_workflow_progress_gates_parity.py tests\agent_tools\test_workflow_happy_path.py -q` (17 passed); implementation-fact and stale-claim searches with `rg`/`Select-String`; `git diff --check` (passed; line-ending warnings only).
+- Caveats/follow-ups: Documentation now describes the current behavior rather than fixing it. The workflow JavaScript still needs manual Claude Code runtime verification, and the identified completion assertion, style-revision scheduling, and generic selection-evidence fallback remain implementation issues.
+
+## 2026-07-03 - Codex - Generic Write Workflow Implementation Plan
+
+- Summary: Brainstormed and documented a detailed implementation plan for one persistent, skill-routed `/write` workflow supporting immediate/detailed modes, email, text message, LinkedIn, blog, and general formats, default-but-skippable anti-AI guidance, autonomous bounded web research, clarification/resume, multi-deliverable runs, independent detailed review, and a single server-derived completion ledger.
+- Files changed: `docs/superpowers/plans/2026-07-03-generic-write-workflow.md`, `session-log.md`.
+- Tests/commands run: plan placeholder scan with `Select-String`; requirement coverage scan with `rg`; `git diff --check -- docs\superpowers\plans\2026-07-03-generic-write-workflow.md` (passed); plan structure count (743 lines, 13 tasks, 54 checkboxes before this log entry).
+- Caveats/follow-ups: Planning only; no production code was changed. The plan deliberately keeps `/write` separate from `EssayJob` and requires manual Claude Code runtime verification after implementation.

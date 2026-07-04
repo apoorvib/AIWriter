@@ -65,9 +65,10 @@ pip install -e ".[web]"
 In Claude Code you can drive the whole Agent Tool Mode pipeline with two saved
 [Dynamic Workflows](https://code.claude.com/docs/en/workflows) in
 `.claude/workflows/` instead of calling the MCP tools by hand. They move the
-step sequence into a script so no required step is skipped, and they are split
-at the mandatory topic-selection gate (a workflow cannot pause for input
-mid-run). This is the recommended way to run EssayWriter.
+step sequence into scripts and are split at the mandatory topic-selection gate
+(a workflow cannot pause for input mid-run). Prep uses a fixed, server-gated
+prelude; the write segment uses the persisted completion ledger to choose its
+next required step. This is the recommended way to run EssayWriter.
 
 Prerequisites:
 
@@ -131,10 +132,12 @@ Choose a topic, then run /essay-write:
 Copy the `agent_run_id`, the `job_id`, and the `topic_id` you want — those feed
 step 2.
 
-**Step 2 — pick a topic, then write (runs to export).** `/essay-write` accepts
-`agent_run_id`, `job_id`, `round_number` (usually `1`), `topic_id` (the one you
-picked), and `user_selection_evidence` (a sentence on why — this is required; the
-server refuses a topic chosen with no reasoning). Type:
+**Step 2 — pick a topic, then write (normally runs to export).** `/essay-write`
+accepts `agent_run_id`, `job_id`, `round_number` (usually `1`), `topic_id` (the
+one you picked), and `user_selection_evidence` (a sentence on why). Supply real
+selection evidence whenever possible. If this field is omitted, the current
+workflow adds a generic fallback marker so `select_topic` receives a non-empty
+value. Type:
 
 ```text
 /essay-write Continue agent_run_id agrun_20260630_a1b2c3, job_id
@@ -155,26 +158,34 @@ args = {
 }
 ```
 
-It records your topic selection, then runs research → outline → draft → anti-AI
-audit (in a fresh frontier subagent) → validation (with revision loops) →
-Markdown export.
+It records your topic selection, then runs research planning and source
+resolution as one workflow action, followed by research notes → outline →
+draft → anti-AI audit (in a fresh frontier subagent) → validation (with
+revision loops) → Markdown export. The MCP layer supports an optional style
+revision pass, but the current required-step driver does not select that
+recommended step automatically.
 
 The mental model: prep's inputs are *file paths + the assignment*; write's inputs
 are *the three ids prep printed + your chosen `topic_id` + one line of reasoning*.
 You never hand-write `args` — you say it in words and Claude fills the fields from
 the script's header.
 
-**Why no step gets skipped.** Both scripts loop on the read-only
-`get_workflow_progress(agent_run_id)` ledger, which derives from persisted state
-which required steps are actually done, and act only on the server's
-`next_required_step` until it reports `all_required_done`. A step whose artifact
-did not really persist stays `pending` and is re-attempted rather than skipped.
+**How progression is enforced.** `/essay-prep` runs a fixed sequence for
+ingestion, source cards, writing-style handling, task specification, job
+creation, and topic generation. Server gates reject missing prerequisites.
+`/essay-write` repeatedly reads `get_workflow_progress(agent_run_id)` and acts
+on the server's `next_required_step`; an artifact that did not persist remains
+pending on the next read. The current loop is bounded to 60 iterations and does
+not perform a final completion assertion before formatting its success message,
+so confirm the export or call `get_workflow_progress` after unusual failures.
 Codex and other MCP harnesses drive the same tools manually (see
 `docs/agent-tool-mode-instructions.md`).
 
 > The workflow scripts are authored against the Dynamic Workflows runtime;
 > confirm the `agent()` call shape for your Claude Code version on first run (see
-> the header comment in each `.claude/workflows/*.js`).
+> the header comment in each `.claude/workflows/*.js`). Python tests cover the
+> MCP gates and completion ledger, but the workflow JavaScript itself requires a
+> manual Claude Code runtime check.
 
 ## Agent Tool Mode (MCP, manual)
 

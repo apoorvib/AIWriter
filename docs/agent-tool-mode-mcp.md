@@ -27,19 +27,28 @@ The app prepares a local work packet, the harness model produces JSON with its o
 
 ## Claude Code Dynamic Workflows
 
-Two saved workflows (in `.claude/workflows/`) drive the MCP tools
-deterministically so no required step is skipped:
+Two saved workflows in `.claude/workflows/` drive the MCP tools:
 
 - `/essay-prep` — ingest → source cards → task spec → job → writing-style
   decision → topics, then stops for you to choose a topic.
-- `/essay-write` — `select_topic` (your choice) → research → outline → draft →
-  style revision → anti-AI audit → validation → export.
+- `/essay-write` — `select_topic` (your choice) → research planning + source
+  resolution → research notes → outline → draft → anti-AI audit → validation
+  → export.
 
-Both loop on `get_workflow_progress(agent_run_id)`, a read-only completion
-ledger that reports which required steps are done from persisted state. The loop
-acts only on the server's `next_required_step` and exits only when the server
-reports `all_required_done`, so a step that did not actually persist its artifact
-is re-attempted instead of skipped. Pre-allowlist `mcp__essaywriter__*` (see
-`.claude/settings.json`) so background workflow subagents are not blocked by
-mid-run permission prompts. These scripts are Claude Code only; other harnesses
-drive the same MCP tools manually.
+`/essay-prep` is a fixed pre-job sequence whose endpoint is protected by server
+gates. The pre-job completion ledger cannot independently scope source-card and
+task-spec artifacts until a job exists. `/essay-write` loops on
+`get_workflow_progress(agent_run_id)`, a read-only ledger derived from persisted
+state, and acts on its `next_required_step`. Research planning and source
+resolution are bundled into one workflow action. Style revision remains
+available through the MCP tools but is marked recommended, so the required-step
+loop does not select it automatically.
+
+The write loop is bounded to 60 iterations and currently formats its completion
+message without a final ledger assertion. After an unusual tool failure, verify
+the export or call `get_workflow_progress` before treating the run as complete.
+Pre-allowlist `mcp__essaywriter__*` (see `.claude/settings.json`) so background
+workflow subagents are not blocked by mid-run permission prompts. These scripts
+are Claude Code only and require manual runtime verification; the Python test
+suite covers the MCP gates and ledger, not the Dynamic Workflow JavaScript.
+Other harnesses drive the same MCP tools manually.

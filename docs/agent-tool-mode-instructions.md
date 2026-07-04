@@ -138,7 +138,10 @@ anti-AI audit before validation or export.
 and a `selection_contract`. The orchestrator must present those options to the
 user before selecting one. `select_topic` rejects calls that omit
 `user_selection_evidence`, because otherwise an agent can silently choose a
-topic without exposing the alternatives.
+topic without exposing the alternatives. The `/essay-write` Dynamic Workflow
+currently supplies a generic fallback marker when the user omits selection
+evidence, so callers should provide the user's real reason explicitly rather
+than relying on that compatibility fallback.
 
 ### Writing-style ingestion (voice calibration)
 
@@ -211,7 +214,8 @@ skill; skipping this step or generating the rewrite under your own system
 instructions will produce text that reads as machine-generated. Skip it only
 when the user has explicitly opted out (for example, a research note where the
 AI-flavored register is acceptable). If skipped, `commit_draft` is followed
-directly by `prepare_validation` against the unrevised draft.
+by `prepare_anti_ai_audit` against the unrevised draft; validation still refuses
+to run until that audit has been committed for the exact current draft.
 
 ## Cleanup after a successful run
 
@@ -238,7 +242,17 @@ Use subagents for source-card packets, deep source reading, web-research capture
 In Claude Code you can drive this workflow deterministically with two saved
 Dynamic Workflows in `.claude/workflows/`: `/essay-prep` (runs to the topic
 gate, then stops for the user to choose a topic) and `/essay-write` (commits the
-chosen topic, then runs to export). Both loop on the read-only
-`get_workflow_progress(agent_run_id)` ledger and act only on its
-`next_required_step`, so no required step is skipped. Other harnesses (Codex,
-etc.) drive the same tools manually as described above.
+chosen topic, then normally runs to export). `/essay-prep` is a fixed,
+server-gated prelude because the ledger cannot verify pre-job artifacts before
+a job provides their scope. `/essay-write` uses the read-only
+`get_workflow_progress(agent_run_id)` ledger and acts on its
+`next_required_step`. Its research-plan action also resolves source requests.
+The required-step loop does not automatically select the recommended style
+revision step.
+
+The write loop is bounded to 60 iterations and does not currently make a final
+ledger assertion before returning its completion message. Confirm the export or
+read `get_workflow_progress` after unusual failures. The Python tests exercise
+the MCP gates and ledger; the Dynamic Workflow JavaScript requires manual
+verification in Claude Code. Other harnesses (Codex, etc.) drive the same tools
+manually as described above.
