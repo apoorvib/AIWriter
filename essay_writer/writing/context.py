@@ -28,6 +28,13 @@ class WritingContextService:
     def add_inline(self, writing_run_id: str, text: str, *, label: str):
         return self._save(writing_run_id, text, label, "inline", None)
 
+    def add_answer(self, writing_run_id: str, text: str, *, label: str = "clarification-answer"):
+        """Persist a human clarification answer as an immutable context item.
+
+        Marked with ``kind="answer"`` so the completion ledger can detect that
+        a blocking brief has since been answered and re-run the brief step."""
+        return self._save(writing_run_id, text, label, "answer", None)
+
     def add_file(self, writing_run_id: str, path: str | Path, *, label: str):
         source = Path(path)
         if not source.exists():

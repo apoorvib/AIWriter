@@ -80,6 +80,18 @@ def _revision_count(stores: WritingStores, run_id: str, deliverable_id: str) -> 
     return count
 
 
+def _answered_since_brief(stores: WritingStores, run_id: str, brief: WritingBrief) -> bool:
+    """True when a human clarification answer was recorded after this brief.
+
+    A blocking brief that has since been answered is stale: the next step is to
+    re-run the brief with the added context, not to keep waiting on a human.
+    """
+    return any(
+        item.kind == "answer" and item.created_at > brief.created_at
+        for item in stores.context.list(run_id)
+    )
+
+
 def _research_required(run: WritingRun, brief: WritingBrief) -> bool:
     if run.research_policy == ResearchPolicy.OFF:
         return False
@@ -194,8 +206,16 @@ def build_writing_progress(run: WritingRun, stores: WritingStores) -> dict:
 
     mode = brief.mode.value
 
-    # Unanswered blocking questions pause the run for a human answer.
+    # Blocking questions pause the run for a human answer — unless one has
+    # already been recorded, in which case the brief is re-run with it.
     if brief.blocking_questions:
+        if _answered_since_brief(stores, run_id, brief):
+            return _result(
+                status="active", mode=mode, deliverables=[],
+                next_required_step="brief", next_deliverable_id=None,
+                requires_human=False, all_required_done=False, warnings=[],
+                next_action=dict(_NEXT_ACTIONS["brief"]),
+            )
         return _result(
             status="needs_input", mode=mode, deliverables=[],
             next_required_step=None, next_deliverable_id=None,
