@@ -35,15 +35,22 @@ from essay_writer.writing.progress import build_writing_progress
 from essay_writer.writing.prompts import (
     WRITING_BRIEF_SCHEMA,
     WRITING_BRIEF_SYSTEM_PROMPT,
+    WRITING_RESEARCH_SCHEMA,
+    WRITING_RESEARCH_SYSTEM_PROMPT,
     build_brief_user_message,
+    build_research_user_message,
 )
 from essay_writer.writing.schema import (
     DeliverableSpec,
+    ResearchFact,
     ResearchPolicy,
+    ResearchSource,
     SkillSelection,
     WriteMode,
     WritingBrief,
+    WritingResearch,
     WritingRun,
+    utc_now_iso,
 )
 from essay_writer.writing.skills import (
     UnknownWritingSkillError,
@@ -197,15 +204,7 @@ class WritingToolFacade:
         if run is None:
             return self._run_not_found("prepare_writing_brief", writing_run_id)
 
-        context_items = [
-            {
-                "context_id": item.context_id,
-                "label": item.label,
-                "kind": item.kind,
-                "content": self.stores.context.load_content(item),
-            }
-            for item in self.stores.context.list(run.writing_run_id)
-        ]
+        context_items = self._context_payload(run.writing_run_id)
         user_message = build_brief_user_message(
             raw_request=run.raw_request,
             available_skills=self.registry.catalog(),
@@ -446,6 +445,168 @@ class WritingToolFacade:
             next_suggested_tools=["prepare_writing_brief"],
         )
 
+    # -- research ------------------------------------------------------
+
+    def prepare_writing_research(self, writing_run_id: str) -> ToolResult:
+        run = self._load_run(writing_run_id)
+        if run is None:
+            return self._run_not_found("prepare_writing_research", writing_run_id)
+        if run.research_policy == ResearchPolicy.OFF:
+            return error_result_with_next(
+                "prepare_writing_research",
+                code="research_disabled",
+                message=(
+                    "research_policy is 'off'. Supply any needed facts as context "
+                    "or proceed with explicit uncertainty; do not browse the web."
+                ),
+                exc=ValueError("off"),
+                next_suggested_tools=["prepare_writing_draft"],
+            )
+        brief = self._latest_brief(run.writing_run_id)
+        if brief is None:
+            return error_result_with_next(
+                "prepare_writing_research",
+                code="brief_required",
+                message="commit a writing brief before preparing research.",
+                exc=ValueError("brief"),
+                next_suggested_tools=["prepare_writing_brief"],
+            )
+        if brief.blocking_questions:
+            return error_result_with_next(
+                "prepare_writing_research",
+                code="brief_blocked",
+                message="answer the brief's blocking questions before researching.",
+                exc=ValueError("blocking_questions"),
+                next_suggested_tools=["answer_writing_questions"],
+            )
+
+        user_message = build_research_user_message(
+            brief, self._context_payload(run.writing_run_id)
+        )
+        packet_id = timestamp_id(
+            "wpkt", run.writing_run_id, "research", short_hash(user_message)
+        )
+        packet = self._save_packet(
+            WorkPacket(
+                work_packet_id=packet_id,
+                stage="writing_research",
+                scope=f"writing:{run.writing_run_id}",
+                instructions=(
+                    "Use web search to gather bounded, current facts for this brief. "
+                    "Return JSON matching response_schema; do not commit it. Every "
+                    "fact must map to a disclosed HTTP(S) source with title and dates. "
+                    "Do not store full pages; quote at most 25 words from one source."
+                ),
+                system_prompt=WRITING_RESEARCH_SYSTEM_PROMPT,
+                prompt_blocks=[
+                    PromptBlock(
+                        text=json.dumps(user_message, ensure_ascii=False),
+                        cacheable=False,
+                    )
+                ],
+                response_schema=dict(WRITING_RESEARCH_SCHEMA),
+                context={"writing_run_id": run.writing_run_id},
+                artifact_refs={"writing_run_id": run.writing_run_id},
+                commit_tool="commit_writing_research",
+                delegation=DelegationHint(
+                    recommended=False,
+                    allowed_tools=["submit_writing_result"],
+                    return_contract=(
+                        "Return one JSON object matching response_schema with disclosed "
+                        "HTTP(S) sources and bounded facts. Do not commit it."
+                    ),
+                ),
+            )
+        )
+        return ToolResult(
+            ok=True,
+            tool_name="prepare_writing_research",
+            data={
+                "work_packet_id": packet.work_packet_id,
+                "stage": packet.stage,
+                "writing_run_id": run.writing_run_id,
+                "commit_tool": packet.commit_tool,
+                "response_schema": packet.response_schema,
+                "system_prompt": packet.system_prompt,
+                "prompt": user_message,
+                "instructions": packet.instructions,
+                "delegation": asdict(packet.delegation),
+                "next_suggested_tools": ["submit_writing_result"],
+            },
+            next_suggested_tools=["submit_writing_result"],
+        )
+
+    def commit_writing_research(self, work_result_id: str) -> ToolResult:
+        loaded = self._load_result_and_packet("commit_writing_research", work_result_id)
+        if isinstance(loaded, ToolResult):
+            return loaded
+        result, packet = loaded
+        if packet.stage != "writing_research":
+            return error_result(
+                "commit_writing_research",
+                code="wrong_work_packet_stage",
+                message=f"expected writing_research packet, got {packet.stage}",
+                exc=ValueError(packet.stage),
+            )
+        run_id = str(packet.artifact_refs.get("writing_run_id", ""))
+        run = self._load_run(run_id)
+        if run is None:
+            return self._run_not_found("commit_writing_research", run_id)
+        if run.research_policy == ResearchPolicy.OFF:
+            return error_result(
+                "commit_writing_research",
+                code="research_disabled",
+                message="research_policy is 'off'; this research result cannot be committed.",
+                exc=ValueError("off"),
+            )
+
+        existing = [
+            commit
+            for commit in self.work_store.list_commits(
+                scope=packet.scope, stage="writing_research"
+            )
+            if commit.work_result_id == result.work_result_id
+        ]
+        if existing:
+            return self._research_committed_result(run_id, existing[0].artifact_refs, True)
+
+        sources, source_warnings, remap, error = self._build_research_sources(result.payload)
+        if error is not None:
+            return error
+        facts, error = self._build_research_facts(
+            result.payload, {source.source_id for source in sources}, remap
+        )
+        if error is not None:
+            return error
+
+        version = self.stores.research.next_version(run_id)
+        research = WritingResearch(
+            research_id=f"{run_id}-research-v{version}",
+            writing_run_id=run_id,
+            version=version,
+            sources=sources,
+            facts=facts,
+            conflicts=[str(item) for item in result.payload.get("conflicts", [])],
+            warnings=[
+                *[str(item) for item in result.payload.get("warnings", [])],
+                *source_warnings,
+            ],
+        )
+        self.stores.research.save(research)
+        self.stores.runs.update(replace(run, research_id=research.research_id))
+        commit = self.work_store.save_commit(
+            scope=packet.scope,
+            stage="writing_research",
+            work_packet_id=packet.work_packet_id,
+            work_result_id=result.work_result_id,
+            artifact_refs={
+                "writing_run_id": run_id,
+                "research_id": research.research_id,
+                "version": version,
+            },
+        )
+        return self._research_committed_result(run_id, commit.artifact_refs, False)
+
     # -- internals -----------------------------------------------------
 
     def _resolve_deliverables(
@@ -483,6 +644,147 @@ class WritingToolFacade:
                 brief_skills.setdefault(selection.skill_id, selection)
         ordered = sorted(brief_skills.values(), key=lambda item: item.skill_id)
         return deliverables, ordered
+
+    def _context_payload(self, run_id: str) -> list[dict[str, object]]:
+        return [
+            {
+                "context_id": item.context_id,
+                "label": item.label,
+                "kind": item.kind,
+                "content": self.stores.context.load_content(item),
+            }
+            for item in self.stores.context.list(run_id)
+        ]
+
+    def _latest_brief(self, run_id: str) -> WritingBrief | None:
+        if not self.stores.briefs.versions(run_id):
+            return None
+        return self.stores.briefs.load_latest(run_id)
+
+    def _build_research_sources(
+        self, payload: dict[str, object]
+    ) -> tuple[list[ResearchSource], list[str], dict[str, str], ToolResult | None]:
+        sources: list[ResearchSource] = []
+        warnings: list[str] = []
+        remap: dict[str, str] = {}
+        canonical_by_url: dict[str, str] = {}
+        for entry in payload.get("sources", []) or []:
+            source_id = str(entry["source_id"])
+            url = str(entry.get("url", "")).strip()
+            if not url.lower().startswith(("http://", "https://")):
+                return [], [], {}, error_result(
+                    "commit_writing_research",
+                    code="invalid_source_url",
+                    message=f"source {source_id!r} url must be HTTP(S), got {url!r}",
+                    exc=ValueError(url),
+                )
+            title = str(entry.get("title", "")).strip()
+            if not title:
+                return [], [], {}, error_result(
+                    "commit_writing_research",
+                    code="invalid_source",
+                    message=f"source {source_id!r} must have a non-empty title",
+                    exc=ValueError("title"),
+                )
+            if url in canonical_by_url:
+                remap[source_id] = canonical_by_url[url]
+                continue
+            published_at = entry.get("published_at")
+            source = ResearchSource(
+                source_id=source_id,
+                title=title,
+                url=url,
+                publisher=entry.get("publisher"),
+                published_at=published_at,
+                accessed_at=str(entry.get("accessed_at") or utc_now_iso()),
+            )
+            sources.append(source)
+            canonical_by_url[url] = source_id
+            remap[source_id] = source_id
+            if not published_at:
+                warnings.append(
+                    f"source {source_id!r} has no publication date; not treated as "
+                    "current evidence"
+                )
+        return sources, warnings, remap, None
+
+    def _build_research_facts(
+        self,
+        payload: dict[str, object],
+        valid_source_ids: set[str],
+        remap: dict[str, str],
+    ) -> tuple[list[ResearchFact], ToolResult | None]:
+        facts_payload = payload.get("facts", []) or []
+        if facts_payload and not valid_source_ids:
+            return [], error_result(
+                "commit_writing_research",
+                code="research_sources_undisclosed",
+                message="research has facts but no disclosed HTTP(S) sources",
+                exc=ValueError("sources"),
+            )
+        facts: list[ResearchFact] = []
+        for entry in facts_payload:
+            fact_id = str(entry["fact_id"])
+            source_ids = [
+                remap.get(str(item), str(item)) for item in entry.get("source_ids", [])
+            ]
+            if not source_ids:
+                return [], error_result(
+                    "commit_writing_research",
+                    code="fact_without_source",
+                    message=f"fact {fact_id!r} has no source; every claim needs a source",
+                    exc=ValueError("source_ids"),
+                )
+            unknown = [item for item in source_ids if item not in valid_source_ids]
+            if unknown:
+                return [], error_result(
+                    "commit_writing_research",
+                    code="fact_source_unknown",
+                    message=(
+                        f"fact {fact_id!r} cites undisclosed source(s): "
+                        f"{', '.join(sorted(set(unknown)))}"
+                    ),
+                    exc=ValueError("source_ids"),
+                )
+            quote = entry.get("short_quote")
+            if quote and len(str(quote).split()) > 25:
+                return [], error_result(
+                    "commit_writing_research",
+                    code="quote_too_long",
+                    message=f"fact {fact_id!r} quotes more than 25 words from one source",
+                    exc=ValueError("short_quote"),
+                )
+            facts.append(
+                ResearchFact(
+                    fact_id=fact_id,
+                    claim=str(entry["claim"]),
+                    source_ids=list(dict.fromkeys(source_ids)),
+                    confidence=str(entry.get("confidence", "medium")),
+                    short_quote=quote,
+                )
+            )
+        return facts, None
+
+    def _research_committed_result(
+        self, run_id: str, artifact_refs: dict[str, object], idempotent: bool
+    ) -> ToolResult:
+        research = self.stores.research.load_latest(run_id)
+        ledger = build_writing_progress(self.stores.runs.load(run_id), self.stores)
+        return ToolResult(
+            ok=True,
+            tool_name="commit_writing_research",
+            data={
+                "writing_run_id": run_id,
+                "research_id": str(artifact_refs.get("research_id", research.research_id)),
+                "source_count": len(research.sources),
+                "fact_count": len(research.facts),
+                "already_committed": idempotent,
+                "progress": ledger,
+            },
+            next_suggested_tools=[ledger["next_action"].get("tool")]
+            if ledger["next_action"].get("tool")
+            else [],
+        )
 
     def _effective_research_needed(self, run: WritingRun, model_decision: bool) -> bool:
         if run.research_policy == ResearchPolicy.REQUIRED:
