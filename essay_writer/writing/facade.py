@@ -16,7 +16,7 @@ from essay_writer.agent_tools.attention import (
     attention_challenge_satisfied,
     build_attention_challenge,
 )
-from essay_writer.agent_tools.id_utils import short_hash, timestamp_id
+from essay_writer.agent_tools.id_utils import content_hash, short_hash, timestamp_id
 from essay_writer.agent_tools.schema_validation import (
     error_result,
     error_result_with_next,
@@ -29,9 +29,10 @@ from essay_writer.agent_tools.schemas import (
     WorkPacket,
     WorkProducer,
 )
+from essay_writer.agent_tools.subagent_tokens import SubagentTokenStore
 from essay_writer.agent_tools.work_store import AgentWorkStore
 from essay_writer.writing.context import WritingContextService
-from essay_writer.writing.progress import build_writing_progress
+from essay_writer.writing.progress import MAX_REVISION_ROUNDS, build_writing_progress
 from essay_writer.writing.prompts import (
     WRITING_BRIEF_SCHEMA,
     WRITING_BRIEF_SYSTEM_PROMPT,
@@ -41,22 +42,28 @@ from essay_writer.writing.prompts import (
     WRITING_PLAN_SYSTEM_PROMPT,
     WRITING_RESEARCH_SCHEMA,
     WRITING_RESEARCH_SYSTEM_PROMPT,
+    WRITING_REVIEW_SCHEMA,
+    WRITING_REVIEW_SYSTEM_PROMPT,
     build_brief_user_message,
     build_draft_user_message,
     build_plan_user_message,
     build_research_user_message,
+    build_review_user_message,
 )
 from essay_writer.writing.schema import (
     DeliverableSpec,
     ResearchFact,
     ResearchPolicy,
     ResearchSource,
+    ReviewIssue,
     SkillSelection,
     WriteMode,
     WritingBrief,
     WritingDraft,
+    WritingOutput,
     WritingPlan,
     WritingResearch,
+    WritingReview,
     WritingRun,
     utc_now_iso,
 )
@@ -90,6 +97,7 @@ class WritingToolFacade:
     work_store: AgentWorkStore
     registry: WritingSkillRegistry
     context_service: WritingContextService
+    subagent_token_store: SubagentTokenStore
     enforce_attention_challenge: bool = True
 
     @classmethod
@@ -111,6 +119,7 @@ class WritingToolFacade:
             work_store=work_store,
             registry=registry,
             context_service=context_service,
+            subagent_token_store=SubagentTokenStore(stores.root / "subagent_tokens"),
             enforce_attention_challenge=enforce_attention_challenge,
         )
 
@@ -291,6 +300,10 @@ class WritingToolFacade:
                 message=f"WorkPacket not found: {work_packet_id}",
                 exc=exc,
             )
+        producer_obj = _coerce_producer(producer)
+        delegation_error = self._enforce_delegation(work_packet_id, packet, producer_obj, payload)
+        if delegation_error is not None:
+            return delegation_error
         validation_error = validate_work_payload(
             payload, packet.response_schema, tool_name="submit_writing_result"
         )
@@ -312,9 +325,13 @@ class WritingToolFacade:
             )
         existing_ids = {result.work_result_id for result in self.work_store.list_results()}
         result = self.work_store.submit_result(
-            work_packet_id, payload=payload, producer=_coerce_producer(producer)
+            work_packet_id, payload=payload, producer=producer_obj
         )
         duplicate = result.work_result_id in existing_ids
+        if packet.delegation_required and producer_obj.subagent_token:
+            self.subagent_token_store.consume(
+                token=producer_obj.subagent_token, work_packet_id=packet.work_packet_id
+            )
         next_tools = [packet.commit_tool] if packet.commit_tool else []
         return ToolResult(
             ok=True,
@@ -901,6 +918,492 @@ class WritingToolFacade:
         )
         return self._draft_committed_result(run_id, deliverable_id, commit.artifact_refs, False)
 
+    # -- review --------------------------------------------------------
+
+    def prepare_writing_review(self, writing_run_id: str, deliverable_id: str) -> ToolResult:
+        run = self._load_run(writing_run_id)
+        if run is None:
+            return self._run_not_found("prepare_writing_review", writing_run_id)
+        brief = self._latest_brief(run.writing_run_id)
+        guard = self._deliverable_guard("prepare_writing_review", run, brief, deliverable_id)
+        if isinstance(guard, ToolResult):
+            return guard
+        deliverable = guard
+        if brief.mode != WriteMode.DETAILED:
+            return error_result_with_next(
+                "prepare_writing_review",
+                code="review_not_required",
+                message="immediate deliverables embed their own self-check; no review packet.",
+                exc=ValueError("immediate"),
+                next_suggested_tools=["finalize_writing_run"],
+            )
+        draft = self._load_latest_draft(run.writing_run_id, deliverable_id)
+        if draft is None:
+            return error_result_with_next(
+                "prepare_writing_review",
+                code="draft_required",
+                message="draft this deliverable before reviewing it.",
+                exc=ValueError("draft"),
+                next_suggested_tools=["prepare_writing_draft"],
+            )
+
+        selections = self._deliverable_selections(brief, deliverable)
+        skill_prompt = compose_skill_prompt(self.registry, selections)
+        user_message = build_review_user_message(
+            draft=asdict(draft), brief=brief, skill_prompt=skill_prompt
+        )
+        packet_id = timestamp_id(
+            "wpkt", run.writing_run_id, "review", deliverable_id, short_hash(user_message)
+        )
+        packet = self._save_packet(
+            WorkPacket(
+                work_packet_id=packet_id,
+                stage="writing_review",
+                scope=f"writing:{run.writing_run_id}",
+                instructions=(
+                    "Review this exact draft against every selected skill and explicit "
+                    "requirement. Return JSON matching response_schema; do not commit it. "
+                    "Reserve 'blocker' for unsupported facts, violated explicit "
+                    "requirements, wrong format, or unsafe content; style is major/minor."
+                ),
+                system_prompt=WRITING_REVIEW_SYSTEM_PROMPT,
+                prompt_blocks=[
+                    PromptBlock(
+                        text=json.dumps(user_message, ensure_ascii=False),
+                        cacheable=False,
+                    )
+                ],
+                response_schema=dict(WRITING_REVIEW_SCHEMA),
+                context={"writing_run_id": run.writing_run_id, "deliverable_id": deliverable_id},
+                artifact_refs={
+                    "writing_run_id": run.writing_run_id,
+                    "deliverable_id": deliverable_id,
+                    "draft_id": draft.draft_id,
+                    "draft_sha256": draft.content_sha256,
+                },
+                commit_tool="commit_writing_review",
+                delegation_required=True,
+                delegation=DelegationHint(
+                    recommended=True,
+                    reason="A detailed review must run in a clean context, blind to the drafting rationale.",
+                    suggested_role="writing-reviewer",
+                    allowed_tools=["get_work_packet", "submit_writing_result"],
+                    return_contract=(
+                        "Return one JSON object matching response_schema. Do not commit it; "
+                        "submit it with submit_writing_result carrying the dispatch token."
+                    ),
+                ),
+            )
+        )
+        return self._prepared_result(
+            "prepare_writing_review", packet, run.writing_run_id, user_message,
+            extra={
+                "deliverable_id": deliverable_id,
+                "delegation_required": True,
+                "next_suggested_tools": ["dispatch_writing_reviewer"],
+            },
+            next_suggested_tools=["dispatch_writing_reviewer"],
+        )
+
+    def dispatch_writing_reviewer(
+        self,
+        work_packet_id: str,
+        *,
+        role: str = "writing-reviewer",
+        model_tier: str | None = None,
+    ) -> ToolResult:
+        try:
+            packet = self.work_store.load_packet(work_packet_id)
+        except (KeyError, FileNotFoundError) as exc:
+            return error_result(
+                "dispatch_writing_reviewer",
+                code="work_packet_not_found",
+                message=f"WorkPacket not found: {work_packet_id}",
+                exc=exc,
+            )
+        if not packet.delegation_required:
+            return error_result_with_next(
+                "dispatch_writing_reviewer",
+                code="delegation_not_applicable",
+                message=(
+                    f"WorkPacket {work_packet_id!r} is not delegation-required; run it "
+                    "inline and submit with a main_agent producer."
+                ),
+                exc=ValueError(work_packet_id),
+                next_suggested_tools=["submit_writing_result"],
+            )
+        try:
+            token = self.subagent_token_store.issue(
+                work_packet_id=work_packet_id,
+                role=role,
+                model_tier=model_tier,
+            )
+        except ValueError as exc:
+            return error_result(
+                "dispatch_writing_reviewer",
+                code="subagent_token_invalid",
+                message=str(exc),
+                exc=exc,
+            )
+        return ToolResult(
+            ok=True,
+            tool_name="dispatch_writing_reviewer",
+            data={
+                "subagent_token": token.token,
+                "work_packet_id": token.work_packet_id,
+                "role": token.role,
+                "stage": packet.stage,
+                "delegation_hint": asdict(packet.delegation),
+                "must_remember": (
+                    "Dispatch a clean-context subagent, then submit its result with "
+                    "producer.type='subagent' and this subagent_token."
+                ),
+                "next_suggested_tools": ["submit_writing_result"],
+            },
+            next_suggested_tools=["submit_writing_result"],
+        )
+
+    def commit_writing_review(self, work_result_id: str) -> ToolResult:
+        loaded = self._load_result_and_packet("commit_writing_review", work_result_id)
+        if isinstance(loaded, ToolResult):
+            return loaded
+        result, packet = loaded
+        if packet.stage != "writing_review":
+            return error_result(
+                "commit_writing_review",
+                code="wrong_work_packet_stage",
+                message=f"expected writing_review packet, got {packet.stage}",
+                exc=ValueError(packet.stage),
+            )
+        run_id = str(packet.artifact_refs.get("writing_run_id", ""))
+        deliverable_id = str(packet.artifact_refs.get("deliverable_id", ""))
+        bound_draft_id = str(packet.artifact_refs.get("draft_id", ""))
+        bound_sha = str(packet.artifact_refs.get("draft_sha256", ""))
+        run = self._load_run(run_id)
+        if run is None:
+            return self._run_not_found("commit_writing_review", run_id)
+        brief = self._latest_brief(run_id)
+        guard = self._deliverable_guard("commit_writing_review", run, brief, deliverable_id)
+        if isinstance(guard, ToolResult):
+            return guard
+        deliverable = guard
+
+        existing = [
+            commit
+            for commit in self.work_store.list_commits(scope=packet.scope, stage="writing_review")
+            if commit.work_result_id == result.work_result_id
+        ]
+        if existing:
+            return self._review_committed_result(run_id, deliverable_id, existing[0].artifact_refs, True)
+
+        # The review is bound to one exact draft. If a newer draft has since
+        # landed (e.g. a revision), this review is stale and must be re-run.
+        draft = self._load_latest_draft(run_id, deliverable_id)
+        if draft is None or draft.content_sha256 != bound_sha:
+            return error_result_with_next(
+                "commit_writing_review",
+                code="stale_review",
+                message=(
+                    "this review is bound to a draft that is no longer current; "
+                    "prepare a fresh review against the latest draft."
+                ),
+                exc=ValueError("draft_sha256"),
+                next_suggested_tools=["prepare_writing_review"],
+            )
+
+        payload = result.payload
+        issues = [
+            ReviewIssue(
+                issue_id=str(entry["issue_id"]),
+                severity=str(entry["severity"]),
+                location=str(entry["location"]),
+                skill_id=str(entry["skill_id"]),
+                evidence=str(entry["evidence"]),
+                correction=str(entry["correction"]),
+                category=str(entry.get("category", "style")),
+            )
+            for entry in payload.get("issues", [])
+        ]
+        has_blocker = any(issue.severity == "blocker" for issue in issues)
+        passed = bool(payload.get("passed", False)) and not has_blocker
+        selections = self._deliverable_selections(brief, deliverable)
+        version = self.stores.reviews.next_version(run_id, deliverable_id)
+        review = WritingReview(
+            review_id=f"{run_id}-{deliverable_id}-review-v{version}",
+            writing_run_id=run_id,
+            deliverable_id=deliverable_id,
+            version=version,
+            draft_id=bound_draft_id or draft.draft_id,
+            draft_sha256=bound_sha or draft.content_sha256,
+            selected_skills=selections,
+            passed=passed,
+            issues=issues,
+            notes=[str(item) for item in payload.get("notes", [])],
+        )
+        self.stores.reviews.save(review)
+        commit = self.work_store.save_commit(
+            scope=packet.scope,
+            stage="writing_review",
+            work_packet_id=packet.work_packet_id,
+            work_result_id=result.work_result_id,
+            artifact_refs={
+                "writing_run_id": run_id,
+                "deliverable_id": deliverable_id,
+                "review_id": review.review_id,
+                "version": version,
+                "passed": passed,
+            },
+        )
+        return self._review_committed_result(run_id, deliverable_id, commit.artifact_refs, False)
+
+    # -- revision ------------------------------------------------------
+
+    def prepare_writing_revision(self, writing_run_id: str, deliverable_id: str) -> ToolResult:
+        run = self._load_run(writing_run_id)
+        if run is None:
+            return self._run_not_found("prepare_writing_revision", writing_run_id)
+        brief = self._latest_brief(run.writing_run_id)
+        guard = self._deliverable_guard("prepare_writing_revision", run, brief, deliverable_id)
+        if isinstance(guard, ToolResult):
+            return guard
+        deliverable = guard
+        draft = self._load_latest_draft(run.writing_run_id, deliverable_id)
+        review = self._load_latest_review(run.writing_run_id, deliverable_id)
+        if draft is None or review is None or review.draft_sha256 != draft.content_sha256:
+            return error_result_with_next(
+                "prepare_writing_revision",
+                code="revision_not_required",
+                message="revise only against a fresh review of the current draft.",
+                exc=ValueError("review"),
+                next_suggested_tools=["prepare_writing_review"],
+            )
+        if review.passed:
+            return error_result_with_next(
+                "prepare_writing_revision",
+                code="revision_not_required",
+                message="the current draft passed review; nothing to revise.",
+                exc=ValueError("passed"),
+                next_suggested_tools=["finalize_writing_run"],
+            )
+        rounds = self._revision_count(run.writing_run_id, deliverable_id)
+        if rounds >= MAX_REVISION_ROUNDS:
+            return error_result_with_next(
+                "prepare_writing_revision",
+                code="revision_cap_reached",
+                message=(
+                    f"the automatic {MAX_REVISION_ROUNDS}-round revision cap is reached; "
+                    "finalize best-effort or return remaining blockers to the human."
+                ),
+                exc=ValueError("cap"),
+                next_suggested_tools=["finalize_writing_run"],
+            )
+
+        selections = self._deliverable_selections(brief, deliverable)
+        skill_prompt = compose_skill_prompt(self.registry, selections)
+        user_message = {
+            "brief": asdict(brief),
+            "deliverable": asdict(deliverable),
+            "selected_skill_prompt": skill_prompt,
+            "context": self._context_payload(run.writing_run_id),
+            "research": self._research_dict(run.writing_run_id),
+            "prior_draft": {
+                "content": draft.content,
+                "assumptions": list(draft.assumptions),
+                "research_fact_ids": list(draft.research_fact_ids),
+            },
+            "review_issues": [asdict(issue) for issue in review.issues],
+            "revision_round": rounds + 1,
+        }
+        packet_id = timestamp_id(
+            "wpkt", run.writing_run_id, "revision", deliverable_id, short_hash(user_message)
+        )
+        packet = self._save_packet(
+            WorkPacket(
+                work_packet_id=packet_id,
+                stage="writing_revision",
+                scope=f"writing:{run.writing_run_id}",
+                instructions=(
+                    "Revise this deliverable to resolve the review issues while honoring "
+                    "the skill precedence. Return JSON matching response_schema; do not "
+                    "commit it. Preserve everything the review did not fault."
+                ),
+                system_prompt=WRITING_DRAFT_SYSTEM_PROMPT,
+                prompt_blocks=[
+                    PromptBlock(
+                        text=json.dumps(user_message, ensure_ascii=False),
+                        cacheable=False,
+                    )
+                ],
+                response_schema=dict(WRITING_DRAFT_SCHEMA),
+                context={"writing_run_id": run.writing_run_id, "deliverable_id": deliverable_id},
+                artifact_refs={
+                    "writing_run_id": run.writing_run_id,
+                    "deliverable_id": deliverable_id,
+                    "revises_draft_id": draft.draft_id,
+                    "review_id": review.review_id,
+                },
+                commit_tool="commit_writing_revision",
+                delegation=DelegationHint(
+                    recommended=False,
+                    allowed_tools=["submit_writing_result"],
+                    return_contract=(
+                        "Return one JSON object matching response_schema with the revised "
+                        "prose in content. Do not commit it."
+                    ),
+                ),
+            )
+        )
+        return self._prepared_result(
+            "prepare_writing_revision", packet, run.writing_run_id, user_message,
+            extra={"deliverable_id": deliverable_id, "revision_round": rounds + 1},
+        )
+
+    def commit_writing_revision(self, work_result_id: str) -> ToolResult:
+        loaded = self._load_result_and_packet("commit_writing_revision", work_result_id)
+        if isinstance(loaded, ToolResult):
+            return loaded
+        result, packet = loaded
+        if packet.stage != "writing_revision":
+            return error_result(
+                "commit_writing_revision",
+                code="wrong_work_packet_stage",
+                message=f"expected writing_revision packet, got {packet.stage}",
+                exc=ValueError(packet.stage),
+            )
+        run_id = str(packet.artifact_refs.get("writing_run_id", ""))
+        deliverable_id = str(packet.artifact_refs.get("deliverable_id", ""))
+        run = self._load_run(run_id)
+        if run is None:
+            return self._run_not_found("commit_writing_revision", run_id)
+        brief = self._latest_brief(run_id)
+        guard = self._deliverable_guard("commit_writing_revision", run, brief, deliverable_id)
+        if isinstance(guard, ToolResult):
+            return guard
+        deliverable = guard
+
+        existing = [
+            commit
+            for commit in self.work_store.list_commits(scope=packet.scope, stage="writing_revision")
+            if commit.work_result_id == result.work_result_id
+        ]
+        if existing:
+            return self._draft_committed_result(
+                run_id, deliverable_id, existing[0].artifact_refs, True,
+                tool_name="commit_writing_revision",
+            )
+
+        payload = result.payload
+        content = str(payload.get("content", ""))
+        if not content.strip():
+            return error_result(
+                "commit_writing_revision",
+                code="draft_content_empty",
+                message="a committed revision must have non-empty content.",
+                exc=ValueError("content"),
+            )
+        fact_ids = [str(item) for item in payload.get("research_fact_ids", [])]
+        fact_error = self._validate_research_fact_ids("commit_writing_revision", run_id, fact_ids)
+        if fact_error is not None:
+            return fact_error
+
+        selections = self._deliverable_selections(brief, deliverable)
+        version = self.stores.drafts.next_version(run_id, deliverable_id)
+        draft = WritingDraft(
+            draft_id=f"{run_id}-{deliverable_id}-draft-v{version}",
+            writing_run_id=run_id,
+            deliverable_id=deliverable_id,
+            version=version,
+            content=content,
+            selected_skills=selections,
+            assumptions=[str(item) for item in payload.get("assumptions", [])],
+            research_fact_ids=fact_ids,
+            self_check=[str(item) for item in payload.get("self_check", [])],
+            origin="revision",
+        )
+        self.stores.drafts.save(draft)
+        commit = self.work_store.save_commit(
+            scope=packet.scope,
+            stage="writing_revision",
+            work_packet_id=packet.work_packet_id,
+            work_result_id=result.work_result_id,
+            artifact_refs={
+                "writing_run_id": run_id,
+                "deliverable_id": deliverable_id,
+                "draft_id": draft.draft_id,
+                "version": version,
+            },
+        )
+        return self._draft_committed_result(
+            run_id, deliverable_id, commit.artifact_refs, False,
+            tool_name="commit_writing_revision",
+        )
+
+    # -- finalization --------------------------------------------------
+
+    def finalize_writing_run(self, writing_run_id: str) -> ToolResult:
+        run = self._load_run(writing_run_id)
+        if run is None:
+            return self._run_not_found("finalize_writing_run", writing_run_id)
+        ledger = build_writing_progress(run, self.stores)
+
+        if self._output_exists(run.writing_run_id):
+            return self._finalized_result(run.writing_run_id, True)
+
+        if ledger["requires_human"] or ledger["status"] == "blocked":
+            return error_result_with_next(
+                "finalize_writing_run",
+                code="run_blocked",
+                message=(
+                    "the run has unresolved blockers (facts, explicit requirements, "
+                    "wrong deliverable, or unsafe content) and cannot be finalized."
+                ),
+                exc=ValueError("blocked"),
+                next_suggested_tools=["answer_writing_questions"],
+            )
+        if ledger["next_required_step"] != "finalize":
+            return error_result_with_next(
+                "finalize_writing_run",
+                code="run_incomplete",
+                message=(
+                    "the run is not ready to finalize; next required step is "
+                    f"{ledger['next_required_step']!r}."
+                ),
+                exc=ValueError(ledger["next_required_step"]),
+                next_suggested_tools=[ledger["next_action"].get("tool", "get_writing_progress")],
+            )
+
+        brief = self._latest_brief(run.writing_run_id)
+        deliverables = [
+            self._load_latest_draft(run.writing_run_id, spec.deliverable_id)
+            for spec in brief.deliverables
+        ]
+        deliverables = [draft for draft in deliverables if draft is not None]
+        research = (
+            self.stores.research.load_latest(run.writing_run_id)
+            if self.stores.research.versions(run.writing_run_id)
+            else None
+        )
+        assumptions: list[str] = []
+        for source in [brief.assumptions, *[d.assumptions for d in deliverables]]:
+            for item in source:
+                if item not in assumptions:
+                    assumptions.append(item)
+
+        output = WritingOutput(
+            output_id=f"{run.writing_run_id}-output",
+            writing_run_id=run.writing_run_id,
+            deliverables=deliverables,
+            selected_skills=list(brief.selected_skills),
+            assumptions=assumptions,
+            researched_sources=list(research.sources) if research else [],
+            warnings=list(ledger["warnings"]),
+        )
+        self.stores.outputs.save(output)
+        self.stores.runs.update(
+            replace(run, status="complete", output_id=output.output_id, blocked_on=[])
+        )
+        return self._finalized_result(run.writing_run_id, False)
+
     # -- internals -----------------------------------------------------
 
     def _deliverable_guard(
@@ -970,6 +1473,86 @@ class WritingToolFacade:
             if skill_id in by_id
         ]
 
+    def _enforce_delegation(
+        self, work_packet_id: str, packet: WorkPacket, producer: WorkProducer,
+        payload: dict[str, object],
+    ) -> ToolResult | None:
+        """Clean-context delegation gate (mechanism B) for writing packets.
+
+        A ``delegation_required`` packet (currently only detailed review) must be
+        produced by a dispatched subagent carrying a valid, unconsumed token, so
+        the main orchestrator cannot absorb the review into its own context.
+        """
+        if not packet.delegation_required:
+            return None
+        token = producer.subagent_token
+        if not token or producer.type != "subagent":
+            return error_result_with_next(
+                "submit_writing_result",
+                code="subagent_dispatch_required",
+                message=(
+                    f"WorkPacket {work_packet_id!r} is delegation_required. Dispatch a "
+                    "clean-context subagent via dispatch_writing_reviewer and submit from "
+                    "there with producer.type='subagent' and its subagent_token."
+                ),
+                exc=ValueError("subagent_token"),
+                next_suggested_tools=["dispatch_writing_reviewer"],
+            )
+        if not self.subagent_token_store.validate(token=token, work_packet_id=work_packet_id):
+            return error_result_with_next(
+                "submit_writing_result",
+                code="subagent_dispatch_token_invalid",
+                message=(
+                    "subagent_token does not match this work packet; issue a new one via "
+                    "dispatch_writing_reviewer(work_packet_id)."
+                ),
+                exc=ValueError(token),
+                next_suggested_tools=["dispatch_writing_reviewer"],
+            )
+        record = self.subagent_token_store.load(token)
+        if record.consumed:
+            incoming = content_hash(payload)
+            is_retry = any(
+                r.work_packet_id == work_packet_id and r.payload_hash == incoming
+                for r in self.work_store.list_results()
+            )
+            if not is_retry:
+                return error_result_with_next(
+                    "submit_writing_result",
+                    code="subagent_dispatch_token_consumed",
+                    message=(
+                        "this subagent_token was already used for a different submission; "
+                        "dispatch a fresh reviewer for a new result."
+                    ),
+                    exc=ValueError(token),
+                    next_suggested_tools=["dispatch_writing_reviewer"],
+                )
+        return None
+
+    def _load_latest_draft(self, run_id: str, deliverable_id: str) -> WritingDraft | None:
+        if not self.stores.drafts.versions(run_id, deliverable_id):
+            return None
+        return self.stores.drafts.load_latest(run_id, deliverable_id)
+
+    def _load_latest_review(self, run_id: str, deliverable_id: str) -> WritingReview | None:
+        if not self.stores.reviews.versions(run_id, deliverable_id):
+            return None
+        return self.stores.reviews.load_latest(run_id, deliverable_id)
+
+    def _revision_count(self, run_id: str, deliverable_id: str) -> int:
+        return sum(
+            1
+            for version in self.stores.drafts.versions(run_id, deliverable_id)
+            if self.stores.drafts.load(run_id, deliverable_id, version).origin == "revision"
+        )
+
+    def _output_exists(self, run_id: str) -> bool:
+        try:
+            self.stores.outputs.load(run_id)
+            return True
+        except (KeyError, FileNotFoundError):
+            return False
+
     def _research_dict(self, run_id: str) -> dict | None:
         if not self.stores.research.versions(run_id):
             return None
@@ -1027,13 +1610,14 @@ class WritingToolFacade:
         )
 
     def _draft_committed_result(
-        self, run_id: str, deliverable_id: str, artifact_refs: dict[str, object], idempotent: bool
+        self, run_id: str, deliverable_id: str, artifact_refs: dict[str, object],
+        idempotent: bool, *, tool_name: str = "commit_writing_draft",
     ) -> ToolResult:
         draft = self.stores.drafts.load_latest(run_id, deliverable_id)
         ledger = build_writing_progress(self.stores.runs.load(run_id), self.stores)
         return ToolResult(
             ok=True,
-            tool_name="commit_writing_draft",
+            tool_name=tool_name,
             data={
                 "writing_run_id": run_id,
                 "deliverable_id": deliverable_id,
@@ -1049,10 +1633,74 @@ class WritingToolFacade:
             else [],
         )
 
+    def _review_committed_result(
+        self, run_id: str, deliverable_id: str, artifact_refs: dict[str, object], idempotent: bool
+    ) -> ToolResult:
+        review = self.stores.reviews.load_latest(run_id, deliverable_id)
+        ledger = build_writing_progress(self.stores.runs.load(run_id), self.stores)
+        return ToolResult(
+            ok=True,
+            tool_name="commit_writing_review",
+            data={
+                "writing_run_id": run_id,
+                "deliverable_id": deliverable_id,
+                "review_id": str(artifact_refs.get("review_id", review.review_id)),
+                "version": review.version,
+                "passed": review.passed,
+                "selected_skills": [asdict(item) for item in review.selected_skills],
+                "issue_count": len(review.issues),
+                "already_committed": idempotent,
+                "progress": ledger,
+            },
+            next_suggested_tools=[ledger["next_action"].get("tool")]
+            if ledger["next_action"].get("tool")
+            else [],
+        )
+
+    def _finalized_result(self, run_id: str, idempotent: bool) -> ToolResult:
+        output = self.stores.outputs.load(run_id)
+        ledger = build_writing_progress(self.stores.runs.load(run_id), self.stores)
+        return ToolResult(
+            ok=True,
+            tool_name="finalize_writing_run",
+            data={
+                "writing_run_id": run_id,
+                "output_id": output.output_id,
+                "deliverables": [
+                    {"format": self._deliverable_format(run_id, draft.deliverable_id),
+                     "content": draft.content}
+                    for draft in output.deliverables
+                ],
+                "selected_skills": [
+                    {"id": item.skill_id, "version": item.version, "sha256": item.sha256}
+                    for item in output.selected_skills
+                ],
+                "assumptions": list(output.assumptions),
+                "researched_sources": [
+                    {"title": source.title, "url": source.url}
+                    for source in output.researched_sources
+                ],
+                "warnings": list(output.warnings),
+                "already_finalized": idempotent,
+                "progress": ledger,
+            },
+            next_suggested_tools=[],
+        )
+
+    def _deliverable_format(self, run_id: str, deliverable_id: str) -> str:
+        brief = self._latest_brief(run_id)
+        if brief is not None:
+            spec = self._find_deliverable(brief, deliverable_id)
+            if spec is not None:
+                return spec.format
+        return ""
+
     def _prepared_result(
         self, tool_name: str, packet: WorkPacket, run_id: str,
         user_message: dict, *, extra: dict[str, object] | None = None,
+        next_suggested_tools: list[str] | None = None,
     ) -> ToolResult:
+        next_tools = next_suggested_tools or ["submit_writing_result"]
         data = {
             "work_packet_id": packet.work_packet_id,
             "stage": packet.stage,
@@ -1063,7 +1711,7 @@ class WritingToolFacade:
             "prompt": user_message,
             "instructions": packet.instructions,
             "delegation": asdict(packet.delegation),
-            "next_suggested_tools": ["submit_writing_result"],
+            "next_suggested_tools": next_tools,
         }
         if extra:
             data.update(extra)
@@ -1071,7 +1719,7 @@ class WritingToolFacade:
             ok=True,
             tool_name=tool_name,
             data=data,
-            next_suggested_tools=["submit_writing_result"],
+            next_suggested_tools=next_tools,
         )
 
     def _resolve_deliverables(
