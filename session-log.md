@@ -2947,3 +2947,19 @@ Caveats:
 - Files changed: `docs/superpowers/plans/2026-07-03-generic-write-workflow.md`, `session-log.md`.
 - Tests/commands run: plan placeholder scan with `Select-String`; requirement coverage scan with `rg`; `git diff --check -- docs\superpowers\plans\2026-07-03-generic-write-workflow.md` (passed); plan structure count (743 lines, 13 tasks, 54 checkboxes before this log entry).
 - Caveats/follow-ups: Planning only; no production code was changed. The plan deliberately keeps `/write` separate from `EssayJob` and requires manual Claude Code runtime verification after implementation.
+
+## 2026-07-06 - Claude - Generic Write Dynamic Workflow (Task 12)
+
+- Summary: Added the single persistent `/write` Dynamic Workflow (`.claude/workflows/write.js`) and its static contract tests. The script normalizes raw-string or structured args via a parse agent that copies explicit values and never invents paths/IDs, starts or resumes a run (`writing_run_id`), ingests explicitly-named context and writing-style files, then runs a bounded ledger-driven loop (MAX_ACTIONS=30, per-step stall/retry cap of 2) handling brief/research/plan/draft/review/revision/finalize. Detailed review goes through clean-context delegation (`dispatch_writing_reviewer` + a fresh reviewer subagent). Research includes web-search retry-once-then-warn handling. After the loop it re-reads the ledger, throws unless `all_required_done`, then returns the persisted output from `get_writing_output` (finished content first, then skills/assumptions/sources/warnings/run ID) rather than an unconditional success string.
+- Files changed: `.claude/workflows/write.js`, `tests/writing_workflow/test_workflow_contract.py`, `session-log.md`.
+- Tests/commands run: `pytest tests\writing_workflow\test_workflow_contract.py -q` (12 passed); `pytest tests\writing_workflow -q` (112 passed); `node --check .claude/workflows/write.js` (syntax OK).
+- Caveats/follow-ups: Step 5 (live Claude Code manual verification of the representative cases below) is a token-heavy multi-agent run and has NOT been executed yet — it needs a live `/write` session. Record the resulting run IDs and observed mode/skill-stack/research/persistence behavior here when run:
+
+| Case | Command | writing_run_id | Result |
+| --- | --- | --- | --- |
+| immediate text | `/write immediate friendly text declining dinner tomorrow` | _pending_ | _pending_ |
+| detailed + research | `/write detailed LinkedIn post announcing a product launch; research current market context` | _pending_ | _pending_ |
+| skip anti-AI | `/write email asking for a deadline extension; skip anti-AI` | _pending_ | _pending_ |
+| blog + sources | `/write blog comparing two current products, include sources` | _pending_ | _pending_ |
+| multi-deliverable | `/write turn this launch note into an email and LinkedIn post` | _pending_ | _pending_ |
+| resume | `/write continue wrun_<id> audience is existing enterprise customers` | _pending_ | _pending_ |
