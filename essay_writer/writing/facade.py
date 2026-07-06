@@ -35,9 +35,15 @@ from essay_writer.writing.progress import build_writing_progress
 from essay_writer.writing.prompts import (
     WRITING_BRIEF_SCHEMA,
     WRITING_BRIEF_SYSTEM_PROMPT,
+    WRITING_DRAFT_SCHEMA,
+    WRITING_DRAFT_SYSTEM_PROMPT,
+    WRITING_PLAN_SCHEMA,
+    WRITING_PLAN_SYSTEM_PROMPT,
     WRITING_RESEARCH_SCHEMA,
     WRITING_RESEARCH_SYSTEM_PROMPT,
     build_brief_user_message,
+    build_draft_user_message,
+    build_plan_user_message,
     build_research_user_message,
 )
 from essay_writer.writing.schema import (
@@ -48,6 +54,8 @@ from essay_writer.writing.schema import (
     SkillSelection,
     WriteMode,
     WritingBrief,
+    WritingDraft,
+    WritingPlan,
     WritingResearch,
     WritingRun,
     utc_now_iso,
@@ -55,6 +63,7 @@ from essay_writer.writing.schema import (
 from essay_writer.writing.skills import (
     UnknownWritingSkillError,
     WritingSkillRegistry,
+    compose_skill_prompt,
     resolve_skill_stack,
 )
 from essay_writer.writing.storage import WritingStores
@@ -607,7 +616,463 @@ class WritingToolFacade:
         )
         return self._research_committed_result(run_id, commit.artifact_refs, False)
 
+    # -- plan ----------------------------------------------------------
+
+    def prepare_writing_plan(self, writing_run_id: str, deliverable_id: str) -> ToolResult:
+        run = self._load_run(writing_run_id)
+        if run is None:
+            return self._run_not_found("prepare_writing_plan", writing_run_id)
+        brief = self._latest_brief(run.writing_run_id)
+        guard = self._deliverable_guard("prepare_writing_plan", run, brief, deliverable_id)
+        if isinstance(guard, ToolResult):
+            return guard
+        deliverable = guard
+        if brief.mode != WriteMode.DETAILED:
+            return error_result_with_next(
+                "prepare_writing_plan",
+                code="plan_not_required",
+                message="immediate deliverables do not use a plan; draft directly.",
+                exc=ValueError("immediate"),
+                next_suggested_tools=["prepare_writing_draft"],
+            )
+
+        research = self._research_dict(run.writing_run_id)
+        user_message = build_plan_user_message(brief, deliverable, research)
+        packet_id = timestamp_id(
+            "wpkt", run.writing_run_id, "plan", deliverable_id, short_hash(user_message)
+        )
+        packet = self._save_packet(
+            WorkPacket(
+                work_packet_id=packet_id,
+                stage="writing_plan",
+                scope=f"writing:{run.writing_run_id}",
+                instructions=(
+                    "Draft a proportional plan for this one detailed deliverable. "
+                    "Return JSON matching response_schema; do not commit it. Only cite "
+                    "research_fact_ids that appear in the supplied research."
+                ),
+                system_prompt=WRITING_PLAN_SYSTEM_PROMPT,
+                prompt_blocks=[
+                    PromptBlock(
+                        text=json.dumps(user_message, ensure_ascii=False),
+                        cacheable=False,
+                    )
+                ],
+                response_schema=dict(WRITING_PLAN_SCHEMA),
+                context={"writing_run_id": run.writing_run_id, "deliverable_id": deliverable_id},
+                artifact_refs={
+                    "writing_run_id": run.writing_run_id,
+                    "deliverable_id": deliverable_id,
+                },
+                commit_tool="commit_writing_plan",
+                delegation=DelegationHint(
+                    recommended=False,
+                    allowed_tools=["submit_writing_result"],
+                    return_contract=(
+                        "Return one JSON object matching response_schema. Do not commit it."
+                    ),
+                ),
+            )
+        )
+        return self._prepared_result(
+            "prepare_writing_plan", packet, run.writing_run_id, user_message,
+            extra={"deliverable_id": deliverable_id},
+        )
+
+    def commit_writing_plan(self, work_result_id: str) -> ToolResult:
+        loaded = self._load_result_and_packet("commit_writing_plan", work_result_id)
+        if isinstance(loaded, ToolResult):
+            return loaded
+        result, packet = loaded
+        if packet.stage != "writing_plan":
+            return error_result(
+                "commit_writing_plan",
+                code="wrong_work_packet_stage",
+                message=f"expected writing_plan packet, got {packet.stage}",
+                exc=ValueError(packet.stage),
+            )
+        run_id = str(packet.artifact_refs.get("writing_run_id", ""))
+        deliverable_id = str(packet.artifact_refs.get("deliverable_id", ""))
+        run = self._load_run(run_id)
+        if run is None:
+            return self._run_not_found("commit_writing_plan", run_id)
+        brief = self._latest_brief(run_id)
+        guard = self._deliverable_guard("commit_writing_plan", run, brief, deliverable_id)
+        if isinstance(guard, ToolResult):
+            return guard
+
+        existing = [
+            commit
+            for commit in self.work_store.list_commits(scope=packet.scope, stage="writing_plan")
+            if commit.work_result_id == result.work_result_id
+        ]
+        if existing:
+            return self._plan_committed_result(run_id, deliverable_id, existing[0].artifact_refs, True)
+
+        payload = result.payload
+        fact_ids = [str(item) for item in payload.get("research_fact_ids", [])]
+        fact_error = self._validate_research_fact_ids("commit_writing_plan", run_id, fact_ids)
+        if fact_error is not None:
+            return fact_error
+
+        version = self.stores.plans.next_version(run_id, deliverable_id)
+        plan = WritingPlan(
+            plan_id=f"{run_id}-{deliverable_id}-plan-v{version}",
+            writing_run_id=run_id,
+            deliverable_id=deliverable_id,
+            version=version,
+            sections=[str(item) for item in payload.get("sections", [])],
+            key_points=[str(item) for item in payload.get("key_points", [])],
+            research_fact_ids=fact_ids,
+        )
+        self.stores.plans.save(plan)
+        commit = self.work_store.save_commit(
+            scope=packet.scope,
+            stage="writing_plan",
+            work_packet_id=packet.work_packet_id,
+            work_result_id=result.work_result_id,
+            artifact_refs={
+                "writing_run_id": run_id,
+                "deliverable_id": deliverable_id,
+                "plan_id": plan.plan_id,
+                "version": version,
+            },
+        )
+        return self._plan_committed_result(run_id, deliverable_id, commit.artifact_refs, False)
+
+    # -- draft ---------------------------------------------------------
+
+    def prepare_writing_draft(self, writing_run_id: str, deliverable_id: str) -> ToolResult:
+        run = self._load_run(writing_run_id)
+        if run is None:
+            return self._run_not_found("prepare_writing_draft", writing_run_id)
+        brief = self._latest_brief(run.writing_run_id)
+        guard = self._deliverable_guard("prepare_writing_draft", run, brief, deliverable_id)
+        if isinstance(guard, ToolResult):
+            return guard
+        deliverable = guard
+        if brief.mode == WriteMode.DETAILED and not self.stores.plans.versions(
+            run.writing_run_id, deliverable_id
+        ):
+            return error_result_with_next(
+                "prepare_writing_draft",
+                code="plan_required",
+                message="detailed deliverables need a committed plan before drafting.",
+                exc=ValueError("plan"),
+                next_suggested_tools=["prepare_writing_plan"],
+            )
+
+        selections = self._deliverable_selections(brief, deliverable)
+        skill_prompt = compose_skill_prompt(self.registry, selections)
+        user_message = build_draft_user_message(
+            brief=brief,
+            deliverable=deliverable,
+            skill_prompt=skill_prompt,
+            context=self._context_payload(run.writing_run_id),
+            research=self._research_dict(run.writing_run_id),
+            plan=self._plan_dict(run.writing_run_id, deliverable_id),
+        )
+        packet_id = timestamp_id(
+            "wpkt", run.writing_run_id, "draft", deliverable_id, short_hash(user_message)
+        )
+        packet = self._save_packet(
+            WorkPacket(
+                work_packet_id=packet_id,
+                stage="writing_draft",
+                scope=f"writing:{run.writing_run_id}",
+                instructions=(
+                    "Write this one deliverable in full, following the composed skill "
+                    "prompt's precedence. Return JSON matching response_schema; do not "
+                    "commit it. Record explicit assumptions, cite only supplied "
+                    "research_fact_ids, and include a self_check for immediate work."
+                ),
+                system_prompt=WRITING_DRAFT_SYSTEM_PROMPT,
+                prompt_blocks=[
+                    PromptBlock(
+                        text=json.dumps(user_message, ensure_ascii=False),
+                        cacheable=False,
+                    )
+                ],
+                response_schema=dict(WRITING_DRAFT_SCHEMA),
+                context={"writing_run_id": run.writing_run_id, "deliverable_id": deliverable_id},
+                artifact_refs={
+                    "writing_run_id": run.writing_run_id,
+                    "deliverable_id": deliverable_id,
+                },
+                commit_tool="commit_writing_draft",
+                delegation=DelegationHint(
+                    recommended=False,
+                    allowed_tools=["submit_writing_result"],
+                    return_contract=(
+                        "Return one JSON object matching response_schema with the finished "
+                        "prose in content. Do not commit it."
+                    ),
+                ),
+            )
+        )
+        return self._prepared_result(
+            "prepare_writing_draft", packet, run.writing_run_id, user_message,
+            extra={"deliverable_id": deliverable_id},
+        )
+
+    def commit_writing_draft(self, work_result_id: str) -> ToolResult:
+        loaded = self._load_result_and_packet("commit_writing_draft", work_result_id)
+        if isinstance(loaded, ToolResult):
+            return loaded
+        result, packet = loaded
+        if packet.stage != "writing_draft":
+            return error_result(
+                "commit_writing_draft",
+                code="wrong_work_packet_stage",
+                message=f"expected writing_draft packet, got {packet.stage}",
+                exc=ValueError(packet.stage),
+            )
+        run_id = str(packet.artifact_refs.get("writing_run_id", ""))
+        deliverable_id = str(packet.artifact_refs.get("deliverable_id", ""))
+        run = self._load_run(run_id)
+        if run is None:
+            return self._run_not_found("commit_writing_draft", run_id)
+        brief = self._latest_brief(run_id)
+        guard = self._deliverable_guard("commit_writing_draft", run, brief, deliverable_id)
+        if isinstance(guard, ToolResult):
+            return guard
+        deliverable = guard
+
+        existing = [
+            commit
+            for commit in self.work_store.list_commits(scope=packet.scope, stage="writing_draft")
+            if commit.work_result_id == result.work_result_id
+        ]
+        if existing:
+            return self._draft_committed_result(run_id, deliverable_id, existing[0].artifact_refs, True)
+
+        payload = result.payload
+        content = str(payload.get("content", ""))
+        if not content.strip():
+            return error_result(
+                "commit_writing_draft",
+                code="draft_content_empty",
+                message="a committed draft must have non-empty content.",
+                exc=ValueError("content"),
+            )
+        self_check = [str(item) for item in payload.get("self_check", [])]
+        if brief.mode == WriteMode.IMMEDIATE and not self_check:
+            return error_result_with_next(
+                "commit_writing_draft",
+                code="self_check_required",
+                message=(
+                    "immediate deliverables carry their own review; self_check must be "
+                    "a non-empty list of the checks you performed."
+                ),
+                exc=ValueError("self_check"),
+                next_suggested_tools=["prepare_writing_draft"],
+            )
+        fact_ids = [str(item) for item in payload.get("research_fact_ids", [])]
+        fact_error = self._validate_research_fact_ids("commit_writing_draft", run_id, fact_ids)
+        if fact_error is not None:
+            return fact_error
+
+        selections = self._deliverable_selections(brief, deliverable)
+        version = self.stores.drafts.next_version(run_id, deliverable_id)
+        draft = WritingDraft(
+            draft_id=f"{run_id}-{deliverable_id}-draft-v{version}",
+            writing_run_id=run_id,
+            deliverable_id=deliverable_id,
+            version=version,
+            content=content,
+            selected_skills=selections,
+            assumptions=[str(item) for item in payload.get("assumptions", [])],
+            research_fact_ids=fact_ids,
+            self_check=self_check,
+            origin="draft",
+        )
+        self.stores.drafts.save(draft)
+        commit = self.work_store.save_commit(
+            scope=packet.scope,
+            stage="writing_draft",
+            work_packet_id=packet.work_packet_id,
+            work_result_id=result.work_result_id,
+            artifact_refs={
+                "writing_run_id": run_id,
+                "deliverable_id": deliverable_id,
+                "draft_id": draft.draft_id,
+                "version": version,
+            },
+        )
+        return self._draft_committed_result(run_id, deliverable_id, commit.artifact_refs, False)
+
     # -- internals -----------------------------------------------------
+
+    def _deliverable_guard(
+        self, tool_name: str, run: WritingRun, brief: WritingBrief | None, deliverable_id: str
+    ) -> DeliverableSpec | ToolResult:
+        """Shared plan/draft precondition check.
+
+        Returns the resolved ``DeliverableSpec`` when the run is ready for
+        per-deliverable work, or a terminal ``ToolResult`` describing what to do
+        first (commit a brief, answer questions, run research, or fix the id).
+        """
+        if brief is None:
+            return error_result_with_next(
+                tool_name,
+                code="brief_required",
+                message="commit a writing brief before drafting.",
+                exc=ValueError("brief"),
+                next_suggested_tools=["prepare_writing_brief"],
+            )
+        if brief.blocking_questions:
+            return error_result_with_next(
+                tool_name,
+                code="brief_blocked",
+                message="answer the brief's blocking questions first.",
+                exc=ValueError("blocking_questions"),
+                next_suggested_tools=["answer_writing_questions"],
+            )
+        if self._research_pending(run, brief):
+            return error_result_with_next(
+                tool_name,
+                code="research_required",
+                message="this run requires research before per-deliverable work.",
+                exc=ValueError("research"),
+                next_suggested_tools=["prepare_writing_research"],
+            )
+        deliverable = self._find_deliverable(brief, deliverable_id)
+        if deliverable is None:
+            return error_result(
+                tool_name,
+                code="deliverable_not_found",
+                message=f"deliverable {deliverable_id!r} is not in the committed brief.",
+                exc=KeyError(deliverable_id),
+            )
+        return deliverable
+
+    def _research_pending(self, run: WritingRun, brief: WritingBrief) -> bool:
+        if run.research_policy == ResearchPolicy.OFF:
+            return False
+        required = run.research_policy == ResearchPolicy.REQUIRED or brief.research_needed
+        return required and not self.stores.research.versions(run.writing_run_id)
+
+    @staticmethod
+    def _find_deliverable(brief: WritingBrief, deliverable_id: str) -> DeliverableSpec | None:
+        for deliverable in brief.deliverables:
+            if deliverable.deliverable_id == deliverable_id:
+                return deliverable
+        return None
+
+    @staticmethod
+    def _deliverable_selections(
+        brief: WritingBrief, deliverable: DeliverableSpec
+    ) -> list[SkillSelection]:
+        by_id = {selection.skill_id: selection for selection in brief.selected_skills}
+        return [
+            by_id[skill_id]
+            for skill_id in deliverable.selected_skill_ids
+            if skill_id in by_id
+        ]
+
+    def _research_dict(self, run_id: str) -> dict | None:
+        if not self.stores.research.versions(run_id):
+            return None
+        return asdict(self.stores.research.load_latest(run_id))
+
+    def _plan_dict(self, run_id: str, deliverable_id: str) -> dict | None:
+        if not self.stores.plans.versions(run_id, deliverable_id):
+            return None
+        return asdict(self.stores.plans.load_latest(run_id, deliverable_id))
+
+    def _known_fact_ids(self, run_id: str) -> set[str]:
+        if not self.stores.research.versions(run_id):
+            return set()
+        return {fact.fact_id for fact in self.stores.research.load_latest(run_id).facts}
+
+    def _validate_research_fact_ids(
+        self, tool_name: str, run_id: str, fact_ids: list[str]
+    ) -> ToolResult | None:
+        if not fact_ids:
+            return None
+        known = self._known_fact_ids(run_id)
+        unknown = [fact_id for fact_id in fact_ids if fact_id not in known]
+        if unknown:
+            return error_result_with_next(
+                tool_name,
+                code="unknown_research_fact",
+                message=(
+                    "cited research facts are absent from committed research: "
+                    + ", ".join(sorted(set(unknown)))
+                ),
+                exc=ValueError("research_fact_ids"),
+                next_suggested_tools=["prepare_writing_research"],
+            )
+        return None
+
+    def _plan_committed_result(
+        self, run_id: str, deliverable_id: str, artifact_refs: dict[str, object], idempotent: bool
+    ) -> ToolResult:
+        plan = self.stores.plans.load_latest(run_id, deliverable_id)
+        ledger = build_writing_progress(self.stores.runs.load(run_id), self.stores)
+        return ToolResult(
+            ok=True,
+            tool_name="commit_writing_plan",
+            data={
+                "writing_run_id": run_id,
+                "deliverable_id": deliverable_id,
+                "plan_id": str(artifact_refs.get("plan_id", plan.plan_id)),
+                "version": plan.version,
+                "already_committed": idempotent,
+                "progress": ledger,
+            },
+            next_suggested_tools=[ledger["next_action"].get("tool")]
+            if ledger["next_action"].get("tool")
+            else [],
+        )
+
+    def _draft_committed_result(
+        self, run_id: str, deliverable_id: str, artifact_refs: dict[str, object], idempotent: bool
+    ) -> ToolResult:
+        draft = self.stores.drafts.load_latest(run_id, deliverable_id)
+        ledger = build_writing_progress(self.stores.runs.load(run_id), self.stores)
+        return ToolResult(
+            ok=True,
+            tool_name="commit_writing_draft",
+            data={
+                "writing_run_id": run_id,
+                "deliverable_id": deliverable_id,
+                "draft_id": str(artifact_refs.get("draft_id", draft.draft_id)),
+                "version": draft.version,
+                "selected_skills": [asdict(item) for item in draft.selected_skills],
+                "research_fact_ids": list(draft.research_fact_ids),
+                "already_committed": idempotent,
+                "progress": ledger,
+            },
+            next_suggested_tools=[ledger["next_action"].get("tool")]
+            if ledger["next_action"].get("tool")
+            else [],
+        )
+
+    def _prepared_result(
+        self, tool_name: str, packet: WorkPacket, run_id: str,
+        user_message: dict, *, extra: dict[str, object] | None = None,
+    ) -> ToolResult:
+        data = {
+            "work_packet_id": packet.work_packet_id,
+            "stage": packet.stage,
+            "writing_run_id": run_id,
+            "commit_tool": packet.commit_tool,
+            "response_schema": packet.response_schema,
+            "system_prompt": packet.system_prompt,
+            "prompt": user_message,
+            "instructions": packet.instructions,
+            "delegation": asdict(packet.delegation),
+            "next_suggested_tools": ["submit_writing_result"],
+        }
+        if extra:
+            data.update(extra)
+        return ToolResult(
+            ok=True,
+            tool_name=tool_name,
+            data=data,
+            next_suggested_tools=["submit_writing_result"],
+        )
 
     def _resolve_deliverables(
         self,
