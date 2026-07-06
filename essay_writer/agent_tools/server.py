@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from essay_writer.agent_tools.facade import AgentToolFacade
+from essay_writer.writing.facade import WritingToolFacade
+from essay_writer.writing.mcp import register_writing_tools
 
 
 INSTALL_MESSAGE = 'Install Agent Tool Mode dependencies with: pip install -e ".[agent-tools]"'
@@ -17,8 +19,11 @@ def build_server(data_dir: str | Path | None = None) -> Any:
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         raise RuntimeError(INSTALL_MESSAGE) from exc
 
+    resolved_data_dir = data_dir or os.environ.get("ESSAY_DATA_DIR", "./data")
     app = FastMCP("essaywriter-agent-tools")
-    facade = AgentToolFacade.from_data_dir(data_dir or os.environ.get("ESSAY_DATA_DIR", "./data"))
+    facade = AgentToolFacade.from_data_dir(resolved_data_dir)
+    writing_facade = WritingToolFacade.from_data_dir(resolved_data_dir)
+    register_writing_tools(app, writing_facade)
 
     def result(value: object) -> dict[str, object]:
         return asdict(value)

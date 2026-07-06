@@ -31,7 +31,11 @@ from essay_writer.agent_tools.schemas import (
 )
 from essay_writer.agent_tools.subagent_tokens import SubagentTokenStore
 from essay_writer.agent_tools.work_store import AgentWorkStore
-from essay_writer.writing.context import WritingContextService
+from essay_writer.writing.context import (
+    UnsupportedWritingContextError,
+    WritingContextLimitError,
+    WritingContextService,
+)
 from essay_writer.writing.progress import MAX_REVISION_ROUNDS, build_writing_progress
 from essay_writer.writing.prompts import (
     WRITING_BRIEF_SCHEMA,
@@ -213,6 +217,116 @@ class WritingToolFacade:
             ok=True,
             tool_name="get_writing_progress",
             data={"writing_run_id": run.writing_run_id, "progress": ledger},
+        )
+
+    def list_writing_runs(self, *, status: str | None = None, limit: int = 20) -> ToolResult:
+        runs = self.stores.runs.list()
+        if status is not None:
+            runs = [run for run in runs if run.status == status]
+        runs = runs[: max(0, int(limit))]
+        return ToolResult(
+            ok=True,
+            tool_name="list_writing_runs",
+            data={
+                "runs": [
+                    {
+                        "writing_run_id": run.writing_run_id,
+                        "status": run.status,
+                        "raw_request": run.raw_request,
+                        "output_id": run.output_id,
+                        "created_at": run.created_at,
+                        "updated_at": run.updated_at,
+                    }
+                    for run in runs
+                ],
+                "count": len(runs),
+            },
+        )
+
+    def get_writing_output(self, writing_run_id: str) -> ToolResult:
+        run = self._load_run(writing_run_id)
+        if run is None:
+            return self._run_not_found("get_writing_output", writing_run_id)
+        if not self._output_exists(writing_run_id):
+            return error_result_with_next(
+                "get_writing_output",
+                code="writing_output_not_found",
+                message=(
+                    "this run has not been finalized; no output exists yet."
+                ),
+                exc=KeyError(writing_run_id),
+                next_suggested_tools=["get_writing_progress"],
+            )
+        return self._finalized_result(writing_run_id, True)
+
+    def ingest_writing_context(
+        self,
+        writing_run_id: str,
+        *,
+        text: str | None = None,
+        document_path: str | None = None,
+        label: str,
+    ) -> ToolResult:
+        """Attach untrusted reference content (inline text or a file) to a run.
+
+        Exactly one of ``text`` or ``document_path`` must be supplied. The content
+        is stored immutably and surfaced to later stages as ``context`` — it is
+        never treated as tool instructions.
+        """
+        run = self._load_run(writing_run_id)
+        if run is None:
+            return self._run_not_found("ingest_writing_context", writing_run_id)
+        if bool(text) == bool(document_path):
+            return error_result(
+                "ingest_writing_context",
+                code="context_source_ambiguous",
+                message="supply exactly one of text or document_path.",
+                exc=ValueError("text/document_path"),
+            )
+        if not label or not str(label).strip():
+            return error_result(
+                "ingest_writing_context",
+                code="label_required",
+                message="ingest_writing_context requires a non-empty label.",
+                exc=ValueError("label"),
+            )
+        try:
+            if text is not None:
+                item = self.context_service.add_inline(
+                    run.writing_run_id, str(text), label=str(label)
+                )
+            else:
+                item = self.context_service.add_file(
+                    run.writing_run_id, str(document_path), label=str(label)
+                )
+        except FileNotFoundError as exc:
+            return error_result(
+                "ingest_writing_context",
+                code="context_file_not_found",
+                message=f"context file not found: {document_path}",
+                exc=exc,
+            )
+        except (WritingContextLimitError, UnsupportedWritingContextError) as exc:
+            return error_result(
+                "ingest_writing_context",
+                code="context_rejected",
+                message=str(exc),
+                exc=exc,
+            )
+        context_ids = list(run.context_ids)
+        if item.context_id not in context_ids:
+            context_ids.append(item.context_id)
+            self.stores.runs.update(replace(run, context_ids=context_ids))
+        return ToolResult(
+            ok=True,
+            tool_name="ingest_writing_context",
+            data={
+                "writing_run_id": run.writing_run_id,
+                "context_id": item.context_id,
+                "label": item.label,
+                "kind": item.kind,
+                "char_count": item.char_count,
+            },
         )
 
     # -- brief ---------------------------------------------------------
