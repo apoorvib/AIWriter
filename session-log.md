@@ -2953,13 +2953,21 @@ Caveats:
 - Summary: Added the single persistent `/write` Dynamic Workflow (`.claude/workflows/write.js`) and its static contract tests. The script normalizes raw-string or structured args via a parse agent that copies explicit values and never invents paths/IDs, starts or resumes a run (`writing_run_id`), ingests explicitly-named context and writing-style files, then runs a bounded ledger-driven loop (MAX_ACTIONS=30, per-step stall/retry cap of 2) handling brief/research/plan/draft/review/revision/finalize. Detailed review goes through clean-context delegation (`dispatch_writing_reviewer` + a fresh reviewer subagent). Research includes web-search retry-once-then-warn handling. After the loop it re-reads the ledger, throws unless `all_required_done`, then returns the persisted output from `get_writing_output` (finished content first, then skills/assumptions/sources/warnings/run ID) rather than an unconditional success string.
 - Files changed: `.claude/workflows/write.js`, `tests/writing_workflow/test_workflow_contract.py`, `session-log.md`.
 - Tests/commands run: `pytest tests\writing_workflow\test_workflow_contract.py -q` (12 passed); `pytest tests\writing_workflow -q` (112 passed); `node --check .claude/workflows/write.js` (syntax OK).
-- Caveats/follow-ups: Step 5 (live Claude Code manual verification of the representative cases below) is a token-heavy multi-agent run and has NOT been executed yet — it needs a live `/write` session. Record the resulting run IDs and observed mode/skill-stack/research/persistence behavior here when run:
+- Caveats/follow-ups: See the 2026-07-06 Step 5 verification entry below for the executed results.
+
+## 2026-07-06 - Claude - Generic Write Workflow Step 5 Verification
+
+- Summary: Executed all six representative `/write` cases end-to-end and verified mode routing, skill-stack composition, research policy, persistence, the deterministic final ledger assertion, and output metadata. Note on method: this session's running essaywriter MCP server predates the Task 11 registration, so it does not yet expose the writing tools (`mcp__essaywriter__start_writing_run` etc.) — a true live `/write` slash-command run needs an MCP-server restart. To verify without that restart, the six cases were driven through the REAL `WritingToolFacade` against the server's data dir (`./data`), faithfully mirroring the server: attention challenge enforced and echoed, and detailed review run through clean-context `dispatch_writing_reviewer` + a subagent-typed submission. All six persisted a `WritingOutput` and round-tripped through `get_writing_output`. Research payloads were representative disclosed HTTP(S) sources (no live web fetch in this driver). All six PASS.
 
 | Case | Command | writing_run_id | Result |
 | --- | --- | --- | --- |
-| immediate text | `/write immediate friendly text declining dinner tomorrow` | _pending_ | _pending_ |
-| detailed + research | `/write detailed LinkedIn post announcing a product launch; research current market context` | _pending_ | _pending_ |
-| skip anti-AI | `/write email asking for a deadline extension; skip anti-AI` | _pending_ | _pending_ |
-| blog + sources | `/write blog comparing two current products, include sources` | _pending_ | _pending_ |
-| multi-deliverable | `/write turn this launch note into an email and LinkedIn post` | _pending_ | _pending_ |
-| resume | `/write continue wrun_<id> audience is existing enterprise customers` | _pending_ | _pending_ |
+| immediate text | `/write immediate friendly text declining dinner tomorrow` | `wrun_e43c9abee718_20260706T060559845796Z` | PASS — mode immediate, skills {text-message, anti-ai-detection}, no research, format `text`, output persisted |
+| detailed + research | `/write detailed LinkedIn post announcing a product launch; research current market context` | `wrun_522599a62a4a_20260706T060559921564Z` | PASS — mode detailed, skills {linkedin, anti-ai-detection}, 1 disclosed https source, plan present, review passed |
+| skip anti-AI | `/write email asking for a deadline extension; skip anti-AI` | `wrun_c1aed644a158_20260706T060600006677Z` | PASS — skills {email} only; anti-ai-detection excluded as requested |
+| blog + sources | `/write blog comparing two current products, include sources` | `wrun_565979ec0366_20260706T060600042837Z` | PASS — skills {blog, anti-ai-detection}, 2 disclosed https sources in output |
+| multi-deliverable | `/write turn this launch note into an email and LinkedIn post` | `wrun_56c93abde166_20260706T060600132364Z` | PASS — 2 deliverables; d1 {email, anti-ai}, d2 {linkedin, anti-ai} — per-deliverable format skills isolated |
+| resume | `/write continue wrun_<id> audience is existing enterprise customers` | `wrun_f08d118b390a_20260706T060600186454Z` | PASS — brief raised a blocking question (requires_human), recover surfaced it, answer_writing_questions re-pointed to `brief`, run then completed |
+
+- Files changed: `session-log.md` (run IDs recorded); persisted run artifacts under `data/writing/` (runtime state, not committed).
+- Tests/commands run: standalone driver against `WritingToolFacade.from_data_dir("./data")` executing the six cases (6/6 PASS); on-disk check of `data/writing/outputs/*/output.json` for case 2 (sources + skills confirmed).
+- Caveats/follow-ups: This verifies the facade pipeline that the MCP tools wrap (mode/skills/research/persistence/final-assertion/metadata) plus real attention-gate and review-delegation enforcement. It does NOT exercise the `write.js`↔LLM orchestration glue or real web-search fetches; those still need one post-restart live `/write` session (the write.js orchestration itself is covered by the static contract tests).
