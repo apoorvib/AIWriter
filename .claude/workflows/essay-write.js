@@ -180,8 +180,9 @@ async function runAuditStep() {
     `You are a clean-context anti-AI auditor. Call ` +
       `mcp__essaywriter__get_work_packet(work_packet_id="${setup.work_packet_id}") and read its ` +
       `system_prompt VERBATIM — it contains ONLY the anti-AI writing skill. Produce the audit JSON ` +
-      `matching the packet's response_schema: fill every required field, include one line_audit row ` +
-      `per skill line, copy the skill and draft hashes from the packet, and copy the ATTENTION CHECK ` +
+      `matching the packet's response_schema: fill every required field, include one rule_audit row ` +
+      `per skill rule (each R# in the rule_manifest, plus the self_check unit), copy the skill and ` +
+      `draft hashes from the packet, and copy the ATTENTION CHECK ` +
       `token into a "notes"/self_check_notes field. Call ` +
       `mcp__essaywriter__submit_work_result(work_packet_id="${setup.work_packet_id}", payload=<audit>, ` +
       `producer={ "type": "subagent", "role": "anti_ai_auditor", "subagent_token": "${setup.subagent_token}" }, ` +

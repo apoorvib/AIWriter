@@ -8,7 +8,7 @@ from pathlib import Path
 
 from essay_writer.drafting.schema import (
     AntiAIFinalDecision,
-    AntiAISkillBlockAudit,
+    AntiAISkillRuleAudit,
     AntiAISelfCheck,
     AntiAIUnmetRequirement,
     EssayDraft,
@@ -88,16 +88,17 @@ def _draft_from_payload(payload: dict) -> EssayDraft:
             for grade in grades_raw
             if isinstance(grade, dict) and str(grade.get("bullet", "")).strip()
         ]
-        # `block_audit` is the current shape. Tolerate old persisted drafts that
-        # still carry `line_audit` by ignoring it (their hashes still load, and a
-        # stale audit is re-run through prepare_anti_ai_audit anyway).
-        block_audit = [
-            AntiAISkillBlockAudit(
-                block_index=int(row.get("block_index", 0) or 0),
-                block_text_sha256=str(row.get("block_text_sha256", "")),
+        # `rule_audit` is the current shape. Tolerate old persisted drafts that
+        # still carry `block_audit`/`line_audit` by ignoring them (their top-level
+        # hashes still load, and a stale audit is re-run through
+        # prepare_anti_ai_audit anyway).
+        rule_audit = [
+            AntiAISkillRuleAudit(
+                rule_id=str(row.get("rule_id", "")),
+                rule_text_sha256=str(row.get("rule_text_sha256", "")),
                 status=str(row.get("status", "")),
                 finding=str(row.get("finding", "")),
-                block_application=str(row.get("block_application", "")),
+                rule_application=str(row.get("rule_application", "")),
                 draft_evidence=[
                     {
                         "kind": str(item.get("kind", "")),
@@ -109,12 +110,12 @@ def _draft_from_payload(payload: dict) -> EssayDraft:
                 ],
                 whole_essay_evidence=dict(row.get("whole_essay_evidence", {}) or {}),
             )
-            for row in audit.get("block_audit", []) or []
+            for row in audit.get("rule_audit", []) or []
             if isinstance(row, dict)
         ]
         unmet_requirements = [
             AntiAIUnmetRequirement(
-                block_index=int(row.get("block_index", 0) or 0),
+                rule_id=str(row.get("rule_id", "")),
                 section=str(row.get("section", "")),
                 status=str(row.get("status", "")),
                 reason=str(row.get("reason", "")),
@@ -139,7 +140,7 @@ def _draft_from_payload(payload: dict) -> EssayDraft:
             skill_sha256=str(audit.get("skill_sha256", "")),
             skill_line_count=int(audit.get("skill_line_count", 0) or 0),
             draft_sha256=str(audit.get("draft_sha256", "")),
-            block_audit=block_audit,
+            rule_audit=rule_audit,
             paragraph_count=int(audit.get("paragraph_count", 0) or 0),
             paragraph_first_sentences=[
                 str(s) for s in audit.get("paragraph_first_sentences", []) or []

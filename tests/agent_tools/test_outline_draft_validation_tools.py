@@ -116,7 +116,7 @@ def test_prepare_style_revision_ships_anti_ai_skill_in_system_prompt() -> None:
     assert "<anti_ai_detection_skill>" in system_prompt
     assert "</anti_ai_detection_skill>" in system_prompt
     # A specific sentence from the skill document, so a swapped skill is caught.
-    assert "Never use em dashes. Zero. Not one." in system_prompt
+    assert "Never use em dashes (U+2014) or en dashes" in system_prompt
     # And the actual skill body must be present, not just the wrapper tags.
     assert ANTI_AI_SKILL_DOCUMENT.split("\n", 1)[0] in system_prompt
 

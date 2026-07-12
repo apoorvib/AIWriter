@@ -8,8 +8,9 @@ the way to export" hole that started this work.
 These tests construct the facade with the flag ON explicitly, overriding
 the conftest default-off.
 
-Audit coverage is per-block (one row per blank-line block of the skill file),
-not per-line; see docs/superpowers/plans/2026-07-01-anti-ai-audit-per-rule-redesign.md.
+Audit coverage is per-rule (one row per canonical R# rule of the skill file
+plus a self_check row); see
+docs/superpowers/specs/2026-07-12-anti-ai-audit-per-rule-design.md.
 """
 from __future__ import annotations
 
@@ -31,12 +32,10 @@ def _enforced(tmp) -> AgentToolFacade:
 
 
 def _first_guidance_row(payload: dict) -> dict:
-    """Return the first non-context (guidance) block_audit row, which carries
-    full draft evidence, reasoning, and whole-essay review."""
-    for row in payload["anti_ai_self_check"]["block_audit"]:
-        if row["status"] != "context":
-            return row
-    raise AssertionError("fixture payload had no guidance rows")
+    """Return the first rule_audit row (every row is a full guidance row)."""
+    for row in payload["anti_ai_self_check"]["rule_audit"]:
+        return row
+    raise AssertionError("fixture payload had no rule rows")
 
 
 def _commit_audit(facade: AgentToolFacade, *, draft_id: str | None = None):
@@ -83,7 +82,7 @@ def test_validation_allowed_after_audit_committed() -> None:
     assert result.data["stage"] == "validation"
 
 
-def test_committed_block_audit_payload_is_small_enough_to_submit_inline() -> None:
+def test_committed_rule_audit_payload_is_small_enough_to_submit_inline() -> None:
     """Regression guard for the bug that started this work: the per-line audit
     payload was ~100K tokens and could not be submitted inline. Per-block
     coverage must keep the serialized payload well under 40 KB."""
@@ -139,7 +138,7 @@ def test_validation_rejects_user_edit_until_exact_draft_is_audited() -> None:
     assert "prepare_anti_ai_audit" in result.next_suggested_tools
 
 
-def test_commit_anti_ai_audit_rejects_incomplete_block_coverage() -> None:
+def test_commit_anti_ai_audit_rejects_incomplete_rule_coverage() -> None:
     with LocalAgentTempDir() as tmp:
         facade = _enforced(tmp)
         _seed_job_through_draft(facade)
@@ -156,7 +155,7 @@ def test_commit_anti_ai_audit_rejects_incomplete_block_coverage() -> None:
             str(prepared_audit.data["work_packet_id"]),
             payload=full_audit_payload(
                 draft_text=source_draft.content,
-                omit_last_block=True,
+                omit_last_rule=True,
             ),
             producer=producer,
         )
@@ -166,10 +165,10 @@ def test_commit_anti_ai_audit_rejects_incomplete_block_coverage() -> None:
 
     assert result.ok is False
     assert result.error is not None
-    assert result.error.code == "anti_ai_block_audit_incomplete"
+    assert result.error.code == "anti_ai_rule_audit_incomplete"
 
 
-def test_commit_anti_ai_audit_rejects_block_hash_mismatch() -> None:
+def test_commit_anti_ai_audit_rejects_rule_hash_mismatch() -> None:
     with LocalAgentTempDir() as tmp:
         facade = _enforced(tmp)
         _seed_job_through_draft(facade)
@@ -178,7 +177,7 @@ def test_commit_anti_ai_audit_rejects_block_hash_mismatch() -> None:
             "job1", str(prepared_audit.data["draft_id"])
         )
         payload = full_audit_payload(draft_text=source_draft.content)
-        payload["anti_ai_self_check"]["block_audit"][0]["block_text_sha256"] = (
+        payload["anti_ai_self_check"]["rule_audit"][0]["rule_text_sha256"] = (
             "sha256:" + "0" * 64
         )
         producer = dispatched_subagent(
@@ -197,7 +196,7 @@ def test_commit_anti_ai_audit_rejects_block_hash_mismatch() -> None:
 
     assert result.ok is False
     assert result.error is not None
-    assert result.error.code == "anti_ai_block_audit_hash_mismatch"
+    assert result.error.code == "anti_ai_rule_audit_hash_mismatch"
 
 
 def test_commit_anti_ai_audit_rejects_wrong_skill_file() -> None:
@@ -229,7 +228,7 @@ def test_commit_anti_ai_audit_rejects_wrong_skill_file() -> None:
     assert result.error.code == "anti_ai_skill_file_mismatch"
 
 
-def test_commit_anti_ai_audit_rejects_boilerplate_block_audit() -> None:
+def test_commit_anti_ai_audit_rejects_boilerplate_rule_audit() -> None:
     with LocalAgentTempDir() as tmp:
         facade = _enforced(tmp)
         _seed_job_through_draft(facade)
@@ -238,9 +237,9 @@ def test_commit_anti_ai_audit_rejects_boilerplate_block_audit() -> None:
             "job1", str(prepared_audit.data["draft_id"])
         )
         payload = full_audit_payload(draft_text=source_draft.content)
-        for row in payload["anti_ai_self_check"]["block_audit"]:
-            if row["status"] != "context":
-                row["finding"] = "Generic finding for every block."
+        for row in payload["anti_ai_self_check"]["rule_audit"]:
+            if True:
+                row["finding"] = "Generic finding for every rule."
         producer = dispatched_subagent(
             facade,
             work_packet_id=str(prepared_audit.data["work_packet_id"]),
@@ -257,10 +256,10 @@ def test_commit_anti_ai_audit_rejects_boilerplate_block_audit() -> None:
 
     assert result.ok is False
     assert result.error is not None
-    assert result.error.code == "anti_ai_block_audit_boilerplate"
+    assert result.error.code == "anti_ai_rule_audit_boilerplate"
 
 
-def test_commit_anti_ai_audit_rejects_failed_block_without_final_failure() -> None:
+def test_commit_anti_ai_audit_rejects_failed_rule_without_final_failure() -> None:
     with LocalAgentTempDir() as tmp:
         facade = _enforced(tmp)
         _seed_job_through_draft(facade)
@@ -290,7 +289,7 @@ def test_commit_anti_ai_audit_rejects_failed_block_without_final_failure() -> No
 
     assert result.ok is False
     assert result.error is not None
-    assert result.error.code == "anti_ai_block_audit_inconsistent"
+    assert result.error.code == "anti_ai_rule_audit_inconsistent"
 
 
 def test_commit_anti_ai_audit_rejects_non_context_rows_without_draft_evidence() -> None:
@@ -302,12 +301,12 @@ def test_commit_anti_ai_audit_rejects_non_context_rows_without_draft_evidence() 
             "job1", str(prepared_audit.data["draft_id"])
         )
         payload = full_audit_payload(draft_text=source_draft.content)
-        for row in payload["anti_ai_self_check"]["block_audit"]:
-            if row["status"] != "context":
+        for row in payload["anti_ai_self_check"]["rule_audit"]:
+            if True:
                 row["draft_evidence"] = [
                     {
                         "kind": "not_applicable",
-                        "reference": f"block {row['block_index']} skipped",
+                        "reference": f"rule {row['rule_id']} skipped",
                         "explanation": "No draft-specific evidence supplied.",
                     }
                 ]
@@ -328,10 +327,10 @@ def test_commit_anti_ai_audit_rejects_non_context_rows_without_draft_evidence() 
 
     assert result.ok is False
     assert result.error is not None
-    assert result.error.code == "anti_ai_block_audit_missing_draft_evidence"
+    assert result.error.code == "anti_ai_rule_audit_missing_draft_evidence"
 
 
-def test_commit_anti_ai_audit_rejects_weak_block_specific_reasoning() -> None:
+def test_commit_anti_ai_audit_rejects_weak_rule_specific_reasoning() -> None:
     with LocalAgentTempDir() as tmp:
         facade = _enforced(tmp)
         _seed_job_through_draft(facade)
@@ -340,9 +339,9 @@ def test_commit_anti_ai_audit_rejects_weak_block_specific_reasoning() -> None:
             "job1", str(prepared_audit.data["draft_id"])
         )
         payload = full_audit_payload(draft_text=source_draft.content)
-        for row in payload["anti_ai_self_check"]["block_audit"]:
-            if row["status"] != "context":
-                row["block_application"] = "Applied."
+        for row in payload["anti_ai_self_check"]["rule_audit"]:
+            if True:
+                row["rule_application"] = "Applied."
         producer = dispatched_subagent(
             facade,
             work_packet_id=str(prepared_audit.data["work_packet_id"]),
@@ -360,7 +359,7 @@ def test_commit_anti_ai_audit_rejects_weak_block_specific_reasoning() -> None:
 
     assert result.ok is False
     assert result.error is not None
-    assert result.error.code == "anti_ai_block_audit_weak_reasoning"
+    assert result.error.code == "anti_ai_rule_audit_weak_reasoning"
 
 
 def test_commit_anti_ai_audit_rejects_missing_whole_essay_review() -> None:
@@ -375,8 +374,8 @@ def test_commit_anti_ai_audit_rejects_missing_whole_essay_review() -> None:
         # whole_essay_evidence is optional in the schema now, so dropping it on a
         # guidance row passes submit-time schema validation but must be caught by
         # the commit-time block validator.
-        for row in payload["anti_ai_self_check"]["block_audit"]:
-            if row["status"] != "context":
+        for row in payload["anti_ai_self_check"]["rule_audit"]:
+            if True:
                 row.pop("whole_essay_evidence", None)
         producer = dispatched_subagent(
             facade,
@@ -394,7 +393,7 @@ def test_commit_anti_ai_audit_rejects_missing_whole_essay_review() -> None:
 
     assert result.ok is False
     assert result.error is not None
-    assert result.error.code == "anti_ai_block_audit_missing_whole_essay_review"
+    assert result.error.code == "anti_ai_rule_audit_missing_whole_essay_review"
 
 
 def test_commit_anti_ai_audit_rejects_partial_whole_essay_review() -> None:
@@ -406,8 +405,8 @@ def test_commit_anti_ai_audit_rejects_partial_whole_essay_review() -> None:
             "job1", str(prepared_audit.data["draft_id"])
         )
         payload = full_audit_payload(draft_text=source_draft.content)
-        for row in payload["anti_ai_self_check"]["block_audit"]:
-            if row["status"] != "context":
+        for row in payload["anti_ai_self_check"]["rule_audit"]:
+            if True:
                 row["whole_essay_evidence"] = {
                     "scope": "whole_essay",
                     "paragraph_count_reviewed": 0,
@@ -431,4 +430,4 @@ def test_commit_anti_ai_audit_rejects_partial_whole_essay_review() -> None:
 
     assert result.ok is False
     assert result.error is not None
-    assert result.error.code == "anti_ai_block_audit_missing_whole_essay_review"
+    assert result.error.code == "anti_ai_rule_audit_missing_whole_essay_review"

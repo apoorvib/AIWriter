@@ -31,29 +31,29 @@ class StyleGuidanceGrade:
 
 
 @dataclass(frozen=True)
-class AntiAISkillBlockAudit:
-    """One block-level proof row for the anti-AI skill document.
+class AntiAISkillRuleAudit:
+    """One rule-level proof row for the anti-AI skill document.
 
-    A block is a blank-line-separated paragraph of the skill file (~191 total),
-    which replaces the old per-line row (~458) so the committed audit payload is
-    small enough to submit inline. Structural blocks carry a light
-    ``status="context"`` row; guidance blocks carry full draft evidence and a
-    whole-essay review."""
+    A rule is a canonical ``R#`` unit of the skill file (~31 total) plus one
+    ``self_check`` row, which replaces the earlier per-blank-line block row
+    (~138). Every row is a guidance row carrying full draft evidence and a
+    whole-essay review; a rule the auditor judged inapplicable uses
+    ``status="not_applicable"``."""
 
-    block_index: int
-    block_text_sha256: str
+    rule_id: str
+    rule_text_sha256: str
     status: str
     finding: str = ""
-    block_application: str = ""
+    rule_application: str = ""
     draft_evidence: list[dict[str, str]] = field(default_factory=list)
     whole_essay_evidence: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class AntiAIUnmetRequirement:
-    """A skill block the agent could not satisfy."""
+    """A skill rule the agent could not satisfy."""
 
-    block_index: int
+    rule_id: str
     section: str
     status: str
     reason: str
@@ -80,7 +80,7 @@ class AntiAISelfCheck:
     skill_sha256: str = ""
     skill_line_count: int = 0
     draft_sha256: str = ""
-    block_audit: list[AntiAISkillBlockAudit] = field(default_factory=list)
+    rule_audit: list[AntiAISkillRuleAudit] = field(default_factory=list)
     paragraph_count: int = 0
     paragraph_first_sentences: list[str] = field(default_factory=list)
     first_sentence_chain_summarizes_essay: bool = True

@@ -104,15 +104,16 @@ contract that gets ignored when it lives inside a multi-goal drafting prompt.
 The audit's system prompt contains ONLY the anti-AI skill. The response schema
 forces the auditor to fill the seven self-check fields, grade each
 writing-style guidance bullet, copy the current skill-file hash and draft hash,
-and produce one `block_audit` row for every blank-line block (paragraph) of
-`anti-ai-detection-SKILL.md` (~191 blocks, not the ~458 lines — block coverage
-keeps the committed payload small enough to submit inline). Empty arrays,
-missing block coverage, mismatched block hashes, stale skill hashes,
+and produce one `rule_audit` row for every canonical `R#` rule of
+`anti-ai-detection-SKILL.md` (~31 rules plus one `self_check` row — per-rule
+coverage keeps the committed payload small, ~13 KB, and every row is a
+substantive guidance row). Empty arrays,
+missing rule coverage, mismatched rule hashes, stale skill hashes,
 draft-evidence rows that do not point to the audited draft, missing
-whole-essay review evidence for any guidance block, generic block-application
+whole-essay review evidence for any rule, generic rule-application
 reasoning, or a draft hash that does not match the audited draft fail the
-audit. Structural blocks (headings, rules) may use a light `status:"context"`
-row.
+audit. A rule that genuinely cannot apply to the draft uses
+`status:"not_applicable"`.
 
 The packet's `delegation.recommended=true` and `suggested_role="anti_ai_auditor"`.
 It also declares `required_model_tier="frontier"`. Dispatch it with
