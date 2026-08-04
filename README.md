@@ -48,6 +48,13 @@ pip install -e ".[ocr-high]"    # PaddleOCR tier
 pip install -e ".[ocr-small,ocr-scheduler]"  # Tesseract + parallel scheduler
 ```
 
+Outline extraction (`pdf-extract outline`) needs the `outline` extra plus one
+LLM provider extra, because it calls a model to read the table of contents:
+
+```bash
+pip install -e ".[outline,llm-claude]"  # or llm-openai / llm-gemini / llm-all
+```
+
 Agent Tool Mode (MCP) tools:
 
 ```bash
@@ -304,11 +311,22 @@ documented in
 ## Document Extraction Pipeline
 
 Underneath the essay workflow is a Python extraction pipeline for source
-documents. It supports:
+documents.
 
-- text-native PDFs
-- OCR extraction for PDFs
-- modern Word `.docx` files
+### Supported input formats
+
+| Extension | Handling | `extraction_method` |
+| --- | --- | --- |
+| `.pdf` | Text-native extraction via `pypdf`, or OCR | `pypdf`, `ocr:tesseract`, `ocr:easyocr`, `ocr:paddleocr` |
+| `.docx` | Modern Word documents | `docx` |
+| `.txt`, `.md`, `.markdown`, `.notes` | Read directly as UTF-8 text | `plain_text` |
+
+`DocumentReader` dispatches on the file extension and handles all of the above,
+and the essay pipeline accepts the same extension set when ingesting sources.
+The `pdf-extract` CLI subcommands are PDF-only, so use `DocumentReader` from
+Python for the other formats.
+
+Legacy `.doc` files and any unrecognized extension raise `ValueError`.
 
 ### Why `pypdf`
 
@@ -317,17 +335,56 @@ compatible with both open-source and closed-source projects.
 
 ## CLI Usage
 
+The `pdf-extract` command has three subcommands: `extract`, `ocr-parallel`, and
+`outline`. A global `-v` flag enables INFO logging and `-vv` enables DEBUG:
+
+```bash
+pdf-extract -v extract path/to/file.pdf
+```
+
+All three subcommands take a PDF path. Other document types go through the
+Python `DocumentReader` API instead — see
+[Supported input formats](#supported-input-formats).
+
+### `pdf-extract extract`
+
+Single-process extraction from a text-native or scanned PDF.
+
 ```bash
 pdf-extract extract path/to/file.pdf --mode text_only
 pdf-extract extract path/to/file.pdf --mode ocr_only --ocr-tier small
 pdf-extract extract path/to/file.pdf --mode ocr_only --ocr-tier medium --ocr-lang en --ocr-lang fr
 pdf-extract extract path/to/file.pdf --mode ocr_only --ocr-tier high --ocr-gpu
+pdf-extract extract path/to/file.pdf --mode ocr_only --start-page 5 --max-pages 20
 ```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--mode` | `text_only` | `text_only`, `ocr_only`, or `auto` |
+| `--ocr-tier` | `small` | `small`, `medium`, or `high`; used when `--mode ocr_only` |
+| `--ocr-dpi` | `300` | Rasterization DPI for OCR modes |
+| `--ocr-lang` | `en` | OCR language code; repeat the flag for multiple languages |
+| `--ocr-gpu` | off | Enable GPU for backends that support it |
+| `--start-page` | `1` | First PDF page to process |
+| `--max-pages` | all | Maximum number of pages to process |
+
+`--mode auto` is accepted by the argument parser but raises `NotImplementedError`
+at runtime; it is reserved for a future text/OCR heuristic.
 
 For Tesseract-backed small OCR, the pipeline maps `--ocr-lang en` to
 Tesseract's `eng` language code automatically.
 
-For page-level parallel OCR with the Tesseract-backed small tier:
+The command prints JSON with:
+- source path
+- page count
+- page-wise text payloads
+
+### `pdf-extract ocr-parallel`
+
+Page-level parallel OCR. Only the Tesseract-backed `small` tier is parallelized —
+passing `--ocr-tier medium` or `--ocr-tier high` raises a `ValueError`. Those
+tiers stay available through `extract`, but are not yet parallelized because
+EasyOCR/PaddleOCR need backend-specific worker handling, especially for GPU mode.
 
 ```bash
 pdf-extract ocr-parallel path/to/file.pdf --ocr-tier small --workers auto --max-pages 10
@@ -336,18 +393,102 @@ pdf-extract -v ocr-parallel path/to/file.pdf --ocr-tier small --workers auto --c
 pdf-extract -v ocr-parallel path/to/file.pdf --ocr-tier small --document-id my-book --resume
 ```
 
-The parallel command writes page artifacts and a merged result under `ocr_store`
-by default. Use `--calibrate` with `--workers auto` to benchmark a few sample
-pages and select a measured worker count. Use `--resume` with a stable
-`--document-id` to reuse already-completed page artifacts after an interrupted
-run. Medium and high OCR tiers remain sequential for now; they are kept
-compatible but are not yet parallelized because EasyOCR/PaddleOCR need
-backend-specific worker handling, especially for GPU mode.
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--ocr-tier` | `small` | Only `small` is supported; other tiers raise at runtime |
+| `--ocr-dpi` | `300` | Rasterization DPI |
+| `--ocr-lang` | `en` | OCR language code; repeatable |
+| `--ocr-gpu` | off | Reserved for GPU backends; ignored for Tesseract |
+| `--start-page` | `1` | First PDF page to process |
+| `--max-pages` | all | Maximum number of pages to process |
+| `--workers` | `auto` | Worker count, or `auto` for planned concurrency |
+| `--calibrate` | off | With `--workers auto`, benchmark sample pages and pick a measured worker count |
+| `--store` | `./ocr_store` | Artifact store root |
+| `--document-id` | derived | Stable id for artifact storage and `--resume` |
+| `--max-attempts` | `2` | Attempts per page before recording a failure |
+| `--timeout-seconds` | none | Reserved; no per-page timeout is enforced yet |
+| `--json-summary` | off | Print only the run summary instead of merged page text |
+| `--resume` | off | Reuse existing successful page artifacts for this document id |
+| `--shared-machine` | on | Conservative worker planning for an interactive machine |
+| `--dedicated-machine` | off | More aggressive worker planning for a dedicated OCR machine |
+| `--omp-thread-limit` | `1` | OpenMP thread limit per Tesseract worker |
 
-The CLI prints JSON with:
-- source path
-- page count
-- page-wise text payloads
+When `--document-id` is omitted it is derived from the file as
+`{stem}-{sha1(path:size:mtime)[:12]}`. That fingerprint changes if the file is
+modified or moved, which starts a fresh store directory, so pass an explicit
+`--document-id` whenever you intend to `--resume`.
+
+Artifacts are written under the store root:
+
+```text
+ocr_store/{document_id}/
+  config.json              # resolved config + worker plan
+  pages/{page:06d}.json    # one artifact per page
+  merged/v1.json           # merged extraction result
+  runs/{run_id}.json       # per-run summary
+  calibration/latest.json  # written only with --calibrate
+```
+
+Worker planning also reads environment variables, which the CLI flags override:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `OCR_MAX_WORKERS` | unset | Fixed worker count, equivalent to `--workers N` |
+| `OCR_SHARED_MACHINE` | `true` | `true` for conservative planning, `false` for dedicated |
+| `OCR_OMP_THREAD_LIMIT` | `1` | OpenMP thread limit per worker |
+
+With `--workers auto` and no override, the planner picks
+`min(physical_cores // 2, 8)` workers on a shared machine and
+`min(physical_cores, 16)` on a dedicated one. When the `ocr-scheduler` extra is
+installed, that count is additionally capped at roughly one worker per 1.5 GB of
+available RAM; without `psutil` the memory bound is skipped.
+
+### `pdf-extract outline`
+
+Extracts a hierarchical table of contents and maps each entry to real PDF page
+numbers. It layers PDF bookmarks, an LLM pass over the front matter, `/PageLabels`
+metadata, and a fuzzy anchor scan through the body text, so it needs the
+`outline` extra, an LLM provider extra, and that provider's API key.
+
+```bash
+pdf-extract outline path/to/book.pdf --source-id my-book
+pdf-extract outline path/to/book.pdf --source-id my-book --provider openai --llm-model gpt-4o
+pdf-extract outline path/to/scan.pdf --source-id my-scan --ocr-tier small
+pdf-extract -v outline path/to/scan.pdf --source-id my-scan --ocr-tier small --parallel-workers auto --calibrate
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--source-id` | **required** | Stable id used as the storage key |
+| `--provider` | `LLM_PROVIDER`, else `claude` | `claude`, `openai`, or `gemini` |
+| `--llm-model` | provider default | Model id for this run |
+| `--store` | `./outline_store` | Outline store root |
+| `--ocr-tier` | off | Enable OCR fallback for pages where `pypdf` returns no text |
+| `--ocr-dpi` | `300` | Rasterization DPI for the OCR fallback |
+| `--ocr-lang` | `en` | OCR language code; repeatable |
+| `--ocr-gpu` | off | Enable GPU for backends that support it |
+| `--parallel-workers` | sequential | `N` or `auto` to parallelize OCR of the TOC window |
+| `--calibrate` | off | With `--parallel-workers auto`, benchmark before choosing |
+
+OCR here is only a fallback, and its cost depends on the tier. With
+`--ocr-tier small`, pages are OCR'd lazily and one at a time, only where `pypdf`
+came back empty. The `medium` and `high` tiers OCR the whole document up front,
+which is slow on large PDFs. `--parallel-workers` applies only to the
+table-of-contents window, and only to the `small` tier; other tiers fall back to
+sequential OCR.
+
+The command prints one line per entry and saves an immutable versioned JSON
+document to `{store}/{source_id}/v{version}.json`:
+
+```text
+[pdf_outline] lvl 1 pdf_page=12-44 printed=1 conf=1.00  Introduction
+[anchor_scan] lvl 2 pdf_page=45-61 printed=34 conf=0.92  Methods
+```
+
+Each entry carries `id`, `title`, `level`, `parent_id`, `start_pdf_page`,
+`end_pdf_page`, `printed_page`, `confidence`, and a `source` of `pdf_outline`,
+`page_labels`, `anchor_scan`, or `unresolved`. Saving over an existing version
+raises `FileExistsError`, so bump the version instead of overwriting.
 
 ## Python Usage
 
@@ -382,7 +523,9 @@ for page in result.pages:
 
 - `ExtractionMode.AUTO` is intentionally not implemented yet.
 - `.docx` files are returned as one logical page because Word documents do not
-  store stable page boundaries without rendering.
+  store stable page boundaries without rendering. Plain-text formats (`.txt`,
+  `.md`, `.markdown`, `.notes`) are returned as one logical page for the same
+  reason.
 - Legacy `.doc` files are not supported. Convert them to `.docx` first.
 - OCR tiers:
   - `small`: Tesseract
@@ -398,6 +541,13 @@ for page in result.pages:
   available in PATH.
 - `ocr-medium` and `ocr-high` may download model weights on first run.
 - GPU behavior depends on backend/runtime installation (`torch`/`paddle`).
+
+## License
+
+EssayWriter is released under the MIT License — see `LICENSE`. You are free to
+use, modify, and distribute it, and it is provided as is, without warranty of
+any kind. The repository's creators and contributors are not liable for any
+claim, damages, or other liability arising from its use.
 
 ## Third-Party Licenses
 
