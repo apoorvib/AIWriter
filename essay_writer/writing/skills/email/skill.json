@@ -1,0 +1,9 @@
+{
+  "id": "email",
+  "version": "1",
+  "kind": "format",
+  "description": "Write purpose-driven email for a named audience.",
+  "formats": ["email"],
+  "triggers": ["email", "reply", "follow-up", "introduction"],
+  "priority": 100
+}

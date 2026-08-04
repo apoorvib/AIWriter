@@ -60,7 +60,9 @@
       "Bash(node --check \"C:/Apoorv/Startups/EssayWriter/AIWriter/.claude/workflows/essay-prep.js\")",
       "Bash(echo \"EXIT:$?\")",
       "Bash(node --check .claude/workflows/essay-prep.js)",
-      "Bash(node --check .claude/workflows/essay-write.js)"
+      "Bash(node --check .claude/workflows/essay-write.js)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(node --check .claude/workflows/write.js)"
     ]
   },
   "enableAllProjectMcpServers": true,

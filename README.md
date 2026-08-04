@@ -187,6 +187,69 @@ Codex and other MCP harnesses drive the same tools manually (see
 > MCP gates and completion ledger, but the workflow JavaScript itself requires a
 > manual Claude Code runtime check.
 
+## Generic writing (`/write`)
+
+`/write` is a separate, single Dynamic Workflow for **short-form and everyday
+writing that is not a cited academic essay** — emails, texts, LinkedIn posts,
+blog posts, or general prose. It shares the same "the app never makes hidden LLM
+calls" tool layer, but runs its own `essay_writer.writing` domain with its own
+persistence and completion ledger. It does **not** touch `EssayJob` or the
+`/essay-prep`/`/essay-write` pipeline; use those for grounded, source-cited
+essays and `/write` for everything else.
+
+```text
+/write immediate friendly text declining dinner tomorrow
+/write detailed LinkedIn post announcing a product launch; research current market context
+/write email asking for a deadline extension; skip anti-AI
+/write blog comparing two current products, include sources
+/write turn this launch note into an email and LinkedIn post
+```
+
+**Two modes.** `immediate` is for quick, low-stakes messages (a text, a short
+email): it routes brief → draft with an embedded self-check and finalizes.
+`detailed` adds a plan, an independent clean-context review, and up to two
+bounded revision rounds before finalizing. The workflow infers the mode from the
+request; an explicit `immediate`/`detailed` in your prompt always wins (and
+detailed facts can still trigger research even in immediate mode).
+
+**Automatic clarification.** If the request is genuinely ambiguous in a way that
+would change the output (e.g. an unclear audience), the brief persists at most
+three targeted questions and the run pauses with `requires_human`. It does not
+ask merely to confirm a safe inference.
+
+**Research policy.** `auto` (default) lets the brief decide whether current facts
+are needed; `required` always researches; `off` never browses. Say things like
+"research current market context" (→ required) or "use only what I gave you"
+(→ off). Research capture is bounded: every fact must map to a disclosed HTTP(S)
+source with a title and dates, quotes are capped, and undated sources are flagged
+rather than presented as current evidence. The MCP server itself never makes
+network calls — your harness performs the search and submits disclosed sources.
+
+**Skills and anti-AI.** Each deliverable gets its own format skill (`email`,
+`text-message`, `linkedin`, `blog`, or `general` when no narrower format fits).
+The `anti-ai-detection` skill is added by default; exclude it with "skip
+anti-AI". You can also force skills in or out — the exclusion is recorded in the
+output metadata, and an explicitly requested unknown skill is rejected with the
+list of available IDs rather than silently ignored.
+
+**Multiple deliverables.** One run can produce several deliverables (up to five)
+that share the same context and research but get separate format skills and
+drafts — e.g. "turn this launch note into an email and LinkedIn post".
+
+**Persistence and recovery.** Every run is stored under
+`${ESSAY_DATA_DIR}/writing/` (runs, briefs, context, research, plans, drafts,
+reviews, outputs) and is identified by a `writing_run_id` (`wrun_…`). A single
+server-derived ledger is authoritative, so an interrupted run resumes from
+persisted state:
+
+```text
+/write continue wrun_20260706_abcd1234 audience is existing enterprise customers
+```
+
+**Output.** The final message returns the finished text first, then a metadata
+footer: the selected skills (id/version/sha256), explicit assumptions, researched
+sources, any warnings, and the `writing_run_id`.
+
 ## Agent Tool Mode (MCP, manual)
 
 > 🚧 Under development. This is the raw MCP tool layer the recommended Dynamic

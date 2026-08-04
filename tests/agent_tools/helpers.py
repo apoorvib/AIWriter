@@ -4,8 +4,7 @@ import re
 
 from essay_writer.agent_tools.schemas import WorkProducer
 from essay_writer.drafting.anti_ai_skill import (
-    anti_ai_block_manifest,
-    anti_ai_skill_manifest,
+    anti_ai_rule_manifest,
     draft_sha256,
 )
 
@@ -48,65 +47,61 @@ def dispatched_subagent(
     )
 
 
-def anti_ai_block_rows(
+def anti_ai_rule_rows(
     draft_text: str,
     *,
-    omit_last_block: bool = False,
+    omit_last_rule: bool = False,
 ) -> list[dict[str, object]]:
-    """Build one valid ``block_audit`` row per block of the skill file.
+    """Build one valid ``rule_audit`` row per canonical ``R#`` rule (plus the
+    ``self_check`` unit) of the skill file.
 
-    Structural blocks get a light ``status="context"`` row; guidance blocks get
-    a full row (draft quote evidence, whole-essay review, block-tied reasoning)
-    that passes every ``commit_anti_ai_audit`` gate.
+    Every row is a full guidance row (draft quote evidence, whole-essay review,
+    rule-tied reasoning) that passes every ``commit_anti_ai_audit`` gate.
     """
-    block_manifest = anti_ai_block_manifest()
-    blocks = block_manifest["blocks"]
-    if omit_last_block:
-        blocks = blocks[:-1]
+    manifest = anti_ai_rule_manifest()
+    units = [
+        {"rule_id": str(r["rule_id"]), "rule_text_sha256": str(r["rule_text_sha256"])}
+        for r in manifest["rules"]
+    ]
+    self_check = manifest.get("self_check")
+    if isinstance(self_check, dict):
+        units.append(
+            {
+                "rule_id": "self_check",
+                "rule_text_sha256": str(self_check["rule_text_sha256"]),
+            }
+        )
+    if omit_last_rule:
+        units = units[:-1]
     draft_quote = draft_text.strip().splitlines()[0][:120] if draft_text.strip() else "n/a"
     paragraph_count_reviewed = len(
         [part for part in re.split(r"\n\s*\n", draft_text) if part.strip()]
     )
     rows: list[dict[str, object]] = []
-    for block in blocks:
-        block_index = int(block["block_index"])
-        is_structural = bool(block["is_structural"])
-        # Keep guidance rows lean (just over each validator threshold) so the
-        # fixture reflects an economical real audit, not a padded worst case.
-        row: dict[str, object] = {
-            "block_index": block_index,
-            "block_text_sha256": block["block_text_sha256"],
-            "status": "context" if is_structural else "passed",
-            "finding": (
-                f"Block {block_index}: structural context."
-                if is_structural
-                else f"Block {block_index}: guidance met by draft."
-            ),
-            "block_application": (
-                "" if is_structural else f"Block {block_index} applied to whole draft."
-            ),
-            "draft_evidence": [
-                {
-                    "kind": "not_applicable" if is_structural else "draft_quote",
-                    "reference": (
-                        f"block {block_index} context" if is_structural else draft_quote
-                    ),
-                    "explanation": (
-                        "structural context line"
-                        if is_structural
-                        else f"block {block_index} vs draft sentence"
-                    ),
-                }
-            ],
-        }
-        if not is_structural:
-            row["whole_essay_evidence"] = {
-                "scope": "whole_essay",
-                "paragraph_count_reviewed": paragraph_count_reviewed,
-                "method": f"reviewed all {paragraph_count_reviewed} paragraphs for block {block_index}",
-                "finding": f"whole-essay review block {block_index}: draft acceptable",
+    for unit in units:
+        rule_id = unit["rule_id"]
+        rows.append(
+            {
+                "rule_id": rule_id,
+                "rule_text_sha256": unit["rule_text_sha256"],
+                "status": "passed",
+                "finding": f"{rule_id}: guidance met by draft.",
+                "rule_application": f"Rule {rule_id} applied to the whole draft.",
+                "draft_evidence": [
+                    {
+                        "kind": "draft_quote",
+                        "reference": draft_quote,
+                        "explanation": f"{rule_id} vs draft sentence",
+                    }
+                ],
+                "whole_essay_evidence": {
+                    "scope": "whole_essay",
+                    "paragraph_count_reviewed": paragraph_count_reviewed,
+                    "method": f"reviewed all {paragraph_count_reviewed} paragraphs for {rule_id}",
+                    "finding": f"whole-essay review {rule_id}: draft acceptable",
+                },
             }
-        rows.append(row)
+        )
     return rows
 
 
@@ -123,18 +118,18 @@ def anti_ai_audit_payload(
     concrete_source_handles: list[str] | None = None,
     self_check_notes: list[str] | None = None,
     revision_targets: list[dict[str, object]] | None = None,
-    omit_last_block: bool = False,
+    omit_last_rule: bool = False,
 ) -> dict[str, object]:
-    manifest = anti_ai_skill_manifest()
-    block_rows = anti_ai_block_rows(draft_text, omit_last_block=omit_last_block)
+    manifest = anti_ai_rule_manifest()
+    rule_rows = anti_ai_rule_rows(draft_text, omit_last_rule=omit_last_rule)
     return {
         "pass": passes,
         "anti_ai_self_check": {
             "skill_file": manifest["path"],
             "skill_sha256": manifest["sha256"],
-            "skill_line_count": manifest["line_count"],
+            "skill_line_count": manifest["skill_line_count"],
             "draft_sha256": draft_sha256(draft_text),
-            "block_audit": block_rows,
+            "rule_audit": rule_rows,
             "paragraph_count": paragraph_count,
             "paragraph_first_sentences": paragraph_first_sentences or ["A."],
             "first_sentence_chain_summarizes_essay": first_sentence_chain_summarizes_essay,

@@ -49,7 +49,7 @@ def test_block_manifest_marks_headings_structural_and_prose_not():
     heading_blocks = [b for b in blocks if str(b["text"]).lstrip().startswith("# ")]
     assert heading_blocks, "expected at least one top-level heading block"
     assert all(b["is_structural"] for b in heading_blocks)
-    # A block containing a bolded rule sentence is guidance, not structural.
-    rule_blocks = [b for b in blocks if "**Rule:" in str(b["text"])]
-    assert rule_blocks, "expected at least one **Rule:** block"
+    # A block containing a bolded rule marker is guidance, not structural.
+    rule_blocks = [b for b in blocks if "**R" in str(b["text"])]
+    assert rule_blocks, "expected at least one **R#** rule block"
     assert all(not b["is_structural"] for b in rule_blocks)

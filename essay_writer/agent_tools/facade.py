@@ -42,6 +42,12 @@ from essay_writer.agent_tools.schemas import (
     WorkPacket,
     WorkProducer,
 )
+from essay_writer.agent_tools.attention import build_attention_challenge
+from essay_writer.agent_tools.schema_validation import (
+    error_result as _error_result,
+    error_result_with_next as _error_result_with_next,
+    validate_work_payload as _validate_work_payload,
+)
 from essay_writer.agent_tools.source_materialization import SourceMaterializationService
 from essay_writer.agent_tools.stores import AgentStoreBundle
 from essay_writer.agent_tools.work_store import AgentWorkStore
@@ -52,6 +58,7 @@ from essay_writer.drafting.anti_ai_audit import (
 )
 from essay_writer.drafting.anti_ai_skill import (
     anti_ai_block_manifest,
+    anti_ai_rule_manifest,
     anti_ai_skill_manifest,
     draft_sha256,
 )
@@ -329,24 +336,7 @@ class AgentToolFacade:
         the packet already carries a challenge."""
         if not self.enforce_attention_challenge:
             return packet
-        if packet.system_prompt_challenge:
-            return packet
-        token = f"ATTN-{uuid4().hex[:12]}"
-        footer = (
-            "\n\n---\n"
-            "ATTENTION CHECK (required): To confirm you have read this entire "
-            f"system prompt, you MUST include the exact token {token} somewhere "
-            "in your JSON output. Append it to a free-text string field such as "
-            "a notes or self_check_notes array, or any existing string field. "
-            "Outputs that omit this token will be rejected with "
-            "system_prompt_not_honored, because a missing token indicates the "
-            "system prompt was not actually read."
-        )
-        return replace(
-            packet,
-            system_prompt=packet.system_prompt + footer,
-            system_prompt_challenge=token,
-        )
+        return build_attention_challenge(packet)
 
     def _enforce_writing_style_gate(
         self,
@@ -5851,7 +5841,24 @@ class AgentToolFacade:
 
         det = run_validation_deterministic_checks(draft.content)
         skill_manifest = anti_ai_skill_manifest()
-        block_manifest = anti_ai_block_manifest()
+        rule_manifest = anti_ai_rule_manifest()
+        rule_rows = [
+            {
+                "rule_id": rule["rule_id"],
+                "text": rule["text"],
+                "rule_text_sha256": rule["rule_text_sha256"],
+            }
+            for rule in rule_manifest["rules"]
+        ]
+        if isinstance(rule_manifest.get("self_check"), dict):
+            sc = rule_manifest["self_check"]
+            rule_rows.append(
+                {
+                    "rule_id": "self_check",
+                    "text": sc["text"],
+                    "rule_text_sha256": sc["rule_text_sha256"],
+                }
+            )
         paragraphs = [p for p in draft.content.split("\n\n") if p.strip()]
         whole_draft_context = {
             "paragraph_count": len(paragraphs),
@@ -5887,10 +5894,11 @@ class AgentToolFacade:
                 "skill_sha256": skill_manifest["sha256"],
                 "skill_line_count": skill_manifest["line_count"],
             },
-            # Per-block coverage: one audit row per blank-line block of the skill
-            # file (~191) replaces the per-line manifest (~458 rows). This is the
-            # change that keeps the audit payload small enough to submit inline.
-            "block_manifest": block_manifest["blocks"],
+            # Per-rule coverage: one audit row per canonical `R#` rule (~31) plus
+            # one `self_check` row replaces the ~138 blank-line blocks. Every row
+            # is substantive (no structural context rows), so the auditor spends
+            # its whole output budget on rule reasoning.
+            "rule_manifest": rule_rows,
             "deterministic_findings": asdict(det),
             "whole_draft_context": whole_draft_context,
             "style_guidance_checklist": guidance_bullets,
@@ -6003,7 +6011,7 @@ class AgentToolFacade:
         from essay_writer.drafting.schema import (
             AntiAIFinalDecision,
             AntiAISelfCheck,
-            AntiAISkillBlockAudit,
+            AntiAISkillRuleAudit,
             AntiAIUnmetRequirement,
             EssayDraft,
             StyleGuidanceGrade,
@@ -6055,21 +6063,22 @@ class AgentToolFacade:
                 exc=exc,
             )
 
-        binding_error = _validate_anti_ai_audit_binding(
+        binding_error = _validate_anti_ai_rule_audit_binding(
             result.payload,
             source_draft=source_draft,
+            rule_manifest=anti_ai_rule_manifest(),
         )
         if binding_error is not None:
             return binding_error
 
         audit_payload = result.payload.get("anti_ai_self_check", {}) or {}
-        block_audit = [
-            AntiAISkillBlockAudit(
-                block_index=int(row.get("block_index", 0) or 0),
-                block_text_sha256=str(row.get("block_text_sha256", "")).strip(),
+        rule_audit = [
+            AntiAISkillRuleAudit(
+                rule_id=str(row.get("rule_id", "")).strip(),
+                rule_text_sha256=str(row.get("rule_text_sha256", "")).strip(),
                 status=str(row.get("status", "")).strip(),
                 finding=str(row.get("finding", "")).strip(),
-                block_application=str(row.get("block_application", "")).strip(),
+                rule_application=str(row.get("rule_application", "")).strip(),
                 draft_evidence=[
                     {
                         "kind": str(item.get("kind", "")).strip(),
@@ -6081,7 +6090,7 @@ class AgentToolFacade:
                 ],
                 whole_essay_evidence=dict(row.get("whole_essay_evidence", {}) or {}),
             )
-            for row in audit_payload.get("block_audit", []) or []
+            for row in audit_payload.get("rule_audit", []) or []
             if isinstance(row, dict)
         ]
         grades = [
@@ -6096,7 +6105,7 @@ class AgentToolFacade:
         ]
         unmet_requirements = [
             AntiAIUnmetRequirement(
-                block_index=int(row.get("block_index", 0) or 0),
+                rule_id=str(row.get("rule_id", "")).strip(),
                 section=str(row.get("section", "")).strip(),
                 status=str(row.get("status", "")).strip(),
                 reason=str(row.get("reason", "")).strip(),
@@ -6123,7 +6132,7 @@ class AgentToolFacade:
             skill_sha256=str(audit_payload.get("skill_sha256", "")).strip(),
             skill_line_count=int(audit_payload.get("skill_line_count", 0) or 0),
             draft_sha256=str(audit_payload.get("draft_sha256", "")).strip(),
-            block_audit=block_audit,
+            rule_audit=rule_audit,
             paragraph_count=int(audit_payload.get("paragraph_count", 0) or 0),
             paragraph_first_sentences=[
                 str(s) for s in audit_payload.get("paragraph_first_sentences", []) or []
@@ -7586,173 +7595,6 @@ def _source_card_delegation(
     )
 
 
-def _validate_work_payload(
-    payload: dict[str, object],
-    schema: dict[str, object],
-    *,
-    tool_name: str,
-) -> ToolResult | None:
-    try:
-        import jsonschema  # type: ignore[import-not-found]
-    except ImportError:
-        fallback_error = _validate_with_local_schema_subset(payload, schema, path="$")
-        if fallback_error is None:
-            return None
-        code, message = fallback_error
-        return _error_result(
-            tool_name,
-            code=code,
-            message=message,
-            exc=ValueError(message),
-        )
-
-    try:
-        jsonschema.validate(instance=payload, schema=schema)
-    except jsonschema.ValidationError as exc:
-        return _error_result(
-            tool_name,
-            code="work_result_payload_invalid",
-            message=f"work result payload does not match response_schema: {exc.message}",
-            exc=exc,
-        )
-    except jsonschema.SchemaError as exc:
-        return _error_result(
-            tool_name,
-            code="work_result_schema_invalid",
-            message=f"work packet response_schema is invalid: {exc.message}",
-            exc=exc,
-        )
-    return None
-
-
-def _validate_with_local_schema_subset(
-    value: object,
-    schema: dict[str, object],
-    *,
-    path: str,
-) -> tuple[str, str] | None:
-    supported = {"type", "required", "properties", "additionalProperties", "items", "enum"}
-    unsupported = sorted(set(schema) - supported)
-    if unsupported:
-        return (
-            "work_result_schema_validator_unavailable",
-            "response_schema uses unsupported keywords without jsonschema installed; "
-            "install `.[agent-tools]` to validate this packet",
-        )
-    schema_type = schema.get("type")
-    if isinstance(schema_type, list):
-        type_names = [item for item in schema_type if isinstance(item, str)]
-        if len(type_names) != len(schema_type):
-            return _unsupported_schema_subset()
-        if value is None and "null" in type_names:
-            return None
-        validation_errors: list[tuple[str, str]] = []
-        for type_name in [item for item in type_names if item != "null"]:
-            narrowed = dict(schema)
-            narrowed["type"] = type_name
-            error = _validate_with_local_schema_subset(value, narrowed, path=path)
-            if error is None:
-                return None
-            validation_errors.append(error)
-        if any(code == "work_result_schema_validator_unavailable" for code, _ in validation_errors):
-            return _unsupported_schema_subset()
-        return (
-            "work_result_payload_invalid",
-            f"{path} must match one of: {', '.join(type_names)}",
-        )
-    if schema_type == "object":
-        if not isinstance(value, dict):
-            return ("work_result_payload_invalid", f"{path} must be an object")
-        required = schema.get("required", [])
-        if not isinstance(required, list):
-            return _unsupported_schema_subset()
-        missing = [str(key) for key in required if str(key) not in value]
-        if missing:
-            return (
-                "work_result_payload_invalid",
-                f"{path} is missing required fields: {', '.join(missing)}",
-            )
-        properties = schema.get("properties", {})
-        if not isinstance(properties, dict):
-            return _unsupported_schema_subset()
-        additional = schema.get("additionalProperties", True)
-        if not isinstance(additional, (bool, dict)):
-            return _unsupported_schema_subset()
-        property_names = {str(key) for key in properties}
-        extra = sorted(str(key) for key in value if str(key) not in property_names)
-        if additional is False and extra:
-            return (
-                "work_result_payload_invalid",
-                f"{path} has unsupported additional fields: {', '.join(extra)}",
-            )
-        for key, item in value.items():
-            key_str = str(key)
-            if key_str in properties:
-                subschema = properties[key_str]
-                if not isinstance(subschema, dict):
-                    return _unsupported_schema_subset()
-                error = _validate_with_local_schema_subset(
-                    item,
-                    subschema,
-                    path=f"{path}.{key_str}",
-                )
-                if error is not None:
-                    return error
-            elif isinstance(additional, dict):
-                error = _validate_with_local_schema_subset(
-                    item,
-                    additional,
-                    path=f"{path}.{key_str}",
-                )
-                if error is not None:
-                    return error
-        return None
-    if schema_type == "string":
-        if not isinstance(value, str):
-            return ("work_result_payload_invalid", f"{path} must be a string")
-        enum_values = schema.get("enum")
-        if isinstance(enum_values, list) and value not in enum_values:
-            allowed = ", ".join(str(item) for item in enum_values)
-            return ("work_result_payload_invalid", f"{path} must be one of: {allowed}")
-        return None
-    if schema_type == "integer":
-        if not isinstance(value, int) or isinstance(value, bool):
-            return ("work_result_payload_invalid", f"{path} must be an integer")
-        return None
-    if schema_type == "number":
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            return ("work_result_payload_invalid", f"{path} must be a number")
-        return None
-    if schema_type == "boolean":
-        if not isinstance(value, bool):
-            return ("work_result_payload_invalid", f"{path} must be a boolean")
-        return None
-    if schema_type == "null":
-        if value is not None:
-            return ("work_result_payload_invalid", f"{path} must be null")
-        return None
-    if schema_type == "array":
-        if not isinstance(value, list):
-            return ("work_result_payload_invalid", f"{path} must be an array")
-        items = schema.get("items", {})
-        if not isinstance(items, dict):
-            return _unsupported_schema_subset()
-        for idx, item in enumerate(value):
-            error = _validate_with_local_schema_subset(item, items, path=f"{path}[{idx}]")
-            if error is not None:
-                return error
-        return None
-    return _unsupported_schema_subset()
-
-
-def _unsupported_schema_subset() -> tuple[str, str]:
-    return (
-        "work_result_schema_validator_unavailable",
-        "response_schema uses unsupported validation keywords without jsonschema installed; "
-        "install `.[agent-tools]` to validate this packet",
-    )
-
-
 def _merge_recovery_refs(
     artifact_refs: dict[str, object],
     existing_refs: dict[str, object],
@@ -8204,6 +8046,345 @@ def _validate_anti_ai_audit_binding(
     return None
 
 
+def _anti_ai_rule_reasoning_error(
+    row: dict[str, object],
+    *,
+    rule_id: str,
+    rule_text: str,
+    tool_name: str,
+) -> ToolResult | None:
+    application = str(row.get("rule_application", "")).strip()
+    if len(application) < 25:
+        return _error_result(
+            tool_name,
+            code="anti_ai_rule_audit_weak_reasoning",
+            message=(
+                "anti-AI audit rule_application is too thin to prove "
+                f"rule-specific reasoning for {rule_id}."
+            ),
+            exc=ValueError("rule_application"),
+        )
+    lowered_application = application.lower()
+    if rule_id.lower() in lowered_application:
+        return None
+    rule_words = [
+        word
+        for word in re.findall(r"[a-zA-Z][a-zA-Z'-]{3,}", rule_text.lower())
+        if word not in {"this", "that", "with", "from", "must", "should", "will", "rule"}
+    ]
+    if rule_words and any(word in lowered_application for word in rule_words[:12]):
+        return None
+    return _error_result(
+        tool_name,
+        code="anti_ai_rule_audit_weak_reasoning",
+        message=(
+            "anti-AI audit rule_application must tie its reasoning to the specific "
+            f"skill rule {rule_id}, not just a generic checklist."
+        ),
+        exc=ValueError("rule_application"),
+    )
+
+
+def _anti_ai_rule_draft_evidence_error(
+    row: dict[str, object],
+    *,
+    rule_id: str,
+    draft_text: str,
+    tool_name: str,
+) -> ToolResult | None:
+    evidence_items = row.get("draft_evidence")
+    if not isinstance(evidence_items, list) or not evidence_items:
+        return _error_result(
+            tool_name,
+            code="anti_ai_rule_audit_missing_draft_evidence",
+            message=(
+                "anti-AI audit rows must include draft_evidence for every rule; "
+                f"{rule_id} did not."
+            ),
+            exc=ValueError("draft_evidence"),
+        )
+    # A rule the auditor judged genuinely inapplicable may carry a single
+    # not_applicable evidence entry instead of draft-anchored proof.
+    if str(row.get("status", "")).strip() == "not_applicable":
+        return None
+    meaningful = False
+    paragraph_count = len(_draft_paragraphs(draft_text))
+    for item in evidence_items:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind", "")).strip()
+        reference = str(item.get("reference", "")).strip()
+        explanation = str(item.get("explanation", "")).strip()
+        if len(reference) < 3 or len(explanation) < 12:
+            continue
+        if kind == "draft_quote" and reference in draft_text:
+            meaningful = True
+        elif kind == "paragraph_reference" and _valid_paragraph_reference(
+            reference,
+            paragraph_count=paragraph_count,
+        ):
+            meaningful = True
+        elif kind == "deterministic_check":
+            meaningful = True
+    if meaningful:
+        return None
+    return _error_result(
+        tool_name,
+        code="anti_ai_rule_audit_missing_draft_evidence",
+        message=(
+            "anti-AI audit rows must cite draft-specific evidence for "
+            f"{rule_id}: an exact draft quote, paragraph reference, or "
+            "deterministic check (or status='not_applicable')."
+        ),
+        exc=ValueError("draft_evidence"),
+    )
+
+
+def _anti_ai_rule_whole_essay_error(
+    row: dict[str, object],
+    *,
+    rule_id: str,
+    paragraph_count: int,
+    tool_name: str,
+) -> ToolResult | None:
+    whole = row.get("whole_essay_evidence")
+    if not isinstance(whole, dict):
+        return _error_result(
+            tool_name,
+            code="anti_ai_rule_audit_missing_whole_essay_review",
+            message=(
+                "anti-AI audit rows must include whole_essay_evidence for every "
+                f"rule; {rule_id} did not."
+            ),
+            exc=ValueError("whole_essay_evidence"),
+        )
+    scope = str(whole.get("scope", "")).strip()
+    try:
+        reviewed_count = int(whole.get("paragraph_count_reviewed", -1))
+    except (TypeError, ValueError):
+        reviewed_count = -1
+    method = str(whole.get("method", "")).strip()
+    finding = str(whole.get("finding", "")).strip()
+    if (
+        scope != "whole_essay"
+        or reviewed_count != paragraph_count
+        or len(method) < 20
+        or len(finding) < 20
+    ):
+        return _error_result(
+            tool_name,
+            code="anti_ai_rule_audit_missing_whole_essay_review",
+            message=(
+                "anti-AI audit rows must prove whole-essay review for each rule. "
+                f"{rule_id} must use scope='whole_essay', the exact audited "
+                "paragraph count, and a substantive method/finding."
+            ),
+            exc=ValueError("whole_essay_evidence"),
+        )
+    return None
+
+
+def _validate_anti_ai_rule_audit_binding(
+    payload: dict[str, object],
+    *,
+    source_draft: object,
+    rule_manifest: dict[str, object],
+    tool_name: str = "commit_anti_ai_audit",
+) -> ToolResult | None:
+    """Per-rule successor to `_validate_anti_ai_audit_binding`.
+
+    Requires exactly one `rule_audit` row per canonical `R#` rule (plus the
+    `self_check` row), each bound to the manifest's `rule_text_sha256`, with the
+    whole-file `skill_sha256`/`draft_sha256` bindings preserved. Every row is a
+    guidance row, so all rows carry the reasoning/whole-essay/draft-evidence
+    checks (no structural `context` carve-out). `rule_manifest` is injected so the
+    validator can run against a candidate skill file before the live cutover.
+    """
+
+    audit = payload.get("anti_ai_self_check")
+    if not isinstance(audit, dict):
+        return _error_result(
+            tool_name,
+            code="anti_ai_self_check_missing",
+            message="anti-AI audit payload is missing anti_ai_self_check",
+            exc=ValueError("anti_ai_self_check"),
+        )
+    expected_skill_file = str(rule_manifest["path"])
+    expected_skill_hash = str(rule_manifest["sha256"])
+    expected_line_count = int(rule_manifest["skill_line_count"])
+    expected_draft_hash = draft_sha256(str(getattr(source_draft, "content")))
+    if os.path.basename(str(audit.get("skill_file", ""))) != os.path.basename(
+        expected_skill_file
+    ):
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_file_mismatch",
+            message="anti-AI audit skill file name does not match the current repo skill file",
+            exc=ValueError("skill_file"),
+        )
+    if str(audit.get("skill_sha256", "")) != expected_skill_hash:
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_hash_mismatch",
+            message="anti-AI audit skill hash does not match the current repo skill file",
+            exc=ValueError("skill_sha256"),
+        )
+    if int(audit.get("skill_line_count", 0) or 0) != expected_line_count:
+        return _error_result(
+            tool_name,
+            code="anti_ai_skill_line_count_mismatch",
+            message="anti-AI audit skill line count does not match the current repo skill file",
+            exc=ValueError("skill_line_count"),
+        )
+    if str(audit.get("draft_sha256", "")) != expected_draft_hash:
+        return _error_result(
+            tool_name,
+            code="anti_ai_draft_hash_mismatch",
+            message="anti-AI audit draft hash does not match the audited draft text",
+            exc=ValueError("draft_sha256"),
+        )
+
+    rows = audit.get("rule_audit")
+    if not isinstance(rows, list):
+        return _error_result(
+            tool_name,
+            code="anti_ai_rule_audit_invalid",
+            message="anti-AI audit rule_audit must be a list",
+            exc=ValueError("rule_audit"),
+        )
+    by_rule: dict[str, dict[str, object]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rule_id = str(row.get("rule_id", "")).strip()
+        if not rule_id:
+            continue
+        if rule_id in by_rule:
+            return _error_result(
+                tool_name,
+                code="anti_ai_rule_audit_duplicate",
+                message=f"anti-AI audit has duplicate coverage for rule {rule_id}",
+                exc=ValueError(rule_id),
+            )
+        by_rule[rule_id] = row
+
+    manifest_rules = list(rule_manifest["rules"])
+    hash_by_rule = {str(r["rule_id"]): str(r["rule_text_sha256"]) for r in manifest_rules}
+    text_by_rule = {str(r["rule_id"]): str(r["text"]) for r in manifest_rules}
+    self_check = rule_manifest.get("self_check")
+    if isinstance(self_check, dict):
+        hash_by_rule["self_check"] = str(self_check["rule_text_sha256"])
+        text_by_rule["self_check"] = str(self_check["text"])
+    expected_ids = set(hash_by_rule)
+    present_ids = set(by_rule)
+    if present_ids != expected_ids:
+        missing = sorted(expected_ids - present_ids)
+        extra = sorted(present_ids - expected_ids)
+        return ToolResult(
+            ok=False,
+            tool_name=tool_name,
+            error=ToolError(
+                code="anti_ai_rule_audit_incomplete",
+                message="anti-AI audit must include one rule_audit row for every skill rule",
+                detail={
+                    "missing_rules": missing[:20],
+                    "missing_count": len(missing),
+                    "extra_rules": extra[:20],
+                    "extra_count": len(extra),
+                },
+            ),
+            next_suggested_tools=["prepare_anti_ai_audit"],
+        )
+
+    draft_content = str(getattr(source_draft, "content"))
+    paragraph_count = len(_draft_paragraphs(draft_content))
+    for rule_id in sorted(expected_ids):
+        row = by_rule[rule_id]
+        if str(row.get("rule_text_sha256", "")) != hash_by_rule[rule_id]:
+            return ToolResult(
+                ok=False,
+                tool_name=tool_name,
+                error=ToolError(
+                    code="anti_ai_rule_audit_hash_mismatch",
+                    message=(
+                        "anti-AI audit rule hash does not match the current "
+                        f"skill file at rule {rule_id}"
+                    ),
+                    detail={
+                        "rule_id": rule_id,
+                        "expected": hash_by_rule[rule_id],
+                        "actual": str(row.get("rule_text_sha256", "")),
+                    },
+                ),
+                next_suggested_tools=["prepare_anti_ai_audit"],
+            )
+        reasoning_error = _anti_ai_rule_reasoning_error(
+            row, rule_id=rule_id, rule_text=text_by_rule[rule_id], tool_name=tool_name
+        )
+        if reasoning_error is not None:
+            return reasoning_error
+        whole_error = _anti_ai_rule_whole_essay_error(
+            row, rule_id=rule_id, paragraph_count=paragraph_count, tool_name=tool_name
+        )
+        if whole_error is not None:
+            return whole_error
+        evidence_error = _anti_ai_rule_draft_evidence_error(
+            row, rule_id=rule_id, draft_text=draft_content, tool_name=tool_name
+        )
+        if evidence_error is not None:
+            return evidence_error
+
+    proof_findings = [str(row.get("finding", "")).strip() for row in by_rule.values()]
+    if proof_findings and len(set(proof_findings)) < max(1, len(proof_findings) // 2):
+        return _error_result(
+            tool_name,
+            code="anti_ai_rule_audit_boilerplate",
+            message=(
+                "anti-AI audit rule findings are too repetitive. Each rule's "
+                "finding must be rule-specific enough to show the auditor "
+                "processed individual rules."
+            ),
+            exc=ValueError("rule_audit_boilerplate"),
+        )
+
+    failed_or_blocked = {
+        rule_id
+        for rule_id, row in by_rule.items()
+        if str(row.get("status", "")).strip() in {"failed", "blocked"}
+    }
+    unmet_rows = audit.get("unmet_requirements", []) or []
+    unmet_ids = {
+        str(row.get("rule_id", "")).strip()
+        for row in unmet_rows
+        if isinstance(row, dict)
+    }
+    final_decision = audit.get("final_decision")
+    hard_rules_pass = soft_rules_pass = safe_to_claim = None
+    if isinstance(final_decision, dict):
+        hard_rules_pass = bool(final_decision.get("hard_rules_pass", False))
+        soft_rules_pass = bool(final_decision.get("soft_rules_pass", False))
+        safe_to_claim = bool(final_decision.get("safe_to_claim_detector_reduction", False))
+    if failed_or_blocked:
+        top_level_pass = bool(payload.get("pass", False))
+        if (
+            not failed_or_blocked.issubset(unmet_ids)
+            or top_level_pass
+            or hard_rules_pass
+            or soft_rules_pass
+            or safe_to_claim
+        ):
+            return _error_result(
+                tool_name,
+                code="anti_ai_rule_audit_inconsistent",
+                message=(
+                    "failed or blocked anti-AI rules must be listed in "
+                    "unmet_requirements and must make pass/final_decision fail."
+                ),
+                exc=ValueError("rule_audit_inconsistent"),
+            )
+    return None
+
+
 def _anti_ai_audit_freshness_error(
     tool_name: str,
     *,
@@ -8228,7 +8409,7 @@ def _anti_ai_audit_freshness_error(
             code="anti_ai_audit_required",
             message=(
                 "The selected draft has only a draft-time self-check, not a "
-                "committed block-bound anti-AI audit. Run prepare_anti_ai_audit "
+                "committed rule-bound anti-AI audit. Run prepare_anti_ai_audit "
                 "for this exact draft before validation or export."
             ),
             exc=ValueError("anti_ai_audit"),
@@ -8246,9 +8427,10 @@ def _anti_ai_audit_freshness_error(
             exc=ValueError("anti_ai_audit_stale"),
             next_suggested_tools=["prepare_anti_ai_audit"],
         )
-    return _validate_anti_ai_audit_binding(
+    return _validate_anti_ai_rule_audit_binding(
         {"anti_ai_self_check": asdict(audit)},
         source_draft=draft,
+        rule_manifest=anti_ai_rule_manifest(),
         tool_name=tool_name,
     )
 
@@ -8352,44 +8534,6 @@ def _missing_run_result(tool_name: str, agent_run_id: str, exc: Exception) -> To
         code="agent_run_not_found",
         message=f"AgentRun not found: {agent_run_id}",
         exc=exc,
-    )
-
-
-def _error_result_with_next(
-    tool_name: str,
-    *,
-    code: str,
-    message: str,
-    exc: Exception,
-    next_suggested_tools: list[str],
-) -> ToolResult:
-    return ToolResult(
-        ok=False,
-        tool_name=tool_name,
-        error=ToolError(
-            code=code,
-            message=message,
-            detail={"exception": type(exc).__name__},
-        ),
-        next_suggested_tools=list(next_suggested_tools),
-    )
-
-
-def _error_result(
-    tool_name: str,
-    *,
-    code: str,
-    message: str,
-    exc: Exception,
-) -> ToolResult:
-    return ToolResult(
-        ok=False,
-        tool_name=tool_name,
-        error=ToolError(
-            code=code,
-            message=message,
-            detail={"exception": type(exc).__name__},
-        ),
     )
 
 

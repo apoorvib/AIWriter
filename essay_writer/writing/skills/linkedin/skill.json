@@ -1,0 +1,9 @@
+{
+  "id": "linkedin",
+  "version": "1",
+  "kind": "format",
+  "description": "Write credible professional LinkedIn posts without engagement bait.",
+  "formats": ["linkedin"],
+  "triggers": ["linkedin", "professional post", "company update", "founder post"],
+  "priority": 100
+}

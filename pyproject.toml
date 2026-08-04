@@ -49,5 +49,8 @@ essay-agent-tools = "essay_writer.agent_tools.server:main"
 include = ["pdf_pipeline*", "llm*", "essay_writer*", "backend*"]
 exclude = ["tests*", "testpdfs*", "docs*"]
 
+[tool.setuptools.package-data]
+"essay_writer.writing" = ["skills/*/skill.json", "skills/*/SKILL.md"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
